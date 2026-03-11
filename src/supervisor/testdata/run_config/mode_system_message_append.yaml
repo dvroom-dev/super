@@ -1,0 +1,53 @@
+agent:
+  system_message:
+    operation: append
+    parts:
+      - literal: base-system
+  user_message:
+    operation: append
+    parts:
+      - literal: base-user
+  rules:
+    operation: append
+    requirements:
+      - base-requirement
+    violations:
+      - base-violation
+
+supervisor:
+  instructions:
+    operation: append
+    values:
+      - base-supervisor-instruction
+
+modes:
+  explore:
+    description: Explore and collect evidence.
+    system_message:
+      operation: append
+      parts:
+        - literal: explore-system
+    user_message:
+      operation: append
+      parts:
+        - literal: explore-user
+    agent_rules:
+      operation: append
+      requirements:
+        - explore-requirement
+      violations:
+        - explore-violation
+    supervisor_instructions:
+      operation: append
+      values:
+        - explore-supervisor-instruction
+    start_when:
+      - We need more observations.
+    stop_when:
+      - Observations are sufficient.
+
+mode_state_machine:
+  initial_mode: explore
+  transitions:
+    explore:
+      - explore

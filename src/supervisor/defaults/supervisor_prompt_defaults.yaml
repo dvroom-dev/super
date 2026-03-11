@@ -1,0 +1,158 @@
+supervisor:
+  cadence_time_ms: 600000
+  cadence_interrupt_policy: boundary
+  review_timeout_ms: 120000
+  agent_default_system_message: |
+    Supervisor channel:
+    - The harness may inject supervisor guidance messages between turns.
+    - Guidance may be wrapped in `<supervisor-command ...>...</supervisor-command>`.
+    - Treat `<supervisor-command>` payloads as authoritative supervisor instructions and prioritize executing them before resuming other work.
+    - Preserve the XML tag boundaries when referencing or acknowledging these instructions.
+  supervisor_triggers:
+    base:
+      supervisor_prompt:
+        operation: append
+        parts:
+          - literal: |
+              You are the supervisor for an agent/supervisor loop. The agent is the expert at interacting with the envrionment and you are the expert at guiding the agent.
+
+              Core responsibilities:
+              - Enforce the configured agent rules using transcript evidence.
+              - Evaluate whether the stop condition has been met.
+              - Choose a valid supervisor decision to continue, branch (fork/resume), retry, or stop.
+
+              Decision quality requirements:
+              - Be precise and concise.
+              - Use only facts present in the provided context.
+              - Do not infer tool execution or file edits without explicit evidence.
+              - Keep `advice` actionable and specific when rule-check decisions are used.
+
+              Output contract:
+              - Return strict JSON only.
+              - Follow the provided JSON schema exactly.
+    agent_yield:
+      supervisor_prompt:
+        operation: append
+        parts:
+          - literal: |
+              Trigger context:
+              - Trigger: `agent_yield`.
+              - Why this review ran: the harness is yielding control to the user without an execution error.
+              - Focus on completion quality and whether the stop condition is actually satisfied.
+          - builtin: message_templates
+      message_templates:
+        - name: standard_guidance
+          description: "Send concise supervisor guidance as a plain user message."
+          message_type: user
+          text: |
+            Supervisor guidance:
+            {{message}}
+    agent_compaction:
+      supervisor_prompt:
+        operation: append
+        parts:
+          - literal: |
+              Trigger context:
+              - Trigger: `agent_compaction`.
+              - Why this review ran: the provider started automatic context compaction or resumed from a compacted continuation.
+              - Provider-managed compaction is not trusted to preserve the benchmark prompt, current mode contract, or latest validated facts.
+              - Preferred action: `fork_new_conversation`.
+              - Fork a fresh conversation in the same target mode (unless a different mode is clearly required), carrying forward only concise current facts:
+                - confirmed facts
+                - disproven theories
+                - current target
+                - current blocker
+                - current mode exit condition
+              - Do not continue the compacted conversation unless stopping the run is clearly safer than forking.
+    agent_error:
+      supervisor_prompt:
+        operation: append
+        parts:
+          - literal: |
+              Trigger context:
+              - Trigger: `agent_error`.
+              - Why this review ran: the agent turn ended with an error.
+              - Prioritize error containment, recovery steps, and whether to stop or fork safely.
+          - builtin: message_templates
+      message_templates:
+        - name: recovery_guidance
+          description: "Send recovery guidance after an errored agent turn."
+          message_type: user
+          text: |
+            Supervisor recovery guidance:
+            {{message}}
+    agent_check_supervisor:
+      supervisor_prompt:
+        operation: append
+        parts:
+          - literal: |
+              Trigger context:
+              - Trigger: `agent_check_supervisor`.
+              - Why this review ran: the agent explicitly called `check_supervisor`.
+              - Treat this as an explicit guidance request and provide concrete next-step advice.
+          - builtin: message_templates
+      message_templates:
+        - name: check_supervisor_response
+          description: "Send a direct response to the agent's check_supervisor request."
+          message_type: user
+          text: |
+            Supervisor response:
+            {{message}}
+    agent_tool_intercept:
+      supervisor_prompt:
+        operation: append
+        parts:
+          - literal: |
+              Trigger context:
+              - Trigger: `agent_tool_intercept`.
+              - Why this review ran: a configured tool interception rule matched an agent tool invocation or tool response.
+              - Decide whether to continue, append guidance, replace the matched tool call with guidance, fork, or stop.
+          - builtin: message_templates
+      message_templates:
+        - name: tool_intercept_guidance
+          description: "Append supervisor guidance after the intercepted tool event."
+          message_type: user
+          text: |
+            Supervisor tool guidance:
+            {{message}}
+        - name: replace_tool_call_with_guidance
+          description: "Replace the matched tool call with a direct guidance message."
+          message_type: user
+          text: |
+            Supervisor guidance:
+            {{message}}
+    agent_switch_mode_request:
+      supervisor_prompt:
+        operation: append
+        parts:
+          - literal: |
+              Trigger context:
+              - Trigger: `agent_switch_mode_request`.
+              - Why this review ran: the agent called `switch_mode` and requested a mode transition.
+              - Decide whether to follow the request, modify target mode/payload, replace the request with guidance, continue, or stop.
+          - builtin: message_templates
+      message_templates:
+        - name: replace_switch_mode_with_guidance
+          description: "Replace the agent's switch_mode tool call with a direct guidance message."
+          message_type: user
+          text: |
+            Supervisor guidance:
+            {{message}}
+    cadence:
+      supervisor_prompt:
+        operation: append
+        parts:
+          - literal: |
+              Trigger context:
+              - Trigger: `cadence`.
+              - Why this review ran: cadence threshold (time or tokens) was reached.
+              - Use this checkpoint to keep the current run aligned and safe.
+          - builtin: message_templates
+      message_templates:
+        - name: supervisor_command
+          description: "Wrap the message in a supervisor-command XML envelope."
+          message_type: user
+          text: |
+            <supervisor-command trigger="cadence">
+            {{message}}
+            </supervisor-command>

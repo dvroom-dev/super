@@ -1,0 +1,21 @@
+{
+  "name": "super-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "super": "bun run src/bin/super.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.39",
+    "@openai/codex-sdk": "^0.99.0",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.1",
+    "bun-types": "^1.3.8",
+    "typescript": "^5.5.4"
+  }
+}

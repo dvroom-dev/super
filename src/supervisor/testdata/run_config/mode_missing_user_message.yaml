@@ -1,0 +1,28 @@
+agent:
+  system_message:
+    operation: append
+    parts:
+      - literal: base-system
+  user_message:
+    operation: append
+    parts:
+      - literal: base-user
+  rules:
+    operation: append
+    requirements: []
+    violations: []
+
+supervisor:
+  instructions:
+    operation: append
+    values: []
+
+modes:
+  broken_mode:
+    system_message:
+      operation: append
+      parts:
+        - literal: mode-system
+
+mode_state_machine:
+  initial_mode: broken_mode

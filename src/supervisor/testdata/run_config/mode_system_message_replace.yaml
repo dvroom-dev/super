@@ -1,0 +1,48 @@
+agent:
+  system_message:
+    operation: append
+    parts:
+      - literal: base-system
+  user_message:
+    operation: append
+    parts:
+      - literal: base-user
+  rules:
+    operation: append
+    requirements:
+      - base-requirement
+    violations: []
+
+supervisor:
+  instructions:
+    operation: append
+    values:
+      - base-supervisor-instruction
+
+modes:
+  plan:
+    description: Plan execution.
+    system_message:
+      operation: replace
+      parts:
+        - literal: plan-system-only
+    user_message:
+      operation: append
+      parts:
+        - literal: plan-user
+    agent_rules:
+      operation: replace
+      requirements:
+        - plan-requirement-only
+      violations:
+        - plan-violation-only
+    supervisor_instructions:
+      operation: replace
+      values:
+        - plan-supervisor-instruction-only
+
+mode_state_machine:
+  initial_mode: plan
+  transitions:
+    plan:
+      - plan
