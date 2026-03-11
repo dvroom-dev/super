@@ -76,51 +76,19 @@ describe("super CLI contracts", () => {
     expect(await fs.readFile(outputPath, "utf8")).toContain("assistant from new");
   });
 
-  it("uses the explicit resume document instead of the fork stored in super/state.json", async () => {
+  it("resumes from state.json and the fork store without a transcript path", async () => {
     const workspaceRoot = await makeTempDir("super-cli-resume-");
     const outputPath = path.join(workspaceRoot, "resume-output.md");
     await writeBasicConfig(workspaceRoot);
-    await fs.mkdir(path.join(workspaceRoot, "super"), { recursive: true });
-    await fs.writeFile(
-      path.join(workspaceRoot, "super", "state.json"),
-      JSON.stringify({
-        version: 1,
-        workspaceRoot,
-        conversationId: "conversation_resume",
-        activeForkId: "fork_state_only",
-        activeMode: "default",
-        activeModePayload: {},
-        agentProvider: "mock",
-        agentModel: "mock-model",
-        supervisorProvider: "mock",
-        supervisorModel: "mock-model",
-        cycleCount: 0,
-        createdAt: new Date(0).toISOString(),
-        updatedAt: new Date(0).toISOString(),
-        lastStopReasons: [],
-        lastStopDetails: [],
-      }, null, 2),
-      "utf8",
+    const first = await runSuper(
+      ["new", "--workspace", workspaceRoot, "--provider", "mock", "--model", "mock-model", "--disable-supervision", "--cycle-limit", "1", "--output", outputPath],
+      { MOCK_PROVIDER_STREAMED_TEXT: "assistant from new" },
     );
-    const resumeDocPath = path.join(workspaceRoot, "resume.md");
-    await fs.writeFile(
-      resumeDocPath,
-      [
-        "---",
-        "conversation_id: conversation_resume",
-        "fork_id: fork_resume",
-        "mode: default",
-        "---",
-        "",
-        "```chat role=user",
-        "Resume from explicit document.",
-        "```",
-      ].join("\n"),
-      "utf8",
-    );
+    expect(first.exitCode).toBe(0);
+    const priorState = JSON.parse(await fs.readFile(path.join(workspaceRoot, "super", "state.json"), "utf8"));
 
     const result = await runSuper(
-      ["resume", resumeDocPath, "--workspace", workspaceRoot, "--provider", "mock", "--model", "mock-model", "--disable-supervision", "--cycle-limit", "1", "--output", outputPath],
+      ["resume", "--workspace", workspaceRoot, "--provider", "mock", "--model", "mock-model", "--disable-supervision", "--cycle-limit", "1", "--output", outputPath],
       { MOCK_PROVIDER_STREAMED_TEXT: "assistant from resume" },
     );
 
@@ -128,9 +96,23 @@ describe("super CLI contracts", () => {
     expect(result.stderr).toContain("mock: starting turn");
     expect(result.stdout.trim()).toBe("assistant from resume");
     const state = JSON.parse(await fs.readFile(path.join(workspaceRoot, "super", "state.json"), "utf8"));
-    expect(state.activeForkId).not.toBe("fork_state_only");
+    expect(state.activeForkId).not.toBe(priorState.activeForkId);
+    expect(state.conversationId).toBe(priorState.conversationId);
     const exported = await fs.readFile(outputPath, "utf8");
-    expect(exported).toContain("Resume from explicit document.");
+    expect(exported).toContain("seeded prompt");
+    expect(exported).toContain("assistant from new");
     expect(exported).toContain("assistant from resume");
+  });
+
+  it("rejects transcript paths for resume", async () => {
+    const workspaceRoot = await makeTempDir("super-cli-resume-");
+    await writeBasicConfig(workspaceRoot);
+    const resumeDocPath = path.join(workspaceRoot, "session.md");
+    await fs.writeFile(resumeDocPath, "placeholder", "utf8");
+
+    const result = await runSuper(["resume", resumeDocPath, "--workspace", workspaceRoot]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("resume does not accept a document path");
   });
 });

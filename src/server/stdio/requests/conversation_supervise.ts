@@ -128,6 +128,10 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   const sendBudgetUpdate = () => sendBudgetUpdateNotification({ ctx, startedAt, budget, currentModel, supervisorModel, timeBudgetMs, tokenBudgetAdjusted, cadenceTimeMs, cadenceTokensAdjusted });
   let stopReasons: string[] = [], stopDetails: string[] = [];
   const renderedRunConfig = initialRunConfig;
+  const runtimeStateForDocument = (docText: string) => ({
+    activeMode: resolveActiveMode(docText, renderedRunConfig),
+    activeModePayload: resolveModePayload(docText),
+  });
   let supervisorSchemaPreflightDone = false;
   try {
     while (true) {
@@ -138,7 +142,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       stopReasons = ["cycle_limit"]; stopDetails = [`cycle limit reached (${effectiveCycleLimit})`];
       ctx.sendNotification({ method: "conversation.status", params: { message: stopDetails[0] } });
       lifecycle.finishRun("stopped");
-      return { conversationId, forkId: lifecycle.currentForkId(), mode: "supervise", stopReasons, stopDetails };
+      return { conversationId, forkId: lifecycle.currentForkId(), mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
     }
     const activeMode = resolveActiveMode(currentDocText, renderedRunConfig), modeConfig = resolveModeConfig(renderedRunConfig, activeMode);
     const { agentModelReasoningEffort: effectiveAgentModelReasoningEffort, supervisorModelReasoningEffort: effectiveSupervisorModelReasoningEffort } = resolveModeReasoningEfforts({ modeConfig, defaultAgentReasoningEffort: agentModelReasoningEffort, defaultSupervisorReasoningEffort: supervisorModelReasoningEffort });
@@ -306,7 +310,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         stopDetails = toolOutcome.stopDetails;
         currentDocText = toolOutcome.currentDocText;
         lifecycle.finishRun("stopped");
-        return { conversationId, forkId: toolOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails };
+        return { conversationId, forkId: toolOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
       }
       currentDocText = toolOutcome.currentDocText;
       currentThreadId = toolOutcome.currentThreadId;
@@ -365,7 +369,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       budget,
       providerName,
     });
-    if (transitionOutcome.kind === "stop") { stopReasons = transitionOutcome.stopReasons; stopDetails = transitionOutcome.stopDetails; currentDocText = transitionOutcome.currentDocText; lifecycle.finishRun("stopped"); return { conversationId, forkId: transitionOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails }; }
+    if (transitionOutcome.kind === "stop") { stopReasons = transitionOutcome.stopReasons; stopDetails = transitionOutcome.stopDetails; currentDocText = transitionOutcome.currentDocText; lifecycle.finishRun("stopped"); return { conversationId, forkId: transitionOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) }; }
     if (transitionOutcome.kind === "continue") { currentDocText = transitionOutcome.currentDocText; currentThreadId = transitionOutcome.currentThreadId; currentSupervisorThreadId = transitionOutcome.currentSupervisorThreadId; fullResyncNeeded = transitionOutcome.fullResyncNeeded; turnIndex += 1; cycleTurnCount += 1; continue; }
     const finalizeOutcome = await finalizeSuperviseTurn({
       ctx,
@@ -438,7 +442,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     currentDocText = finalizeOutcome.nextDocText;
     if (finalizeOutcome.kind === "done") {
       lifecycle.finishRun(finalizeOutcome.status);
-      return { conversationId, forkId: finalizeOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails };
+      return { conversationId, forkId: finalizeOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
     }
     if (finalizeOutcome.supervisorPersist.nextModel) {
       currentModel = finalizeOutcome.supervisorPersist.nextModel;
@@ -458,7 +462,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       continue;
     }
     lifecycle.finishRun(result.hadError ? "error" : result.interrupted ? "stopped" : "done");
-    return { conversationId, forkId: finalizeOutcome.supervisorPersist.nextForkId, mode: "supervise", stopReasons, stopDetails };
+    return { conversationId, forkId: finalizeOutcome.supervisorPersist.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
     }
   } catch (err: any) { lifecycle.finishRun("error"); throw err; }
 }

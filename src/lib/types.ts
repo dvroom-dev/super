@@ -48,7 +48,6 @@ export type CliOptions = {
   yolo: boolean;
   disableSupervision: boolean;
   disableHooks: boolean;
-  resumeDocPath?: string;
   providerExplicit?: boolean;
   modelExplicit?: boolean;
   supervisorProviderExplicit?: boolean;

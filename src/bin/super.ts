@@ -1,14 +1,9 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { loadRunConfigForDirectory, renderRunConfig } from "../supervisor/run_config.ts";
-import {
-  resolveModeConfig,
-  resolveModePayload,
-  frontmatterValue as modeFrontmatterValue,
-} from "../server/stdio/supervisor/mode_runtime.ts";
+import { resolveModeConfig } from "../server/stdio/supervisor/mode_runtime.ts";
 import { handleConversationSupervise } from "../server/stdio/requests/conversation_supervise.ts";
 import { newId } from "../lib/ids.ts";
-import { buildInitialDocument, frontmatterValue, normalizeExportedDocumentFrontmatter } from "../lib/document.ts";
+import { buildInitialDocument, normalizeExportedDocumentFrontmatter } from "../lib/document.ts";
 import { createNotificationHandler } from "../lib/notifications.ts";
 import { createRuntimeContext } from "../lib/context.ts";
 import { appendEvents, exportSessionDocument, loadSuperState, saveSuperState } from "../lib/state.ts";
@@ -16,7 +11,7 @@ import { loadForkDocument } from "../lib/store.ts";
 import type { CliOptions, SuperEvent, SuperState } from "../lib/types.ts";
 
 function usage(): string {
-  return "usage: super <new|resume|status> [session.md] --workspace <dir> [--config <file>] [--output <file>] [--provider <name>] [--model <name>] [--cycle-limit N] [--start-mode <mode>]";
+  return "usage: super <new|resume|status> --workspace <dir> [--config <file>] [--output <file>] [--provider <name>] [--model <name>] [--cycle-limit N] [--start-mode <mode>]";
 }
 
 function requireValue(flag: string, next: string | undefined): string {
@@ -31,10 +26,8 @@ function parseArgs(argv: string[]): CliOptions {
   const mode = argv[0];
   if (mode !== "new" && mode !== "resume" && mode !== "status") throw new Error(usage());
   let i = 1;
-  let resumeDocPath: string | undefined;
-  if (mode === "resume" && argv[i] && !argv[i].startsWith("--")) {
-    resumeDocPath = argv[i];
-    i += 1;
+  if ((mode === "resume" || mode === "new" || mode === "status") && argv[i] && !argv[i].startsWith("--")) {
+    throw new Error(`${mode} does not accept a document path; resume state comes from super/state.json`);
   }
   const out: CliOptions = {
     mode,
@@ -45,7 +38,6 @@ function parseArgs(argv: string[]): CliOptions {
     yolo: false,
     disableSupervision: false,
     disableHooks: false,
-    resumeDocPath,
     providerExplicit: false,
     modelExplicit: false,
     supervisorProviderExplicit: false,
@@ -132,16 +124,17 @@ async function buildNewDocument(options: CliOptions) {
     agentRuleViolations: agentRules.violations ?? [],
     disableSupervision: options.disableSupervision,
   });
-  return { documentText, conversationId, renderedConfig };
+  return {
+    documentText,
+    conversationId,
+    activeForkId: forkId,
+    activeMode: mode,
+    activeModePayload: {},
+    renderedConfig,
+  };
 }
 
 async function loadResumeDocumentFromState(options: CliOptions, state: SuperState) {
-  if (options.resumeDocPath) {
-    const documentText = await fs.readFile(options.resumeDocPath, "utf8");
-    const conversationId = modeFrontmatterValue(documentText, "conversation_id")?.trim();
-    if (!conversationId) throw new Error("resume document is missing conversation_id frontmatter");
-    return { documentText, conversationId };
-  }
   const ctx = createRuntimeContext({ workspaceRoot: options.workspaceRoot, sendNotification: () => {} });
   const documentText = await loadForkDocument({
     store: ctx.store,
@@ -149,7 +142,13 @@ async function loadResumeDocumentFromState(options: CliOptions, state: SuperStat
     conversationId: state.conversationId,
     forkId: state.activeForkId,
   });
-  return { documentText, conversationId: state.conversationId };
+  return {
+    documentText,
+    conversationId: state.conversationId,
+    activeForkId: state.activeForkId,
+    activeMode: state.activeMode,
+    activeModePayload: state.activeModePayload ?? {},
+  };
 }
 
 async function runCycle(options: CliOptions): Promise<{ state: SuperState; documentText: string; assistantMessages: string[] }> {
@@ -159,8 +158,6 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     : prior
       ? await loadResumeDocumentFromState(options, prior)
       : (() => { throw new Error("resume requires existing super/state.json"); })();
-  const initialForkId = frontmatterValue(built.documentText, "fork_id")?.trim();
-  if (!initialForkId) throw new Error("active document is missing fork_id frontmatter");
   const continuingPriorState = Boolean(prior && prior.conversationId === built.conversationId);
   const now = nowIso();
 
@@ -192,9 +189,9 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     version: 1,
     workspaceRoot: options.workspaceRoot,
     conversationId: built.conversationId,
-    activeForkId: initialForkId,
-    activeMode: frontmatterValue(documentTextRef.value, "mode")?.trim() || (continuingPriorState ? prior?.activeMode : undefined),
-    activeModePayload: resolveModePayload(documentTextRef.value),
+    activeForkId: built.activeForkId,
+    activeMode: built.activeMode || (continuingPriorState ? prior?.activeMode : undefined),
+    activeModePayload: built.activeModePayload ?? (continuingPriorState ? prior?.activeModePayload : undefined),
     agentProvider,
     agentModel,
     supervisorProvider,
@@ -245,19 +242,18 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
   });
   documentTextRef.value = exportedDocumentText;
 
-  const activeMode = frontmatterValue(documentTextRef.value, "mode")?.trim() || "";
   documentTextRef.value = normalizeExportedDocumentFrontmatter(documentTextRef.value, {
     conversationId: result.conversationId,
     forkId: result.forkId,
-    mode: activeMode || undefined,
+    mode: result.activeMode || undefined,
   });
   const nextState: SuperState = {
     version: 1,
     workspaceRoot: options.workspaceRoot,
     conversationId: result.conversationId,
     activeForkId: result.forkId,
-    activeMode: activeMode || prior?.activeMode,
-    activeModePayload: resolveModePayload(documentTextRef.value),
+    activeMode: result.activeMode || prior?.activeMode,
+    activeModePayload: result.activeModePayload ?? prior?.activeModePayload,
     agentProvider,
     agentModel,
     supervisorProvider,
