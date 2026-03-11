@@ -116,13 +116,17 @@ export class ClaudeProvider implements AgentProvider {
     const defaultProviderOptions: Record<string, unknown> = {
       includePartialMessages: true,
     };
+    const inheritedEnv = inheritedProcessEnv(this.config.env);
+    delete inheritedEnv.CLAUDECODE;
+    delete inheritedEnv.CLAUDE_CODE_ENTRYPOINT;
+    delete inheritedEnv.CLAUDE_CODE_REPL_ENTRYPOINT;
     const out: Record<string, unknown> = {
       ...defaultProviderOptions,
       ...(this.config.providerOptions ?? {}),
       model: this.config.model,
       cwd: this.config.workingDirectory,
       env: {
-        ...inheritedProcessEnv(this.config.env),
+        ...inheritedEnv,
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
       },
       permissionMode: "default",

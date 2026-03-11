@@ -140,6 +140,13 @@ describe("ClaudeProvider", () => {
   });
 
   it("passes resume, sandbox, and json schema options to claude query()", async () => {
+    const previousClaudeCode = process.env.CLAUDECODE;
+    const previousEntry = process.env.CLAUDE_CODE_ENTRYPOINT;
+    const previousReplEntry = process.env.CLAUDE_CODE_REPL_ENTRYPOINT;
+    process.env.CLAUDECODE = "1";
+    process.env.CLAUDE_CODE_ENTRYPOINT = "cli";
+    process.env.CLAUDE_CODE_REPL_ENTRYPOINT = "repl";
+    try {
     const capture: { invocation?: QueryInvocation; closed?: boolean } = {};
     const schema = { type: "object", properties: { action: { type: "string" } }, required: ["action"] };
     const query = makeQueryStub(
@@ -169,11 +176,22 @@ describe("ClaudeProvider", () => {
     expect(options.resume).toBe("sess_old");
     expect(options.permissionMode).toBe("default");
     expect(options.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+    expect(options.env?.CLAUDECODE).toBeUndefined();
+    expect(options.env?.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(options.env?.CLAUDE_CODE_REPL_ENTRYPOINT).toBeUndefined();
     expect(typeof options.canUseTool).toBe("function");
     expect(Array.isArray(options.disallowedTools)).toBe(true);
     expect(options.disallowedTools).toContain("Bash");
     expect(options.disallowedTools).toContain("Task");
     expect(options.outputFormat).toEqual({ type: "json_schema", schema });
+    } finally {
+      if (previousClaudeCode === undefined) delete process.env.CLAUDECODE;
+      else process.env.CLAUDECODE = previousClaudeCode;
+      if (previousEntry === undefined) delete process.env.CLAUDE_CODE_ENTRYPOINT;
+      else process.env.CLAUDE_CODE_ENTRYPOINT = previousEntry;
+      if (previousReplEntry === undefined) delete process.env.CLAUDE_CODE_REPL_ENTRYPOINT;
+      else process.env.CLAUDE_CODE_REPL_ENTRYPOINT = previousReplEntry;
+    }
   });
 
   it("compacts an existing Claude session with /compact", async () => {
