@@ -256,6 +256,64 @@ describe("agent switch_mode inline tool", () => {
     expect(markdown).toContain("switch_mode.mode_payload.seed is required");
   });
 
+  it.serial("accepts stringified JSON mode_payload from provider tool calls", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
+    await writeModeConfig(workspaceRoot);
+    const { ctx, createForkCalls } = makeCtx("conversation_switch_mode_string_payload");
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```tool_call name=switch_mode",
+      '{"target_mode":"explore","reason":"string payload","mode_payload":"{\\"seed\\":\\"from-agent\\"}"}',
+      "```",
+    ].join("\n");
+
+    const result = await handleConversationSupervise(ctx, {
+      workspaceRoot,
+      docPath: path.join(workspaceRoot, "session.md"),
+      documentText: makeDoc("conversation_switch_mode_string_payload", "fork_doc"),
+      models: ["mock-model"],
+      provider: "mock",
+      disableSupervision: true,
+      cycleLimit: 1,
+      supervisor: {
+        enabled: true,
+        stopCondition: "task complete",
+      },
+    });
+
+    expect(result.stopReasons).toEqual(["cycle_limit"]);
+    expect(createForkCalls).toHaveLength(2);
+    expect(String(createForkCalls[1].documentText ?? "")).toContain("explore seed from-agent");
+  });
+
+  it.serial("accepts top-level structured handoff fields for provider tool calls", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
+    await writeModeConfig(workspaceRoot);
+    const { ctx, createForkCalls } = makeCtx("conversation_switch_mode_top_level_payload");
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```tool_call name=switch_mode",
+      '{"target_mode":"explore","reason":"top level payload","user_message":"from-agent"}',
+      "```",
+    ].join("\n");
+
+    const result = await handleConversationSupervise(ctx, {
+      workspaceRoot,
+      docPath: path.join(workspaceRoot, "session.md"),
+      documentText: makeDoc("conversation_switch_mode_top_level_payload", "fork_doc"),
+      models: ["mock-model"],
+      provider: "mock",
+      disableSupervision: true,
+      cycleLimit: 1,
+      supervisor: {
+        enabled: true,
+        stopCondition: "task complete",
+      },
+    });
+
+    expect(result.stopReasons).toEqual(["cycle_limit"]);
+    expect(createForkCalls).toHaveLength(2);
+    expect(String(createForkCalls[1].documentText ?? "")).toContain("explore seed from-agent");
+  });
+
   it.serial("treats successful switch_mode as terminal for remaining inline tool calls", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
     await writeModeConfig(workspaceRoot);

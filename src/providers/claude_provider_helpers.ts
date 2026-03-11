@@ -54,6 +54,48 @@ export function makePermissiveToolInputSchema(): ClaudeToolInputSchema {
 }
 
 export function makeSwitchModeToolInputSchema(): ClaudeToolInputSchema {
+  const normalizeModePayload = (
+    raw: unknown,
+  ):
+    | { ok: true; value: Record<string, string> | undefined }
+    | { ok: false; issue: { path: Array<string | number>; message: string; code: string } } => {
+    if (raw == null) return { ok: true, value: undefined };
+    let value = raw;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) return { ok: true, value: undefined };
+      try {
+        value = JSON.parse(trimmed);
+      } catch {
+        return {
+          ok: false,
+          issue: { path: ["mode_payload"], message: "mode_payload string must contain a JSON object", code: "invalid_type" },
+        };
+      }
+    }
+    if (typeof value !== "object" || Array.isArray(value)) {
+      return {
+        ok: false,
+        issue: { path: ["mode_payload"], message: "mode_payload must be an object", code: "invalid_type" },
+      };
+    }
+    const out: Record<string, string> = {};
+    for (const [key, rawValue] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof rawValue !== "string") {
+        return {
+          ok: false,
+          issue: {
+            path: ["mode_payload", key],
+            message: "mode_payload values must be strings",
+            code: "invalid_type",
+          },
+        };
+      }
+      out[key] = rawValue;
+    }
+    return { ok: true, value: out };
+  };
+
   const validate = (value: unknown): SafeParseSuccess | SafeParseFailure => {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return {
@@ -69,7 +111,17 @@ export function makeSwitchModeToolInputSchema(): ClaudeToolInputSchema {
     const targetMode = typeof record.target_mode === "string" ? record.target_mode.trim() : "";
     const reason = typeof record.reason === "string" ? record.reason.trim() : "";
     const terminal = record.terminal;
-    const modePayload = record.mode_payload;
+    const syntheticModePayload: Record<string, unknown> = {};
+    if (record.user_message != null) syntheticModePayload.user_message = record.user_message;
+    if (record.wrapup_certified != null) syntheticModePayload.wrapup_certified = record.wrapup_certified;
+    if (record.wrapup_level != null) syntheticModePayload.wrapup_level = record.wrapup_level;
+    const modePayload = normalizeModePayload(
+      record.mode_payload != null
+        ? record.mode_payload
+        : Object.keys(syntheticModePayload).length > 0
+          ? syntheticModePayload
+          : undefined,
+    );
     const issues: Array<{ path: Array<string | number>; message: string; code: string }> = [];
     if (!targetMode) {
       issues.push({ path: ["target_mode"], message: "target_mode is required", code: "invalid_type" });
@@ -80,19 +132,21 @@ export function makeSwitchModeToolInputSchema(): ClaudeToolInputSchema {
     if (terminal != null && typeof terminal !== "boolean") {
       issues.push({ path: ["terminal"], message: "terminal must be a boolean", code: "invalid_type" });
     }
-    if (modePayload != null && (typeof modePayload !== "object" || Array.isArray(modePayload))) {
-      issues.push({ path: ["mode_payload"], message: "mode_payload must be an object", code: "invalid_type" });
+    if (record.user_message != null && typeof record.user_message !== "string") {
+      issues.push({ path: ["user_message"], message: "user_message must be a string", code: "invalid_type" });
     }
-    if (modePayload && typeof modePayload === "object" && !Array.isArray(modePayload)) {
-      for (const [key, rawValue] of Object.entries(modePayload as Record<string, unknown>)) {
-        if (typeof rawValue !== "string") {
-          issues.push({
-            path: ["mode_payload", key],
-            message: "mode_payload values must be strings",
-            code: "invalid_type",
-          });
-        }
-      }
+    if (record.wrapup_certified != null && typeof record.wrapup_certified !== "boolean") {
+      issues.push({ path: ["wrapup_certified"], message: "wrapup_certified must be a boolean", code: "invalid_type" });
+    }
+    if (
+      record.wrapup_level != null &&
+      typeof record.wrapup_level !== "string" &&
+      typeof record.wrapup_level !== "number"
+    ) {
+      issues.push({ path: ["wrapup_level"], message: "wrapup_level must be a string or number", code: "invalid_type" });
+    }
+    if (!modePayload.ok) {
+      issues.push(modePayload.issue);
     }
     if (issues.length > 0) {
       return {
@@ -109,10 +163,8 @@ export function makeSwitchModeToolInputSchema(): ClaudeToolInputSchema {
       reason,
     };
     if (terminal != null) normalized.terminal = terminal;
-    if (modePayload && typeof modePayload === "object" && !Array.isArray(modePayload)) {
-      normalized.mode_payload = Object.fromEntries(
-        Object.entries(modePayload as Record<string, unknown>).map(([key, rawValue]) => [key, String(rawValue)]),
-      );
+    if (modePayload.ok && modePayload.value) {
+      normalized.mode_payload = modePayload.value;
     }
     return { success: true, data: normalized };
   };
@@ -124,8 +176,12 @@ export function makeSwitchModeToolInputSchema(): ClaudeToolInputSchema {
       reason: { type: "string", description: "A concise reason for the mode transition." },
       mode_payload: {
         type: "object",
-        description: "Optional mode-specific payload fields required by the target mode.",
+        description:
+          "Optional mode-specific payload fields required by the target mode. Provide a JSON object; a JSON-stringified object is also accepted.",
       },
+      user_message: { type: "string", description: "Common handoff text for the target mode." },
+      wrapup_certified: { type: "boolean", description: "Set true when explicitly certifying solved-level wrap-up." },
+      wrapup_level: { type: "string", description: "Pinned solved level being certified or referenced by the handoff." },
       terminal: { type: "boolean", description: "Set true to end the current turn after the mode switch request." },
     },
     parse: (value: unknown) => {

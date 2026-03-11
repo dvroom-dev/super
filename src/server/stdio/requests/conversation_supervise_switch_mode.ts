@@ -85,9 +85,19 @@ function errorOutcome(message: string): SwitchModeErrorOutcome {
 
 function normalizeSwitchModePayload(raw: unknown): Record<string, string> | null {
   if (raw == null) return {};
-  if (typeof raw !== "object" || Array.isArray(raw)) return null;
+  let value = raw;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return {};
+    try {
+      value = JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value !== "object" || Array.isArray(value)) return null;
   const out: Record<string, string> = {};
-  for (const [rawKey, rawValue] of Object.entries(raw as Record<string, unknown>)) {
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
     const key = String(rawKey ?? "").trim();
     if (!key) continue;
     out[key] = String(rawValue ?? "").trim();
@@ -172,7 +182,17 @@ export function parseSwitchModeInlineCall(args: ParseSwitchModeInlineCallArgs): 
   if (args.call.args?.terminal != null && args.call.args.terminal !== true) {
     return errorOutcome("switch_mode args.terminal, when provided, must be true");
   }
-  const payload = normalizeSwitchModePayload(args.call.args?.mode_payload);
+  const syntheticModePayload: Record<string, unknown> = {};
+  if (args.call.args?.user_message != null) syntheticModePayload.user_message = args.call.args.user_message;
+  if (args.call.args?.wrapup_certified != null) syntheticModePayload.wrapup_certified = args.call.args.wrapup_certified;
+  if (args.call.args?.wrapup_level != null) syntheticModePayload.wrapup_level = args.call.args.wrapup_level;
+  const payload = normalizeSwitchModePayload(
+    args.call.args?.mode_payload != null
+      ? args.call.args.mode_payload
+      : Object.keys(syntheticModePayload).length > 0
+        ? syntheticModePayload
+        : undefined,
+  );
   if (!payload) {
     return errorOutcome("switch_mode.mode_payload must be an object");
   }

@@ -623,6 +623,34 @@ describe("ClaudeProvider", () => {
     });
     expect(typeof switchModeTool.inputSchema?.safeParseAsync).toBe("function");
     expect(typeof switchModeTool.inputSchema?.parseAsync).toBe("function");
+    await expect(
+      switchModeTool.inputSchema.parseAsync({
+        target_mode: "explore_and_solve",
+        reason: "handoff",
+        mode_payload: '{"user_message":"probe ACTION1"}',
+      }),
+    ).resolves.toMatchObject({
+      target_mode: "explore_and_solve",
+      reason: "handoff",
+      mode_payload: { user_message: "probe ACTION1" },
+    });
+    await expect(
+      switchModeTool.inputSchema.parseAsync({
+        target_mode: "explore_and_solve",
+        reason: "handoff",
+        user_message: "probe ACTION1",
+        wrapup_certified: true,
+        wrapup_level: 1,
+      }),
+    ).resolves.toMatchObject({
+      target_mode: "explore_and_solve",
+      reason: "handoff",
+      mode_payload: {
+        user_message: "probe ACTION1",
+        wrapup_certified: "true",
+        wrapup_level: "1",
+      },
+    });
   });
 
   it("defaults includePartialMessages and emits reasoning provider items", async () => {
