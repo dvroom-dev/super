@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "lint": "bun run scripts/check_ts_line_limit.ts",
     "super": "bun run src/bin/super.ts",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "validate": "bun run lint && bun run typecheck && bun run test"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.39",
