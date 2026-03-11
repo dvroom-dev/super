@@ -1,6 +1,6 @@
 import type { AgentProvider, ProviderEvent } from "../../../providers/types.js";
 import type { SupervisorConfig } from "../types.js";
-import type { StdioContext } from "../requests/context.js";
+import type { RuntimeContext } from "../requests/context.js";
 import { renderChat, renderToolCall } from "../../../markdown/render.js";
 import { adjustedTokenUsage } from "../helpers.js";
 import { maybeCompactProviderItem } from "../tool_output.js";
@@ -69,7 +69,7 @@ export type CadenceHitEvent = {
 };
 
 export async function runAgentTurn(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   docPath: string;
   provider: AgentProvider;
   prompt: PromptContent;

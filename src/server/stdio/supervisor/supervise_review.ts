@@ -16,7 +16,7 @@ import type { RenderedRunConfigSupervisorTriggers } from "../../../supervisor/ru
 import type { ProviderPermissionProfile } from "../../../providers/types.js";
 import { combineTranscript } from "../helpers.js";
 import type { SupervisorConfig } from "../types.js";
-import type { StdioContext } from "../requests/context.js";
+import type { RuntimeContext } from "../requests/context.js";
 import type { TurnResult } from "./agent_turn.js";
 import { replaceLastAssistantChat, replaceReasoningWithSnapshots } from "./fork_utils.js";
 import { formatSupervisorCheckOutput, runSupervisorReview } from "./supervisor_run.js";
@@ -26,7 +26,7 @@ import { applyViolationForkPolicy, decisionPayloadSummary } from "./supervise_re
 import { hardNoResume, reviewFromOverride } from "./supervise_review_override.js";
 
 export type SuperviseReviewStepArgs = {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   conversationId: string;
   documentText: string;

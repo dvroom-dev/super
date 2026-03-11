@@ -290,24 +290,6 @@ export function hasLeadingSystemMessage(documentText: string): boolean {
   return first?.kind === "chat" && first?.role === "system";
 }
 
-export function ensureLeadingSystemMessage(documentText: string, systemMessage: string): string {
-  const content = String(systemMessage ?? "").trim();
-  if (!content || hasLeadingSystemMessage(documentText)) return documentText;
-  const systemBlock = renderChat("system", content, { scope: AGENT_SYSTEM_SCOPE }).trim();
-  const source = String(documentText ?? "").trim();
-  const lines = source.split(/\r?\n/);
-  if (lines[0] !== "---") {
-    return [systemBlock, source].filter(Boolean).join("\n\n");
-  }
-  const end = lines.indexOf("---", 1);
-  if (end < 0) {
-    return [systemBlock, source].filter(Boolean).join("\n\n");
-  }
-  const head = lines.slice(0, end + 1).join("\n").trim();
-  const tail = lines.slice(end + 1).join("\n").trim();
-  return [head, systemBlock, tail].filter(Boolean).join("\n\n");
-}
-
 function encodeModePayload(payload: Record<string, string> | undefined): string {
   const cleaned: Record<string, string> = {};
   for (const [key, value] of Object.entries(payload ?? {})) {

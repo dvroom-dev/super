@@ -1,6 +1,6 @@
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
-export async function handleForkList(ctx: StdioContext, params: any) {
+export async function handleForkList(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const conversationId = String((params as any)?.conversationId ?? "");
   if (!conversationId) throw new Error("conversationId required");
@@ -20,7 +20,7 @@ export async function handleForkList(ctx: StdioContext, params: any) {
   };
 }
 
-export async function handleForkListByDoc(ctx: StdioContext, params: any) {
+export async function handleForkListByDoc(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const docPath = String((params as any)?.docPath ?? "");
   const documentText = String((params as any)?.documentText ?? "");
@@ -57,7 +57,7 @@ export async function handleForkListByDoc(ctx: StdioContext, params: any) {
   };
 }
 
-export async function handleForkTree(ctx: StdioContext, params: any) {
+export async function handleForkTree(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const docPath = String((params as any)?.docPath ?? "");
   const documentText = String((params as any)?.documentText ?? "");
@@ -100,7 +100,7 @@ export async function handleForkTree(ctx: StdioContext, params: any) {
   };
 }
 
-export async function handleForkCheckout(ctx: StdioContext, params: any) {
+export async function handleForkCheckout(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const conversationId = String((params as any)?.conversationId ?? "");
   const forkId = String((params as any)?.forkId ?? "");

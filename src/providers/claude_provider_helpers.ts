@@ -112,9 +112,9 @@ export function makeSwitchModeToolInputSchema(): ClaudeToolInputSchema {
     const reason = typeof record.reason === "string" ? record.reason.trim() : "";
     const terminal = record.terminal;
     const syntheticModePayload: Record<string, unknown> = {};
-    if (record.user_message != null) syntheticModePayload.user_message = record.user_message;
-    if (record.wrapup_certified != null) syntheticModePayload.wrapup_certified = record.wrapup_certified;
-    if (record.wrapup_level != null) syntheticModePayload.wrapup_level = record.wrapup_level;
+    if (record.user_message != null) syntheticModePayload.user_message = String(record.user_message);
+    if (record.wrapup_certified != null) syntheticModePayload.wrapup_certified = String(record.wrapup_certified);
+    if (record.wrapup_level != null) syntheticModePayload.wrapup_level = String(record.wrapup_level);
     const modePayload = normalizeModePayload(
       record.mode_payload != null
         ? record.mode_payload

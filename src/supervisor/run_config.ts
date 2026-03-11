@@ -403,7 +403,7 @@ export async function renderRunConfig(
           Object.entries(config.modes).map(async ([modeName, mode]) => {
             const effectiveModeTools = mergeToolsConfig(config.tools, mode.tools);
             const modeSystem = await renderSystemMessage(mode.systemMessage, effectiveModeTools, undefined, roots, config.promptParts);
-            const modeUser = await renderUserMessage(mode.userMessage, config.tools, roots, config.promptParts);
+            const modeUser = await renderUserMessage(mode.userMessage, effectiveModeTools, roots, config.promptParts);
             const renderedMode: RenderedRunConfigModeDefinition = {
               systemMessage: combineSystemMessages(systemMessage, modeSystem),
               userMessage: combineUserMessages(userMessage, modeUser),

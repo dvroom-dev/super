@@ -1,5 +1,5 @@
 import type { ForkMeta } from "../../../store/types.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
 export function selectBaseForkId(args: {
   explicitBaseForkId?: string;
@@ -26,7 +26,7 @@ export function selectBaseForkId(args: {
 }
 
 export async function loadForkSafe(
-  ctx: StdioContext,
+  ctx: RuntimeContext,
   workspaceRoot: string,
   conversationId: string,
   forkId: string

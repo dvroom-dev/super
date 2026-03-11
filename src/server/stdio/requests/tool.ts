@@ -7,12 +7,12 @@ import { loadAgentsInstructions, workspaceListing, taggedFileContexts } from "..
 import { getUtilities } from "../utilities.js";
 import { loadSkills } from "../../../skills/loader.js";
 import { runSupervisorReview, formatSupervisorCheckOutput } from "../supervisor/supervisor_run.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 import { loadRunConfigForDirectory, renderRunConfig } from "../../../supervisor/run_config.js";
 import { mergeAgentRuleSet, modePayloadFieldsByMode, resolveModeConfig } from "../supervisor/mode_runtime.js";
 import { renderOffloadedToolOutputReference } from "../tool_output.js";
 
-export async function handleToolExecute(ctx: StdioContext, params: any) {
+export async function handleToolExecute(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const conversationId = typeof (params as any)?.conversationId === "string" ? String((params as any).conversationId) : "";
   const toolOutput = normalizeToolOutputConfig((params as any)?.toolOutput);

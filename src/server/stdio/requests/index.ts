@@ -1,4 +1,4 @@
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 import { handleInitialize } from "./initialize.js";
 import { handleDocumentParse } from "./document.js";
 import { handleToolExecute } from "./tool.js";
@@ -9,7 +9,7 @@ import { handleConversationSupervise } from "./conversation_supervise.js";
 import { handleConversationInspect } from "./conversation_inspect.js";
 import { handleConversationStop } from "./conversation_stop.js";
 
-export async function handleRequest(ctx: StdioContext, method: string, params: any) {
+export async function handleRequest(ctx: RuntimeContext, method: string, params: any) {
   switch (method) {
     case "initialize":
       return handleInitialize(ctx, params);

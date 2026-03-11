@@ -1,6 +1,6 @@
 import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { appendTurnTelemetry } from "../supervisor/telemetry.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -16,7 +16,7 @@ export function allowedNextModesFor(args: { renderedRunConfig: RenderedRunConfig
 }
 
 export function createRunLifecycle(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   docPath: string;
   conversationId: string;
   activeRuns: Record<string, AbortController>;
@@ -45,7 +45,7 @@ export function createRunLifecycle(args: {
 }
 
 export async function writeTurnTelemetrySafely(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   conversationId: string;
   entry: Parameters<typeof appendTurnTelemetry>[2];

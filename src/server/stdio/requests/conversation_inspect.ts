@@ -4,11 +4,11 @@ import { loadAgentsInstructions, workspaceListing, taggedFileContexts } from "..
 import { getUtilities } from "../utilities.js";
 import { loadSkills } from "../../../skills/loader.js";
 import { loadForkSafe, selectBaseForkId } from "./common.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 import { loadRunConfigForDirectory, renderRunConfig } from "../../../supervisor/run_config.js";
 import { prepareManagedAgentContext } from "../../../supervisor/context_management.js";
 
-export async function handleConversationInspect(ctx: StdioContext, params: any) {
+export async function handleConversationInspect(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const docPath = String((params as any)?.docPath ?? "untitled");
 

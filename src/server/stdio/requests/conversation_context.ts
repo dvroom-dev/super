@@ -10,10 +10,10 @@ import {
   resolveAgentRules,
   resolveAgentRuleViolations,
 } from "../../../supervisor/compile.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 import { loadRunConfigForDirectory, renderRunConfig } from "../../../supervisor/run_config.js";
 
-export async function handleConversationContext(ctx: StdioContext, params: any) {
+export async function handleConversationContext(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const docPath = String((params as any)?.docPath ?? "untitled");
   const documentText = String((params as any)?.documentText ?? "");

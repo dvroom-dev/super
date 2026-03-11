@@ -1,12 +1,12 @@
-import type { StdioContext } from "../server/stdio/requests/context.ts";
+import type { RuntimeContext } from "../server/stdio/requests/context.ts";
 import type { ServerState } from "../server/stdio/types.ts";
 import type { RpcNotificationInput } from "../protocol/rpc.ts";
 import { SupervisorStore } from "./store.ts";
 
-export function createSuperContext(args: {
+export function createRuntimeContext(args: {
   workspaceRoot: string;
   sendNotification: (note: RpcNotificationInput) => void;
-}): StdioContext {
+}): RuntimeContext {
   const store = new SupervisorStore();
   const state: ServerState = { workspaceRoot: args.workspaceRoot };
   const requireWorkspaceRoot = (params: any): string => {

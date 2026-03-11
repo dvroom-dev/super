@@ -1,6 +1,6 @@
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
-export async function handleConversationNewDocument(ctx: StdioContext, params: any) {
+export async function handleConversationNewDocument(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const docPath = String((params as any)?.docPath ?? "untitled");
   const conversationId = ctx.store.newConversationId(docPath);

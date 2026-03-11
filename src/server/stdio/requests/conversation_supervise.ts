@@ -9,7 +9,7 @@ import { loadSkills } from "../../../skills/loader.js";
 import { newId } from "../../../utils/ids.js";
 import type { SupervisorConfig } from "../types.js";
 import { loadForkSafe, selectBaseForkId } from "./common.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 import { type BudgetState } from "../supervisor/agent_turn.js";
 import { emitSuperviseTurnSettings } from "../supervisor/supervise_notifications.js";
 import { sendBudgetUpdateNotification } from "../supervisor/budget.js";
@@ -25,11 +25,10 @@ import { applyTurnTransitions } from "./conversation_supervise_transition.js";
 import { finalizeSuperviseTurn } from "./conversation_supervise_finalize.js";
 import { runSupervisorSchemaPreflight } from "../supervisor/schema_preflight.js";
 import { createCadenceParallelController } from "./cadence_parallel.js";
-import { seedDocumentWithSessionSystemPrompt } from "../supervisor/session_document.js";
 import { mergeSdkBuiltinTools } from "../../../supervisor/run_config_sdk_builtin_tools.js";
 import { allowedNextModesFor, createRunLifecycle, shouldUseFullPromptForSupervise } from "./conversation_supervise_runtime.js";
 import { buildManagedSuperviseContext, emitManagedSuperviseContextStats } from "./conversation_supervise_context.js";
-export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtime.js"; export async function handleConversationSupervise(ctx: StdioContext, params: any) {
+export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtime.js"; export async function handleConversationSupervise(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const agentWorkspaceRoot = path.resolve(workspaceRoot, String((params as any)?.agentBaseDir ?? workspaceRoot));
   const docPath = String((params as any)?.docPath ?? "untitled");
@@ -76,8 +75,10 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   const baseForkId = selectBaseForkId({ explicitBaseForkId, docForkId, indexHeadId: idx.headId, knownForkIds: idx.forks.map((fork) => fork.id) });
   let base = baseForkId ? await loadForkSafe(ctx, workspaceRoot, conversationId, baseForkId) : undefined;
   if (!base && idx.headId && idx.headId !== baseForkId) base = await loadForkSafe(ctx, workspaceRoot, conversationId, idx.headId);
-  const seededDocumentText = seedDocumentWithSessionSystemPrompt({ documentText, renderedRunConfig: initialRunConfig, requestAgentRuleRequirements, provider: providerName, model, disableSupervision });
-  const historyEdited = base ? ctx.store.isHistoryEdited(seedDocumentWithSessionSystemPrompt({ documentText: base.documentText ?? "", renderedRunConfig: initialRunConfig, requestAgentRuleRequirements, provider: providerName, model, disableSupervision }), seededDocumentText) : true;
+  // Cache-sensitive transcript blocks must stay byte-stable across resume.
+  // Re-render config for future decisions, but never rewrite already-persisted
+  // system/user conversation text when loading the current document.
+  const historyEdited = base ? ctx.store.isHistoryEdited(base.documentText ?? "", documentText) : true;
   const preferReuse = !historyEdited && base?.providerThreadId;
   const threadIdToReuse = preferReuse ? base?.providerThreadId : undefined;
   const supervisorThreadIdToReuse = !historyEdited ? base?.supervisorThreadId : undefined;
@@ -85,7 +86,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     workspaceRoot,
     conversationId,
     parentId: base?.id,
-    documentText: seededDocumentText,
+    documentText,
     forkId: base ? undefined : docForkId,
     agentRules: [...requestAgentRuleRequirements, ...(initialRunConfig?.agentRules.requirements ?? [])],
     providerName,
@@ -100,7 +101,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   const activeRuns = (ctx.state.activeRuns = ctx.state.activeRuns ?? {}), activeRunsByForkId = (ctx.state.activeRunsByForkId = ctx.state.activeRunsByForkId ?? {}), activeRunMeta = (ctx.state.activeRunMeta = ctx.state.activeRunMeta ?? {});
   const lifecycle = createRunLifecycle({ ctx, docPath, conversationId, activeRuns, activeRunsByForkId, activeRunMeta, activeForkId: fork.id });
   ctx.sendNotification({ method: "conversation.run_started", params: { conversationId, forkId: fork.id, docPath } });
-  let currentDocText = seededDocumentText;
+  let currentDocText = documentText;
   let currentThreadId: string | undefined = threadIdToReuse;
   let currentSupervisorThreadId: string | undefined = supervisorThreadIdToReuse;
   let fullResyncNeeded = historyEdited;
@@ -158,7 +159,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     const effectiveAgentRequirements = effectiveAgentRuleSet.requirements;
     const effectiveAgentViolations = effectiveAgentRuleSet.violations;
     const effectiveSupervisorInstructions = mergeInstructionLists([], modeConfig?.supervisorInstructions ?? renderedRunConfig?.supervisorInstructions ?? []);
-    const effectiveStopCondition = (renderedRunConfig?.stopCondition ?? renderedRunConfig?.supervisor?.stopCondition ?? supervisorBase.stopCondition ?? "").trim();
+    const effectiveStopCondition = (supervisorBase.stopCondition ?? renderedRunConfig?.stopCondition ?? "").trim();
     const effectiveSdkBuiltinTools = mergeSdkBuiltinTools(
       renderedRunConfig?.sdkBuiltinTools,
       effectiveToolConfig?.providerBuiltinTools,
@@ -176,10 +177,9 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       policies: effectiveToolConfig?.providerFilesystem,
       label: "tools.provider_filesystem",
     });
-    const baseSupervisor: SupervisorConfig = { ...supervisorBase, ...(renderedRunConfig?.supervisor ?? {}) };
     const effectiveSupervisor: SupervisorConfig = disableSupervision
-      ? { ...baseSupervisor, enabled: false, timeBudgetMs: 0, tokenBudgetAdjusted: 0, cadenceTimeMs: 0, cadenceTokensAdjusted: 0 }
-      : { enabled: true, ...baseSupervisor };
+      ? { ...supervisorBase, enabled: false, timeBudgetMs: 0, tokenBudgetAdjusted: 0, cadenceTimeMs: 0, cadenceTokensAdjusted: 0 }
+      : { ...supervisorBase, enabled: supervisorBase.enabled ?? true };
     const allowedNextModes = allowedNextModesFor({ renderedRunConfig, activeMode });
     const modePayloadFields = modePayloadFieldsByMode(renderedRunConfig, allowedNextModes);
     const modeGuidance = modeGuidanceByMode(renderedRunConfig, allowedNextModes, activeMode);
@@ -194,7 +194,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     const promptBytes = promptContentByteLength(compile.prompt);
     emitManagedSuperviseContextStats({ ctx, docPath, contextLimit: supervisor.contextLimit ?? null, sourceBytes, managedBytes, managedContext, fullPrompt: shouldUseFullPrompt });
     if (compile.parseErrors.length) ctx.sendNotification({ method: "log", params: { level: "warn", message: `Parse warnings: ${compile.parseErrors.join("; ")}` } });
-    const cadenceController = createCadenceParallelController({ ctx, disableSupervision, effectiveSupervisor, renderedRunConfig, workspaceRoot, conversationId, documentText: seededDocumentText, currentDocText, currentSupervisorThreadId, effectiveAgentRequirements, effectiveAgentViolations, effectiveSupervisorInstructions, supervisorProviderName, effectiveSupervisorProviderOptions, permissionProfile, supervisorModel, currentModel, supervisorModelReasoningEffort: effectiveSupervisorModelReasoningEffort, agentsText, workspaceListingText, taggedFiles, openFiles, utilities, skills, skillsToInvoke, skillInstructions, effectiveSupervisorConfiguredSystemMessage, effectiveStopCondition, activeMode, allowedNextModes, modePayloadFields: modePayloadFields, modeGuidance, supervisorWorkspaceRoot });
+    const cadenceController = createCadenceParallelController({ ctx, disableSupervision, effectiveSupervisor, renderedRunConfig, workspaceRoot, conversationId, documentText, currentDocText, currentSupervisorThreadId, effectiveAgentRequirements, effectiveAgentViolations, effectiveSupervisorInstructions, supervisorProviderName, effectiveSupervisorProviderOptions, permissionProfile, supervisorModel, currentModel, supervisorModelReasoningEffort: effectiveSupervisorModelReasoningEffort, agentsText, workspaceListingText, taggedFiles, openFiles, utilities, skills, skillsToInvoke, skillInstructions, effectiveSupervisorConfiguredSystemMessage, effectiveStopCondition, activeMode, allowedNextModes, modePayloadFields: modePayloadFields, modeGuidance, supervisorWorkspaceRoot });
     emitSuperviseTurnSettings(ctx, {
       turn: turnIndex + 1,
       mode: activeMode,

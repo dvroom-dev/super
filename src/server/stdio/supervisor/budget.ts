@@ -1,8 +1,8 @@
-import type { StdioContext } from "../requests/context.js";
+import type { RuntimeContext } from "../requests/context.js";
 import type { BudgetState } from "./agent_turn.js";
 
 export function sendBudgetUpdateNotification(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   startedAt: number;
   budget: BudgetState;
   currentModel: string;

@@ -14,6 +14,11 @@ function captureAssistantMessages(markdown: string, sink: string[]) {
   }
 }
 
+function replaceAssistantMessages(markdown: string, sink: string[]) {
+  sink.length = 0;
+  captureAssistantMessages(markdown, sink);
+}
+
 function appendMarkdown(documentText: string, markdown: string, assistantMessages: string[]): string {
   const next = combineTranscript(documentText, [markdown]);
   captureAssistantMessages(markdown, assistantMessages);
@@ -45,6 +50,7 @@ export function createNotificationHandler(args: {
       const nextDoc = String((note.params as any)?.documentText ?? "");
       if (!nextDoc) return;
       args.documentTextRef.value = nextDoc;
+      replaceAssistantMessages(nextDoc, args.assistantMessages);
       args.events.push({
         event_id: newId("evt"),
         ts,

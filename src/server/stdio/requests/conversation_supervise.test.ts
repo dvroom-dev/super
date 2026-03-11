@@ -185,7 +185,7 @@ describe("handleConversationSupervise", () => {
     expect(result.stopReasons).toContain("agent_stop");
     expect(createForkCalls).toHaveLength(2);
     expect(createForkCalls[0].forkId).toBe("fork_doc");
-    expect(String(createForkCalls[0].documentText ?? "")).toContain("```chat role=system scope=agent_base");
+    expect(String(createForkCalls[0].documentText ?? "")).toBe(doc);
     expect(createForkCalls[0].actionSummary).toBe("supervise:start");
     expect(createForkCalls[1].actionSummary).toBe("agent:turn");
     expect(createForkCalls[1].providerThreadId).toBeTruthy();

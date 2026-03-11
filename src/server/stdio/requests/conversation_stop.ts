@@ -1,6 +1,6 @@
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
-export async function handleConversationStop(ctx: StdioContext, params: any) {
+export async function handleConversationStop(ctx: RuntimeContext, params: any) {
   const docPath = String((params as any)?.docPath ?? "");
   const forkId = String((params as any)?.forkId ?? "");
   if (!docPath && !forkId) throw new Error("docPath or forkId required");

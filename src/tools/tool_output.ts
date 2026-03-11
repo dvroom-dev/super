@@ -179,15 +179,16 @@ export async function paginateToolOutput(args: {
     if (currentPage == page) captured = currentLines.slice();
   }
 
-  if (page > meta.totalPages) {
-    throw new Error(`page out of range: ${page} (max ${meta.totalPages})`);
+  const totalPages = currentLines.length > 0 ? currentPage : Math.max(0, currentPage - 1);
+  if (page > totalPages) {
+    throw new Error(`page out of range: ${page} (max ${totalPages})`);
   }
 
   return {
     responseId: args.responseId,
     filePath: toolOutputRelativePath(conversationId, args.responseId),
     page,
-    totalPages: meta.totalPages,
+    totalPages,
     totalLines: meta.totalLines,
     totalBytes: meta.totalBytes,
     content: captured.join("\n"),

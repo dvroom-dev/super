@@ -1,9 +1,9 @@
 import { newId } from "../../../utils/ids.js";
 import { updateFrontmatterForkId } from "./fork_utils.js";
-import type { StdioContext } from "../requests/context.js";
+import type { RuntimeContext } from "../requests/context.js";
 
 export async function persistAgentTurnWithoutSupervisor(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   conversationId: string;
   currentDocText: string;

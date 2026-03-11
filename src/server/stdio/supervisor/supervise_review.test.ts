@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import type { StdioContext } from "../requests/context.js";
+import type { RuntimeContext } from "../requests/context.js";
 import { runSuperviseReviewStep } from "./supervise_review.js";
 import type { TurnResult } from "./agent_turn.js";
 
-function makeContext(): StdioContext {
+function makeContext(): RuntimeContext {
   return {
     store: {} as any,
     state: {},

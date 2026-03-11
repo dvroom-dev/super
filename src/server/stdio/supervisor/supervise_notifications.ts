@@ -1,4 +1,4 @@
-import type { StdioContext } from "../requests/context.js";
+import type { RuntimeContext } from "../requests/context.js";
 
 type ContextStatsParams = {
   docPath: string;
@@ -16,12 +16,12 @@ type ContextStatsParams = {
   offloadedBytes: number;
 };
 
-export function emitContextStats(ctx: StdioContext, params: ContextStatsParams): void {
+export function emitContextStats(ctx: RuntimeContext, params: ContextStatsParams): void {
   ctx.sendNotification({ method: "conversation.context_stats", params });
 }
 
 export function emitSupervisorTurnDecision(
-  ctx: StdioContext,
+  ctx: RuntimeContext,
   params: {
     turn: number;
     mode: "hard" | "soft" | "none";
@@ -36,7 +36,7 @@ export function emitSupervisorTurnDecision(
 }
 
 export function emitSuperviseTurnSettings(
-  ctx: StdioContext,
+  ctx: RuntimeContext,
   params: {
     turn: number;
     mode: string;
@@ -50,14 +50,14 @@ export function emitSuperviseTurnSettings(
 }
 
 export function emitSupervisorRunStart(
-  ctx: StdioContext,
+  ctx: RuntimeContext,
   params: { turn: number; mode: "hard" | "soft"; reasons: string[]; stopDetails: string[] },
 ): void {
   ctx.sendNotification({ method: "conversation.supervisor_run_start", params });
 }
 
 export function emitSupervisorRunEnd(
-  ctx: StdioContext,
+  ctx: RuntimeContext,
   params: {
     turn: number;
     mode: "hard" | "soft";

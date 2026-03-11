@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { loadRunConfigForDirectory, renderRunConfig } from "../supervisor/run_config.ts";
 import {
   resolveModeConfig,
@@ -9,13 +10,20 @@ import { handleConversationSupervise } from "../server/stdio/requests/conversati
 import { newId } from "../lib/ids.ts";
 import { buildInitialDocument, frontmatterValue, normalizeExportedDocumentFrontmatter } from "../lib/document.ts";
 import { createNotificationHandler } from "../lib/notifications.ts";
-import { createSuperContext } from "../lib/context.ts";
+import { createRuntimeContext } from "../lib/context.ts";
 import { appendEvents, exportSessionDocument, loadSuperState, saveSuperState } from "../lib/state.ts";
 import { loadForkDocument } from "../lib/store.ts";
 import type { CliOptions, SuperEvent, SuperState } from "../lib/types.ts";
 
 function usage(): string {
   return "usage: super <new|resume|status> [session.md] --workspace <dir> [--config <file>] [--output <file>] [--provider <name>] [--model <name>] [--cycle-limit N] [--start-mode <mode>]";
+}
+
+function requireValue(flag: string, next: string | undefined): string {
+  if (!next || next.startsWith("--")) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return next;
 }
 
 function parseArgs(argv: string[]): CliOptions {
@@ -46,19 +54,19 @@ function parseArgs(argv: string[]): CliOptions {
   for (; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
-    if (arg === "--workspace") { out.workspaceRoot = String(next); i += 1; continue; }
-    if (arg === "--config") { out.configPath = String(next); i += 1; continue; }
-    if (arg === "--config-dir") { out.configDir = String(next); i += 1; continue; }
-    if (arg === "--agent-dir") { out.agentDir = String(next); i += 1; continue; }
-    if (arg === "--supervisor-dir") { out.supervisorDir = String(next); i += 1; continue; }
-    if (arg === "--provider") { out.provider = String(next); out.providerExplicit = true; i += 1; continue; }
-    if (arg === "--model") { out.model = String(next); out.modelExplicit = true; i += 1; continue; }
-    if (arg === "--supervisor-provider") { out.supervisorProvider = String(next); out.supervisorProviderExplicit = true; i += 1; continue; }
-    if (arg === "--supervisor-model") { out.supervisorModel = String(next); out.supervisorModelExplicit = true; i += 1; continue; }
-    if (arg === "--cycle-limit") { out.cycleLimit = Number(next); i += 1; continue; }
-    if (arg === "--output") { out.outputPath = String(next); i += 1; continue; }
-    if (arg === "--prompt") { out.prompt = String(next); i += 1; continue; }
-    if (arg === "--start-mode") { out.startMode = String(next); i += 1; continue; }
+    if (arg === "--workspace") { out.workspaceRoot = requireValue(arg, next); i += 1; continue; }
+    if (arg === "--config") { out.configPath = requireValue(arg, next); i += 1; continue; }
+    if (arg === "--config-dir") { out.configDir = requireValue(arg, next); i += 1; continue; }
+    if (arg === "--agent-dir") { out.agentDir = requireValue(arg, next); i += 1; continue; }
+    if (arg === "--supervisor-dir") { out.supervisorDir = requireValue(arg, next); i += 1; continue; }
+    if (arg === "--provider") { out.provider = requireValue(arg, next); out.providerExplicit = true; i += 1; continue; }
+    if (arg === "--model") { out.model = requireValue(arg, next); out.modelExplicit = true; i += 1; continue; }
+    if (arg === "--supervisor-provider") { out.supervisorProvider = requireValue(arg, next); out.supervisorProviderExplicit = true; i += 1; continue; }
+    if (arg === "--supervisor-model") { out.supervisorModel = requireValue(arg, next); out.supervisorModelExplicit = true; i += 1; continue; }
+    if (arg === "--cycle-limit") { out.cycleLimit = Number(requireValue(arg, next)); i += 1; continue; }
+    if (arg === "--output") { out.outputPath = requireValue(arg, next); i += 1; continue; }
+    if (arg === "--prompt") { out.prompt = requireValue(arg, next); i += 1; continue; }
+    if (arg === "--start-mode") { out.startMode = requireValue(arg, next); i += 1; continue; }
     if (arg === "--quiet") { out.quiet = true; continue; }
     if (arg === "--yolo") { out.yolo = true; continue; }
     if (arg === "--disable-supervision" || arg === "--no-supervisor") { out.disableSupervision = true; continue; }
@@ -95,9 +103,15 @@ export function resolveRuntimeProvidersAndModels(
 
 async function buildNewDocument(options: CliOptions) {
   const runConfig = await loadRunConfigForDirectory(options.workspaceRoot, { explicitConfigPath: options.configPath });
+  const conversationId = newId("conversation");
+  const forkId = newId("fork");
   const configBaseDir = options.configDir ?? options.workspaceRoot;
   const agentBaseDir = options.agentDir ?? options.workspaceRoot;
-  const supervisorBaseDir = options.supervisorDir ?? options.workspaceRoot;
+  const supervisorBaseDir = options.supervisorDir ?? path.join(
+    options.workspaceRoot,
+    runConfig?.supervisor?.workspaceSubdir ?? ".ai-supervisor/supervisor",
+    conversationId,
+  );
   const renderedConfig = await renderRunConfig(runConfig, { configBaseDir, agentBaseDir, supervisorBaseDir });
   const { agentProvider, agentModel } = resolveRuntimeProvidersAndModels(options, renderedConfig);
   const mode = options.startMode ?? renderedConfig?.modeStateMachine?.initialMode ?? "";
@@ -105,8 +119,6 @@ async function buildNewDocument(options: CliOptions) {
   const modeConfig = resolveModeConfig(renderedConfig, mode);
   const userMessage = String(options.prompt ?? modeConfig?.userMessage?.text ?? "").trim();
   if (!userMessage) throw new Error("new mode requires prompt text");
-  const conversationId = newId("conversation");
-  const forkId = newId("fork");
   const agentRules = modeConfig?.agentRules ?? renderedConfig?.agentRules ?? { requirements: [], violations: [] };
   const documentText = buildInitialDocument({
     conversationId,
@@ -126,10 +138,11 @@ async function buildNewDocument(options: CliOptions) {
 async function loadResumeDocumentFromState(options: CliOptions, state: SuperState) {
   if (options.resumeDocPath) {
     const documentText = await fs.readFile(options.resumeDocPath, "utf8");
-    const conversationId = modeFrontmatterValue(documentText, "conversation_id")?.trim() || state.conversationId;
+    const conversationId = modeFrontmatterValue(documentText, "conversation_id")?.trim();
+    if (!conversationId) throw new Error("resume document is missing conversation_id frontmatter");
     return { documentText, conversationId };
   }
-  const ctx = createSuperContext({ workspaceRoot: options.workspaceRoot, sendNotification: () => {} });
+  const ctx = createRuntimeContext({ workspaceRoot: options.workspaceRoot, sendNotification: () => {} });
   const documentText = await loadForkDocument({
     store: ctx.store,
     workspaceRoot: options.workspaceRoot,
@@ -140,7 +153,7 @@ async function loadResumeDocumentFromState(options: CliOptions, state: SuperStat
 }
 
 async function runCycle(options: CliOptions): Promise<{ state: SuperState; documentText: string; assistantMessages: string[] }> {
-  const prior = await loadSuperState(options.workspaceRoot);
+  const prior = options.mode === "resume" ? await loadSuperState(options.workspaceRoot) : null;
   const built = options.mode === "new"
     ? await buildNewDocument(options)
     : prior
@@ -148,6 +161,8 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
       : (() => { throw new Error("resume requires existing super/state.json"); })();
   const initialForkId = frontmatterValue(built.documentText, "fork_id")?.trim();
   if (!initialForkId) throw new Error("active document is missing fork_id frontmatter");
+  const continuingPriorState = Boolean(prior && prior.conversationId === built.conversationId);
+  const now = nowIso();
 
   const documentTextRef = { value: built.documentText };
   const assistantMessages: string[] = [];
@@ -158,12 +173,16 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     events,
     conversationId: built.conversationId,
   });
-  const ctx = createSuperContext({ workspaceRoot: options.workspaceRoot, sendNotification });
+  const ctx = createRuntimeContext({ workspaceRoot: options.workspaceRoot, sendNotification });
 
   const runConfig = await loadRunConfigForDirectory(options.workspaceRoot, { explicitConfigPath: options.configPath });
   const configBaseDir = options.configDir ?? options.workspaceRoot;
   const agentBaseDir = options.agentDir ?? options.workspaceRoot;
-  const supervisorBaseDir = options.supervisorDir ?? options.workspaceRoot;
+  const supervisorBaseDir = options.supervisorDir ?? path.join(
+    options.workspaceRoot,
+    runConfig?.supervisor?.workspaceSubdir ?? ".ai-supervisor/supervisor",
+    built.conversationId,
+  );
   const renderedConfig = await renderRunConfig(runConfig, { configBaseDir, agentBaseDir, supervisorBaseDir });
   const runtimeDefaults = renderedConfig?.runtimeDefaults;
   const { agentProvider, agentModel, supervisorProvider, supervisorModel } =
@@ -173,18 +192,18 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     version: 1,
     workspaceRoot: options.workspaceRoot,
     conversationId: built.conversationId,
-    activeForkId: prior?.activeForkId ?? initialForkId,
-    activeMode: frontmatterValue(documentTextRef.value, "mode")?.trim() || prior?.activeMode,
+    activeForkId: initialForkId,
+    activeMode: frontmatterValue(documentTextRef.value, "mode")?.trim() || (continuingPriorState ? prior?.activeMode : undefined),
     activeModePayload: resolveModePayload(documentTextRef.value),
     agentProvider,
     agentModel,
     supervisorProvider,
     supervisorModel,
-    cycleCount: prior?.cycleCount ?? 0,
-    createdAt: prior?.createdAt ?? nowIso(),
-    updatedAt: nowIso(),
-    lastStopReasons: prior?.lastStopReasons ?? [],
-    lastStopDetails: prior?.lastStopDetails ?? [],
+    cycleCount: continuingPriorState ? (prior?.cycleCount ?? 0) : 0,
+    createdAt: continuingPriorState ? (prior?.createdAt ?? now) : now,
+    updatedAt: now,
+    lastStopReasons: continuingPriorState ? (prior?.lastStopReasons ?? []) : [],
+    lastStopDetails: continuingPriorState ? (prior?.lastStopDetails ?? []) : [],
   };
   await saveSuperState(options.workspaceRoot, initialState);
   await exportSessionDocument(options.workspaceRoot, documentTextRef.value, options.outputPath);

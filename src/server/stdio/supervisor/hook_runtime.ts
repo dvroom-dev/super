@@ -1,5 +1,5 @@
 import { combineTranscript } from "../helpers.js";
-import type { StdioContext } from "../requests/context.js";
+import type { RuntimeContext } from "../requests/context.js";
 import { runHooksForTrigger } from "./run_hooks.js";
 import type { RunConfigHook, RunConfigHookTrigger } from "../../../supervisor/run_config_hooks.js";
 
@@ -9,7 +9,7 @@ export async function applyConfiguredHooks(args: {
   workspaceRoot: string;
   currentDocText: string;
   docPath: string;
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   appendNotifications: boolean;
 }): Promise<{ nextDocText: string; changed: boolean }> {
   if (!args.hooks.length) return { nextDocText: args.currentDocText, changed: false };

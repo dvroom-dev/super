@@ -51,6 +51,7 @@ function strictSupervisorPayload(overrides: Record<string, unknown>): Record<str
 
 function makeCtx(conversationId = "conversation_test") {
   const notifications: any[] = [];
+  const createForkCalls: any[] = [];
   const ctx: any = {
     state: {},
     sendNotification(note: any) {
@@ -76,11 +77,12 @@ function makeCtx(conversationId = "conversation_test") {
         return true;
       },
       async createFork(args: any) {
+        createForkCalls.push(args);
         return { id: args.forkId ?? `fork_${Date.now()}` };
       },
     },
   };
-  return { ctx, notifications };
+  return { ctx, notifications, createForkCalls };
 }
 
 describe("conversation_supervise runtime regressions", () => {
@@ -237,6 +239,77 @@ describe("conversation_supervise runtime regressions", () => {
       expect(promptTexts.some((text) => text.includes("AGENT_SYSTEM_SENTINEL"))).toBe(false);
     } finally {
       delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+    }
+  });
+
+  it.serial("preserves existing transcript system and initial user text on resume", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-");
+    const conversationId = "conversation_cache_stable_resume";
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  default:",
+        "    system_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: CHANGED_CONFIG_SYSTEM",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: CHANGED_CONFIG_USER",
+        "mode_state_machine:",
+        "  initial_mode: default",
+        "  transitions:",
+        "    default: [default]",
+      ].join("\n"),
+      "utf8",
+    );
+    const persistedDoc = [
+      "---",
+      `conversation_id: ${conversationId}`,
+      "fork_id: fork_doc",
+      "mode: default",
+      "---",
+      "",
+      "```chat role=system",
+      "PERSISTED_SYSTEM_MESSAGE",
+      "```",
+      "",
+      "```chat role=user",
+      "PERSISTED_INITIAL_USER",
+      "```",
+    ].join("\n");
+    const { ctx, createForkCalls } = makeCtx(conversationId);
+    ctx.store.loadIndex = async () => ({ conversationId, headId: "fork_doc", headIds: ["fork_doc"], forks: [{ id: "fork_doc" }] });
+    ctx.store.forkIdFromDocument = () => "fork_doc";
+    ctx.store.loadFork = async () => ({
+      id: "fork_doc",
+      documentText: persistedDoc,
+    });
+    ctx.store.isHistoryEdited = () => false;
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "resume reply";
+    try {
+      await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: persistedDoc,
+        models: ["mock-model"],
+        provider: "mock",
+        disableSupervision: true,
+        cycleLimit: 1,
+        supervisor: {
+          enabled: true,
+          stopCondition: "task complete",
+        },
+      });
+
+      expect(String(createForkCalls[0]?.documentText ?? "")).toBe(persistedDoc);
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
     }
   });
 });
