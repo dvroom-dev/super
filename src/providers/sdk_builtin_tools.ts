@@ -46,16 +46,6 @@ function withPolicyApplied(
     return { ...baseOptions, disallowedTools: [...policy.names] };
   }
 
-  if (provider === "gemini") {
-    if (policy.mode === "deny") {
-      throw new Error("sdk_builtin_tools.gemini.deny is not supported; use sdk_builtin_tools.gemini.allow");
-    }
-    if (existingDeny.length > 0) {
-      throw new Error("sdk_builtin_tools.gemini.allow conflicts with provider_options.gemini.disallowedTools");
-    }
-    return { ...baseOptions, allowedTools: [...policy.names] };
-  }
-
   if (provider === "mock") {
     // MockProvider does not expose builtin SDK tools; keep the configured policy
     // valid for config parity, but do not try to translate it into provider options.

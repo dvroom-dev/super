@@ -2,12 +2,12 @@ import { handlePostTurnInterceptions } from "./conversation_supervise_post_turn.
 import type { BudgetState, TurnResult } from "../supervisor/agent_turn.js";
 import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { SupervisorConfig } from "../types.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
 export async function applyTurnTransitions(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   docPath: string;
   conversationId: string;
@@ -30,7 +30,7 @@ export async function applyTurnTransitions(args: {
   effectiveAgentRequirements: string[];
   effectiveAgentViolations: string[];
   effectiveSupervisorInstructions: string[];
-  supervisorProviderName: "mock" | "codex" | "claude" | "gemini";
+  supervisorProviderName: "mock" | "codex" | "claude";
   supervisorModel: string;
   currentModel: string;
   supervisorModelReasoningEffort?: string;
@@ -53,7 +53,7 @@ export async function applyTurnTransitions(args: {
   skillInstructions: any[];
   startedAt: number;
   budget: BudgetState;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
 }) {
   const { providerInterception, inferredSwitch } = await handlePostTurnInterceptions(args);
   if (inferredSwitch) {

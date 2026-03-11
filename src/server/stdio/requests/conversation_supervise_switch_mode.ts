@@ -12,7 +12,7 @@ import {
 } from "../supervisor/mode_runtime.js";
 import type { BudgetState } from "../supervisor/agent_turn.js";
 import type { InlineToolCall } from "../supervisor/inline_tools.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
 
@@ -31,7 +31,7 @@ type ParseSwitchModeInlineCallArgs = {
 };
 
 type ApplySwitchModeRequestForkArgs = {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   docPath: string;
   conversationId: string;
@@ -47,7 +47,7 @@ type ApplySwitchModeRequestForkArgs = {
   agentBaseDir: string;
   supervisorBaseDir: string;
   budget: BudgetState;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
   currentModel: string;
   supervisorModel: string;
   currentSupervisorThreadId?: string;
@@ -103,6 +103,23 @@ function normalizeSwitchModePayload(raw: unknown): Record<string, string> | null
     out[key] = String(rawValue ?? "").trim();
   }
   return out;
+}
+
+function applyLegacyTopLevelSwitchModeCompatibility(args: {
+  modePayload: Record<string, string>;
+  requiredFields: string[];
+}): Record<string, string> {
+  const nextPayload = { ...args.modePayload };
+  const requiredFields = args.requiredFields;
+  if (
+    requiredFields.length === 1 &&
+    !nextPayload[requiredFields[0]] &&
+    nextPayload.user_message
+  ) {
+    nextPayload[requiredFields[0]] = nextPayload.user_message;
+    delete nextPayload.user_message;
+  }
+  return nextPayload;
 }
 
 function trimInlineText(text: string): string {
@@ -231,9 +248,16 @@ export async function applySwitchModeRequestFork(
   }
 
   const requiredFields = args.modePayloadFieldsByMode[targetMode] ?? [];
-  const modePayload: Record<string, string> = {};
+  const modePayload = applyLegacyTopLevelSwitchModeCompatibility({
+    modePayload: {},
+    requiredFields,
+  });
+  const normalizedRequestedPayload = applyLegacyTopLevelSwitchModeCompatibility({
+    modePayload: args.request.modePayload,
+    requiredFields,
+  });
   const allowedFields = new Set(requiredFields);
-  for (const [rawKey, rawValue] of Object.entries(args.request.modePayload)) {
+  for (const [rawKey, rawValue] of Object.entries(normalizedRequestedPayload)) {
     const key = String(rawKey ?? "").trim();
     const value = String(rawValue ?? "").trim();
     if (!key) continue;

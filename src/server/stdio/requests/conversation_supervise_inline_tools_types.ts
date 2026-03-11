@@ -1,12 +1,12 @@
 import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { BudgetState, TurnResult as AgentTurnResult } from "../supervisor/agent_turn.js";
 import type { SupervisorConfig } from "../types.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
 export type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
 export type ProcessInlineToolCallsArgs = {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   agentWorkspaceRoot: string;
   docPath: string;
@@ -31,7 +31,7 @@ export type ProcessInlineToolCallsArgs = {
   effectiveAgentRequirements: string[];
   effectiveAgentViolations: string[];
   effectiveSupervisorInstructions: string[];
-  supervisorProviderName: "mock" | "codex" | "claude" | "gemini";
+  supervisorProviderName: "mock" | "codex" | "claude";
   supervisorModel: string;
   currentModel: string;
   supervisorModelReasoningEffort?: string;
@@ -54,7 +54,7 @@ export type ProcessInlineToolCallsArgs = {
   skillInstructions: any[];
   startedAt: number;
   budget: BudgetState;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
 };
 
 export type InlineToolCallOutcome =

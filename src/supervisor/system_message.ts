@@ -66,9 +66,6 @@ export function systemMessageForProvider(
   if (normalizedProvider === "claude") {
     return { message: "", source: "claude_provider_base" };
   }
-  if (normalizedProvider === "gemini") {
-    return { message: "", source: "gemini_provider_base" };
-  }
   if (normalizedProvider === "mock") {
     return systemMessageForModel(model);
   }

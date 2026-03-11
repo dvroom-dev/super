@@ -21,7 +21,7 @@ afterEach(async () => {
 });
 
 describe("run_config provider options", () => {
-  it("parses runtime_defaults provider options for codex, claude, and gemini", async () => {
+  it("parses runtime_defaults provider options for codex, claude, and mock", async () => {
     const root = await makeTempRoot("run-config-");
     await fs.mkdir(path.join(root, ".ai-supervisor"), { recursive: true });
     await fs.writeFile(
@@ -54,10 +54,8 @@ describe("run_config provider options", () => {
         "      settingSources:",
         "        - user",
         "        - project",
-        "    gemini:",
-        "      command: gemini",
-        "      args:",
-        "        - --debug",
+        "    mock:",
+        "      scripted_events: []",
       ].join("\n"),
       "utf8",
     );
@@ -72,9 +70,8 @@ describe("run_config provider options", () => {
       claude: {
         settingSources: ["user", "project"],
       },
-      gemini: {
-        command: "gemini",
-        args: ["--debug"],
+      mock: {
+        scripted_events: [],
       },
     });
   });

@@ -36,23 +36,6 @@ describe("applySdkBuiltinToolsToProviderOptions", () => {
     });
   });
 
-  it("applies gemini allow policy as allowedTools", () => {
-    const options = applySdkBuiltinToolsToProviderOptions({
-      provider: "gemini",
-      providerOptions: { command: "gemini" },
-      sdkBuiltinTools: {
-        gemini: {
-          mode: "allow",
-          names: ["Read", "Write"],
-        },
-      },
-    });
-    expect(options).toEqual({
-      command: "gemini",
-      allowedTools: ["Read", "Write"],
-    });
-  });
-
   it("accepts mock policy as a no-op for config parity", () => {
     const options = applySdkBuiltinToolsToProviderOptions({
       provider: "mock",
@@ -95,19 +78,6 @@ describe("applySdkBuiltinToolsToProviderOptions", () => {
           },
         },
       })).toThrow("sdk_builtin_tools.claude.allow conflicts with provider_options.claude.tools");
-  });
-
-  it("rejects unsupported gemini deny policy", () => {
-    expect(() =>
-      applySdkBuiltinToolsToProviderOptions({
-        provider: "gemini",
-        sdkBuiltinTools: {
-          gemini: {
-            mode: "deny",
-            names: ["Task"],
-          },
-        },
-      })).toThrow("sdk_builtin_tools.gemini.deny is not supported");
   });
 
   it("rejects unsupported codex sdk tool policy", () => {

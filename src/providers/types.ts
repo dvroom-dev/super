@@ -3,7 +3,7 @@ import type { CustomToolDefinition } from "../tools/definitions.js";
 import type { ShellInvocationPolicy } from "../tools/shell_invocation_policy.js";
 import type { ProviderFilesystemPolicy } from "./filesystem_permissions.js";
 
-export type ProviderName = "codex" | "claude" | "gemini" | "mock";
+export type ProviderName = "codex" | "claude" | "mock";
 export type ProviderPermissionProfile = "workspace_no_network" | "yolo";
 
 export type ProviderItemKind =

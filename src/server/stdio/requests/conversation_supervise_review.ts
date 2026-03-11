@@ -22,13 +22,13 @@ import { buildSupervisorInjectedMessage } from "../supervisor/supervisor_interje
 import { appendSupervisorMemoryEntry, loadSupervisorCarryover } from "../supervisor/supervisor_memory.js";
 import { ruleCheckPayload } from "../supervisor/review_utils.js";
 import type { BudgetState } from "../supervisor/agent_turn.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
 import { shouldForceFreshForkAcrossLevelBoundary } from "./conversation_supervise_level_boundary.js";
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 type RunSupervisorReviewAndPersistArgs = {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   conversationId: string;
   docPath: string;
@@ -58,7 +58,7 @@ type RunSupervisorReviewAndPersistArgs = {
   reasons: string[];
   stopDetails: string[];
   supervisorMode: "soft" | "hard";
-  supervisorProviderName: "mock" | "codex" | "claude" | "gemini";
+  supervisorProviderName: "mock" | "codex" | "claude";
   supervisorProviderOptions?: Record<string, unknown>;
   supervisor: any;
   supervisorModel: string;
@@ -83,7 +83,7 @@ type RunSupervisorReviewAndPersistArgs = {
   tokenBudgetAdjusted: number;
   cadenceTimeMs: number;
   cadenceTokensAdjusted: number;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
   fullResyncNeeded: boolean;
   turn: number;
   precomputedReviewStep?: SuperviseReviewStepResult;
@@ -105,7 +105,7 @@ type RunSupervisorReviewAndPersistResult = {
   fullResyncNeeded: boolean;
 };
 async function loadLatestForkInMode(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   conversationId: string;
   mode: string;

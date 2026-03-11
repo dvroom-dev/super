@@ -4,7 +4,7 @@ import type { ProviderName } from "../providers/types.js";
 export type RunConfigSdkBuiltinToolPolicy = ToolNamePolicy<string>;
 export type RunConfigSdkBuiltinTools = Partial<Record<ProviderName, RunConfigSdkBuiltinToolPolicy>>;
 
-const SUPPORTED_PROVIDERS: ProviderName[] = ["codex", "claude", "gemini", "mock"];
+const SUPPORTED_PROVIDERS: ProviderName[] = ["codex", "claude", "mock"];
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -106,7 +106,7 @@ export function normalizeSdkBuiltinTools(raw: unknown, sourcePath: string): RunC
   const out: RunConfigSdkBuiltinTools = {};
   for (const [providerName, value] of Object.entries(obj)) {
     if (!SUPPORTED_PROVIDERS.includes(providerName as ProviderName)) {
-      throw new Error(`${sourcePath}: sdk_builtin_tools.${providerName} must target codex|claude|gemini|mock`);
+      throw new Error(`${sourcePath}: sdk_builtin_tools.${providerName} must target codex|claude|mock`);
     }
     const provider = providerName as ProviderName;
     const policy = normalizeProviderPolicy(value, sourcePath, provider);

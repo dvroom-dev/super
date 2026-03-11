@@ -24,7 +24,7 @@ export type RunConfigTools = ToolDefinitionsConfig & {
   providerFilesystem?: RunConfigProviderFilesystemPolicies;
 };
 type BuiltinToolPolicy = ToolNamePolicy<BuiltinToolName>;
-const SUPPORTED_PROVIDERS: ProviderName[] = ["codex", "claude", "gemini", "mock"];
+const SUPPORTED_PROVIDERS: ProviderName[] = ["codex", "claude", "mock"];
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -268,7 +268,7 @@ function normalizeProviderFilesystem(
   const out: RunConfigProviderFilesystemPolicies = {};
   for (const [providerName, value] of Object.entries(policiesObj)) {
     if (!SUPPORTED_PROVIDERS.includes(providerName as ProviderName)) {
-      throw new Error(`${sourcePath}: tools.provider_filesystem.${providerName} must target codex|claude|gemini|mock`);
+      throw new Error(`${sourcePath}: tools.provider_filesystem.${providerName} must target codex|claude|mock`);
     }
     const provider = providerName as ProviderName;
     const policy = normalizeProviderFilesystemPolicy(value, sourcePath, provider);

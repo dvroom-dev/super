@@ -13,14 +13,14 @@ import {
   type SuperviseReviewStepResult,
 } from "../supervisor/supervise_review.js";
 import type { SupervisorConfig } from "../types.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 type CadenceReason = "cadence_time" | "cadence_tokens";
-type ProviderName = "mock" | "codex" | "claude" | "gemini";
+type ProviderName = "mock" | "codex" | "claude";
 
 type CreateCadenceParallelControllerArgs = {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   disableSupervision: boolean;
   effectiveSupervisor: SupervisorConfig;
   renderedRunConfig: RenderedRunConfig;

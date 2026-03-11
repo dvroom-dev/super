@@ -1,12 +1,12 @@
 import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { BudgetState } from "../supervisor/agent_turn.js";
 import { applyInferredSwitchModeRequestFork } from "./conversation_supervise_switch_mode.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
 export async function maybeApplyInferredSwitchModeFromAssistantText(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   docPath: string;
   conversationId: string;
@@ -22,7 +22,7 @@ export async function maybeApplyInferredSwitchModeFromAssistantText(args: {
   agentBaseDir: string;
   supervisorBaseDir: string;
   budget: BudgetState;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
   currentModel: string;
   supervisorModel: string;
   currentSupervisorThreadId?: string;

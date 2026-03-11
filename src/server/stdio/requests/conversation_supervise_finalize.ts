@@ -12,12 +12,12 @@ import {
 import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import { runSupervisorReviewAndPersist } from "./conversation_supervise_review.js";
 import { writeTurnTelemetrySafely } from "./conversation_supervise_runtime.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
 export async function finalizeSuperviseTurn(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   conversationId: string;
   docPath: string;
@@ -31,7 +31,7 @@ export async function finalizeSuperviseTurn(args: {
   result: any;
   startedAt: number;
   budget: BudgetState;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
   turnAgentModel: string;
   supervisorModel: string;
   shouldUseFullPrompt: boolean;
@@ -61,7 +61,7 @@ export async function finalizeSuperviseTurn(args: {
   effectiveAgentRequirements: string[];
   effectiveAgentViolations: string[];
   effectiveSupervisorInstructions: string[];
-  supervisorProviderName: "mock" | "codex" | "claude" | "gemini";
+  supervisorProviderName: "mock" | "codex" | "claude";
   effectiveSupervisorProviderOptions?: Record<string, unknown>;
   effectiveSupervisorConfiguredSystemMessage?: any;
   effectiveStopCondition: string;

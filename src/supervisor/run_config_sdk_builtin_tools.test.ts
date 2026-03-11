@@ -108,7 +108,7 @@ describe("run_config sdk_builtin_tools", () => {
     );
 
     await expect(loadRunConfigForDirectory(root, { globalHomeDir: path.join(root, "missing-home") })).rejects.toThrow(
-      "sdk_builtin_tools.unknown_provider must target codex|claude|gemini|mock",
+      "sdk_builtin_tools.unknown_provider must target codex|claude|mock",
     );
   });
 });

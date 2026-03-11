@@ -16,7 +16,7 @@ import {
   resolveModeConfig,
   updateFrontmatterField,
 } from "../supervisor/mode_runtime.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 import type { SwitchModeRequest } from "./conversation_supervise_switch_mode.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
@@ -64,7 +64,7 @@ function decisionModePayload(args: {
 }
 
 async function loadLatestForkInMode(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   conversationId: string;
   mode: string;
@@ -126,7 +126,7 @@ function buildResumeHandoffMessage(args: {
 }
 
 export async function applySupervisorForkDecision(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   docPath: string;
   conversationId: string;
@@ -145,7 +145,7 @@ export async function applySupervisorForkDecision(args: {
   detailLabel: string;
   startedAt: number;
   budget: BudgetState;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
   currentModel: string;
   supervisorModel: string;
   currentDocText?: string;

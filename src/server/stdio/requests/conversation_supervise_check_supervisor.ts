@@ -3,7 +3,7 @@ import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { BudgetState } from "../supervisor/agent_turn.js";
 import { persistAgentTurnWithoutSupervisor } from "../supervisor/no_supervisor_finalize.js";
 import { applySupervisorForkDecision } from "./conversation_supervise_inline_mode_helpers.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -29,7 +29,7 @@ type InlineCheckSupervisorOutcome =
 export async function applyInlineCheckSupervisorOutcome(args: {
   review: SupervisorReviewResult | undefined;
   state: InlineState;
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   docPath: string;
   conversationId: string;
@@ -45,7 +45,7 @@ export async function applyInlineCheckSupervisorOutcome(args: {
   allowedNextModes: string[];
   startedAt: number;
   budget: BudgetState;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
   currentModel: string;
   supervisorModel: string;
   effectiveAgentRequirements: string[];

@@ -15,7 +15,7 @@ import {
   isReplaceToolInterceptTemplate,
 } from "./conversation_supervise_tool_interception.js";
 import { applySwitchModeRequestFork, type SwitchModeRequest } from "./conversation_supervise_switch_mode.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -32,7 +32,7 @@ type RunInlineToolInterceptionReviewArgs = {
   replaceWithInjectedMessage?: (markdown: string) => void;
   appendInlineMarkdown: (markdown: string) => void;
   appendInlineError: (message: string) => void;
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   docPath: string;
   conversationId: string;
@@ -47,7 +47,7 @@ type RunInlineToolInterceptionReviewArgs = {
   effectiveAgentRequirements: string[];
   effectiveAgentViolations: string[];
   effectiveSupervisorInstructions: string[];
-  supervisorProviderName: "mock" | "codex" | "claude" | "gemini";
+  supervisorProviderName: "mock" | "codex" | "claude";
   supervisorModel: string;
   currentModel: string;
   supervisorModelReasoningEffort?: string;
@@ -70,7 +70,7 @@ type RunInlineToolInterceptionReviewArgs = {
   skillInstructions: any[];
   startedAt: number;
   budget: BudgetState;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
   effectiveSupervisor: SupervisorConfig;
 };
 

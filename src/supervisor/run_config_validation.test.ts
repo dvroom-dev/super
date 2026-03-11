@@ -88,7 +88,7 @@ describe("run_config validation", () => {
     );
 
     await expect(loadRunConfigForDirectory(root, { globalHomeDir: path.join(root, "missing-home") })).rejects.toThrow(
-      "runtime_defaults.provider must be codex|claude|gemini|mock",
+      "runtime_defaults.provider must be codex|claude|mock",
     );
   });
 

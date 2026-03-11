@@ -38,7 +38,7 @@ function collectPreflightTemplateSpecs(args: {
 
 export async function runSupervisorSchemaPreflight(args: {
   supervisorWorkspaceRoot: string;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
   supervisorModel: string;
   supervisorModelReasoningEffort?: string;
   permissionProfile: ProviderPermissionProfile;

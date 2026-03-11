@@ -1,16 +1,16 @@
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type RunConfigRuntimeDefaults = {
-  provider?: "codex" | "claude" | "gemini" | "mock";
+  provider?: "codex" | "claude" | "mock";
   model?: string;
-  agentProvider?: "codex" | "claude" | "gemini" | "mock";
+  agentProvider?: "codex" | "claude" | "mock";
   agentModel?: string;
-  supervisorProvider?: "codex" | "claude" | "gemini" | "mock";
+  supervisorProvider?: "codex" | "claude" | "mock";
   supervisorModel?: string;
   modelReasoningEffort?: ReasoningEffort;
   agentModelReasoningEffort?: ReasoningEffort;
   supervisorModelReasoningEffort?: ReasoningEffort;
-  providerOptions?: Partial<Record<"codex" | "claude" | "gemini" | "mock", Record<string, unknown>>>;
+  providerOptions?: Partial<Record<"codex" | "claude" | "mock", Record<string, unknown>>>;
 };
 
 type ConfigRecord = Record<string, unknown>;
@@ -20,11 +20,11 @@ function asRecord(value: unknown): ConfigRecord | null {
   return value as ConfigRecord;
 }
 
-function normalizeProvider(raw: unknown, sourcePath: string): "codex" | "claude" | "gemini" | "mock" | undefined {
+function normalizeProvider(raw: unknown, sourcePath: string): "codex" | "claude" | "mock" | undefined {
   if (raw == null) return undefined;
   const provider = String(raw).trim().toLowerCase();
-  if (provider === "codex" || provider === "claude" || provider === "gemini" || provider === "mock") return provider;
-  throw new Error(`${sourcePath}: runtime_defaults.provider must be codex|claude|gemini|mock`);
+  if (provider === "codex" || provider === "claude" || provider === "mock") return provider;
+  throw new Error(`${sourcePath}: runtime_defaults.provider must be codex|claude|mock`);
 }
 
 function normalizeModel(raw: unknown, sourcePath: string): string | undefined {
@@ -71,8 +71,8 @@ export function normalizeRuntimeDefaults(raw: unknown, sourcePath: string): RunC
   const providerOptions = rawProviderOptions
     ? (Object.fromEntries(
         Object.entries(rawProviderOptions).map(([providerName, options]) => {
-          if (providerName !== "codex" && providerName !== "claude" && providerName !== "gemini" && providerName !== "mock") {
-            throw new Error(`${sourcePath}: runtime_defaults.provider_options.${providerName} must target codex|claude|gemini|mock`);
+          if (providerName !== "codex" && providerName !== "claude" && providerName !== "mock") {
+            throw new Error(`${sourcePath}: runtime_defaults.provider_options.${providerName} must target codex|claude|mock`);
           }
           const parsedOptions = asRecord(options);
           if (!parsedOptions) {

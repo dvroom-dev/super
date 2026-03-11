@@ -3,7 +3,6 @@ import { createProvider } from "./factory.js";
 import { MockProvider } from "./mock_provider.js";
 import { CodexProvider } from "./codex_provider.js";
 import { ClaudeProvider } from "./claude_provider.js";
-import { GeminiProvider } from "./gemini_provider.js";
 import type { ProviderConfig } from "./types.js";
 import { promptContentFromText } from "../utils/prompt_content.js";
 
@@ -36,16 +35,6 @@ describe("createProvider", () => {
     };
     const provider = createProvider(config);
     expect(provider).toBeInstanceOf(ClaudeProvider);
-  });
-
-  it("creates GeminiProvider when provider is gemini", () => {
-    const config: ProviderConfig = {
-      provider: "gemini",
-      model: "gemini-3-pro-preview",
-      workingDirectory: "/tmp",
-    };
-    const provider = createProvider(config);
-    expect(provider).toBeInstanceOf(GeminiProvider);
   });
 
   it("throws for unknown provider values", () => {

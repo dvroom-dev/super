@@ -9,12 +9,12 @@ import {
   toolInterceptionContextForTool,
 } from "./conversation_supervise_tool_interception.js";
 import { runInlineToolInterceptionReview } from "./conversation_supervise_tool_interception_review.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
 export type ProcessProviderToolInterceptionsArgs = {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   docPath: string;
   conversationId: string;
@@ -37,7 +37,7 @@ export type ProcessProviderToolInterceptionsArgs = {
   effectiveAgentRequirements: string[];
   effectiveAgentViolations: string[];
   effectiveSupervisorInstructions: string[];
-  supervisorProviderName: "mock" | "codex" | "claude" | "gemini";
+  supervisorProviderName: "mock" | "codex" | "claude";
   supervisorModel: string;
   currentModel: string;
   supervisorModelReasoningEffort?: string;
@@ -60,7 +60,7 @@ export type ProcessProviderToolInterceptionsArgs = {
   skillInstructions: any[];
   startedAt: number;
   budget: BudgetState;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
 };
 
 export type ProviderToolInterceptionOutcome =

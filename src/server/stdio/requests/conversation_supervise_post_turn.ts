@@ -2,13 +2,13 @@ import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { BudgetState, TurnResult } from "../supervisor/agent_turn.js";
 import { maybeApplyInferredSwitchModeFromAssistantText } from "./conversation_supervise_inferred_switch.js";
 import { processProviderToolInterceptions } from "./conversation_supervise_provider_tool_interception.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 import type { SupervisorConfig } from "../types.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
 export async function handlePostTurnInterceptions(args: {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   docPath: string;
   conversationId: string;
@@ -31,7 +31,7 @@ export async function handlePostTurnInterceptions(args: {
   effectiveAgentRequirements: string[];
   effectiveAgentViolations: string[];
   effectiveSupervisorInstructions: string[];
-  supervisorProviderName: "mock" | "codex" | "claude" | "gemini";
+  supervisorProviderName: "mock" | "codex" | "claude";
   supervisorModel: string;
   currentModel: string;
   supervisorModelReasoningEffort?: string;
@@ -54,7 +54,7 @@ export async function handlePostTurnInterceptions(args: {
   skillInstructions: any[];
   startedAt: number;
   budget: BudgetState;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
 }) {
   const providerInterception = await processProviderToolInterceptions(args);
   const inferredSwitch = !args.result.toolCalls?.length

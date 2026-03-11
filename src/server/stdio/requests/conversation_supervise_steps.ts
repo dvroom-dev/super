@@ -6,18 +6,18 @@ import { combineTranscript } from "../helpers.js";
 import { runAgentTurn, type BudgetState, type CadenceHitEvent } from "../supervisor/agent_turn.js";
 import { applyConfiguredHooks } from "../supervisor/hook_runtime.js";
 import type { SupervisorConfig } from "../types.js";
-import type { StdioContext } from "./context.js";
+import type { RuntimeContext } from "./context.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 type AgentTurnResult = Awaited<ReturnType<typeof runAgentTurn>>;
 
 type RunAgentTurnWithHooksArgs = {
-  ctx: StdioContext;
+  ctx: RuntimeContext;
   workspaceRoot: string;
   agentWorkspaceRoot: string;
   docPath: string;
   conversationId: string;
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
   currentModel: string;
   sandboxMode: string;
   permissionProfile: ProviderPermissionProfile;
@@ -62,7 +62,7 @@ const CLAUDE_SWITCH_MODE_PROXY_TOOL: CustomToolDefinition = {
 };
 
 export function providerCustomToolsForTurn(args: {
-  providerName: "mock" | "codex" | "claude" | "gemini";
+  providerName: "mock" | "codex" | "claude";
   toolConfig?: NonNullable<RenderedRunConfig>["tools"];
   customTools: CustomToolDefinition[] | undefined;
 }): CustomToolDefinition[] | undefined {
