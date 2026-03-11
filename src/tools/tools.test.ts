@@ -193,6 +193,22 @@ describe("executeTool", () => {
       };
       await expect(executeTool(tempDir, call)).rejects.toThrow();
     });
+
+    it("rejects symlink escapes", async () => {
+      const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "tools-outside-"));
+      await fs.writeFile(path.join(outsideDir, "secret.txt"), "secret");
+      await fs.symlink(outsideDir, path.join(tempDir, "linked"));
+
+      const call: ToolCall = {
+        name: "read_file",
+        args: { path: "linked/secret.txt" },
+      };
+      try {
+        await expect(executeTool(tempDir, call)).rejects.toThrow("escapes workspace");
+      } finally {
+        await fs.rm(outsideDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("write_file tool", () => {
@@ -261,6 +277,21 @@ describe("executeTool", () => {
         args: { path: "../escape.txt", content: "bad" },
       };
       await expect(executeTool(tempDir, call)).rejects.toThrow("escapes workspace");
+    });
+
+    it("rejects writes through symlinked parents", async () => {
+      const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "tools-outside-"));
+      await fs.symlink(outsideDir, path.join(tempDir, "linked"));
+
+      const call: ToolCall = {
+        name: "write_file",
+        args: { path: "linked/secret.txt", content: "bad" },
+      };
+      try {
+        await expect(executeTool(tempDir, call)).rejects.toThrow("escapes workspace");
+      } finally {
+        await fs.rm(outsideDir, { recursive: true, force: true });
+      }
     });
   });
 
@@ -371,6 +402,24 @@ describe("executeTool", () => {
       const deleteResult = await executeTool(tempDir, { name: "apply_patch", args: { command: ["apply_patch", deletePatch] } });
       expect(deleteResult.ok).toBe(true);
       await expect(executeTool(tempDir, { name: "read_file", args: { path: "hello.txt" } })).rejects.toThrow();
+    });
+
+    it("rejects add file paths that escape through symlinks", async () => {
+      const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "tools-outside-"));
+      await fs.symlink(outsideDir, path.join(tempDir, "linked"));
+      const addPatch = [
+        "*** Begin Patch",
+        "*** Add File: linked/secret.txt",
+        "+secret",
+        "*** End Patch",
+      ].join("\n");
+      try {
+        await expect(
+          executeTool(tempDir, { name: "apply_patch", args: { command: ["apply_patch", addPatch] } }),
+        ).rejects.toThrow("escapes workspace");
+      } finally {
+        await fs.rm(outsideDir, { recursive: true, force: true });
+      }
     });
   });
 

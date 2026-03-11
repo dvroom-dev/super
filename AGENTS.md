@@ -5,7 +5,7 @@
 `super` is a standalone Bun/TypeScript runtime for supervised agent conversations driven by `super.yaml`.
 
 Hard rules:
-- Keep `super` independent. Do not reintroduce source-level dependencies on sibling repos such as `~/projs/agent-studio`.
+- Keep `super` independent. Do not reintroduce source-level dependencies on sibling runtime repos.
 - Preserve the run-config interface. `super.yaml` loading, rendering, and runtime behavior must stay fully compatible unless the user explicitly asks to change that contract.
 - Favor one active implementation per behavior. Do not add compatibility shims for dead code paths without a proven active consumer.
 - Fail loudly for broken benchmark-critical behavior. Do not silently skip config parsing, prompt assembly, store writes, provider events, or supervisor decisions.
@@ -30,7 +30,7 @@ When changing behavior, inspect the actual call path instead of inferring owners
 
 `super` is now the source of truth for its own runtime. Treat these as invariants:
 
-- No imports from `agent-studio` or other sibling repos.
+- No imports from sibling runtime repos.
 - Workspace-local conversation state remains canonical.
 - Session markdown plus frontmatter remain the user-visible source of truth.
 - Provider raw events, transcript updates, and fork storage must stay diagnosable.
@@ -39,7 +39,7 @@ When changing behavior, inspect the actual call path instead of inferring owners
 If you suspect a regression in independence, verify it directly with:
 
 ```bash
-rg -n "agent-studio" .
+bun run scripts/check_standalone.ts
 ```
 
 That check should return no matches in this repo.
@@ -65,6 +65,7 @@ bun run validate
 What each check means:
 
 - `bun run lint`: enforces repository lint rules, including the non-test `.ts` file size cap of 1000 lines.
+- `bun run lint`: also enforces the standalone invariant; any reintroduced sibling-runtime reference in tracked source/config files is a failure.
 - `bun run typecheck`: must pass with no TypeScript errors.
 - `bun run test`: must pass before committing code changes.
 

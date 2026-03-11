@@ -23,6 +23,7 @@ class FakeAppServerClient implements CodexAppServerClientLike {
   starts = 0;
   private handlers = new Map<string, (params?: unknown, options?: CodexAppServerRequestOptions) => unknown | Promise<unknown>>();
   private notificationHandlers = new Set<(notification: CodexAppServerNotification) => void>();
+  private exitHandlers = new Set<(error: Error) => void>();
   private notificationBacklog: CodexAppServerNotification[] = [];
 
   setHandler(
@@ -36,6 +37,10 @@ class FakeAppServerClient implements CodexAppServerClientLike {
     const notification = { method, params };
     this.notificationBacklog.push(notification);
     for (const handler of [...this.notificationHandlers]) handler(notification);
+  }
+
+  emitExit(error: Error) {
+    for (const handler of [...this.exitHandlers]) handler(error);
   }
 
   async start(): Promise<void> {
@@ -60,6 +65,11 @@ class FakeAppServerClient implements CodexAppServerClientLike {
   subscribe(handler: (notification: CodexAppServerNotification) => void): () => void {
     this.notificationHandlers.add(handler);
     return () => this.notificationHandlers.delete(handler);
+  }
+
+  onExit(handler: (error: Error) => void): () => void {
+    this.exitHandlers.add(handler);
+    return () => this.exitHandlers.delete(handler);
   }
 
   async waitForNotification(
@@ -88,6 +98,7 @@ class FakeAppServerClient implements CodexAppServerClientLike {
   async close(): Promise<void> {
     this.notificationBacklog = [];
     this.notificationHandlers.clear();
+    this.exitHandlers.clear();
   }
 }
 
@@ -672,5 +683,22 @@ describe("CodexProvider", () => {
     const threadStartCall = fakeClient.requests.find((record) => record.method === "thread/start");
     expect((threadStartCall?.params as any)?.approvalPolicy).toBe("on-request");
     expect((threadStartCall?.params as any)?.sandbox).toBe("read-only");
+  });
+
+  it("fails active turns when the app-server exits after turn start", async () => {
+    const fakeClient = new FakeAppServerClient();
+    fakeClient.setHandler("thread/start", () => ({ thread: { id: "thread_exit" } }));
+    fakeClient.setHandler("turn/start", () => {
+      queueMicrotask(() => {
+        fakeClient.emitExit(new Error("codex app-server exited (code 1)"));
+      });
+      return { turn: { id: "turn_exit" } };
+    });
+    const provider = createProvider(baseConfig, undefined, fakeClient);
+
+    const stream = provider.runStreamed(promptContentFromText("crash"));
+    const status = await stream.next();
+    expect(status.value).toEqual({ type: "status", message: "codex: starting turn" });
+    await expect(stream.next()).rejects.toThrow("codex app-server exited");
   });
 });

@@ -331,6 +331,9 @@ export class CodexProvider implements AgentProvider {
       if (msgThreadId && msgThreadId !== threadId) return;
       queue.push(notification);
     });
+    const unsubscribeExit = client.onExit((error) => {
+      queue.fail(error);
+    });
     let turnId: string | undefined;
     let finalText: string | undefined;
     let emittedAssistant = false;
@@ -452,6 +455,7 @@ export class CodexProvider implements AgentProvider {
       }
     } finally {
       unsubscribe();
+      unsubscribeExit();
       if (this.activeTurnId === turnId) this.activeTurnId = undefined;
     }
   }

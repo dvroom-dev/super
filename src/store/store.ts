@@ -40,26 +40,18 @@ export class SupervisorStore {
   }
 
   private normalizeAgentRules(forkLike: any): string[] {
-    const direct = this.normalizeRuleList(forkLike?.agentRules);
-    if (direct.length) return direct;
-    const legacyImpl = this.normalizeRuleList(forkLike?.implRules);
-    const legacyValidation = this.normalizeRuleList(forkLike?.validationRules);
-    return this.normalizeRuleList([...legacyImpl, ...legacyValidation]);
+    return this.normalizeRuleList(forkLike?.agentRules);
   }
 
   private normalizeForkMeta(rawFork: any): ForkMeta {
     const fork = { ...(rawFork ?? {}) };
     fork.agentRules = this.normalizeAgentRules(fork);
-    delete fork.implRules;
-    delete fork.validationRules;
     return fork as ForkMeta;
   }
 
   private normalizeForkSummary(rawSummary: any): ForkSummary {
     const summary = { ...(rawSummary ?? {}) };
     summary.agentRules = this.normalizeAgentRules(summary);
-    delete summary.implRules;
-    delete summary.validationRules;
     return summary as ForkSummary;
   }
 
@@ -79,16 +71,25 @@ export class SupervisorStore {
     return path.join(this.dataRoot(workspaceRoot), "conversations", conversationId);
   }
 
-  private legacyConvoDir(workspaceRoot: string, conversationId: string): string {
-    return path.join(this.home, "workspaces", this.workspaceId(workspaceRoot), "conversations", conversationId);
-  }
-
   private indexPath(workspaceRoot: string, conversationId: string): string {
     return path.join(this.convoDir(workspaceRoot, conversationId), "index.json");
   }
 
   private forkPath(workspaceRoot: string, conversationId: string, forkId: string): string {
     return path.join(this.convoDir(workspaceRoot, conversationId), "forks", `${forkId}.json`);
+  }
+
+  private async writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+    await this.ensureDir(path.dirname(filePath));
+    const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const payload = JSON.stringify(value, null, 2);
+    try {
+      await fs.writeFile(tempPath, payload, "utf-8");
+      await fs.rename(tempPath, filePath);
+    } catch (error) {
+      await fs.rm(tempPath, { force: true }).catch(() => {});
+      throw error;
+    }
   }
 
   async loadIndex(workspaceRoot: string, conversationId: string): Promise<ConversationIndex> {
@@ -100,10 +101,11 @@ export class SupervisorStore {
       const idx = JSON.parse(raw) as ConversationIndex;
       return this.normalizeIndex(idx);
     } catch (e: any) {
-      const migrated = await this.migrateLegacyConversation(workspaceRoot, conversationId);
-      if (migrated) return migrated;
+      if (e?.code !== "ENOENT") {
+        throw new Error(`conversation index is unreadable: ${p}: ${e?.message ?? String(e)}`);
+      }
       const idx: ConversationIndex = { conversationId, headId: undefined, headIds: [], forks: [] };
-      await fs.writeFile(p, JSON.stringify(idx, null, 2), "utf-8");
+      await this.writeJsonAtomic(p, idx);
       return idx;
     }
   }
@@ -111,7 +113,7 @@ export class SupervisorStore {
   async saveIndex(workspaceRoot: string, conversationId: string, idx: ConversationIndex): Promise<void> {
     const p = this.indexPath(workspaceRoot, conversationId);
     const normalized = this.normalizeIndex(idx);
-    await fs.writeFile(p, JSON.stringify(normalized, null, 2), "utf-8");
+    await this.writeJsonAtomic(p, normalized);
   }
 
   async saveFork(workspaceRoot: string, conversationId: string, fork: ForkMeta): Promise<void> {
@@ -120,7 +122,7 @@ export class SupervisorStore {
     if (persist.storage === "patch") {
       delete (persist as any).documentText;
     }
-    await fs.writeFile(p, JSON.stringify(persist, null, 2), "utf-8");
+    await this.writeJsonAtomic(p, persist);
   }
 
   private extractConversationIdFromText(text: string): string | undefined {
@@ -360,85 +362,6 @@ export class SupervisorStore {
       agentModel: fork.agentModel,
       supervisorModel: fork.supervisorModel,
     };
-  }
-
-  private async migrateLegacyConversation(workspaceRoot: string, conversationId: string): Promise<ConversationIndex | null> {
-    const legacyDir = this.legacyConvoDir(workspaceRoot, conversationId);
-    const legacyIndexPath = path.join(legacyDir, "index.json");
-    let legacyRaw = "";
-    try {
-      legacyRaw = await fs.readFile(legacyIndexPath, "utf-8");
-    } catch {
-      return null;
-    }
-    const legacyIndex = JSON.parse(legacyRaw) as any;
-    const legacyForksDir = path.join(legacyDir, "forks");
-    const forkMap = new Map<string, any>();
-    if (Array.isArray(legacyIndex?.forks)) {
-      for (const f of legacyIndex.forks) {
-        if (f && f.id) forkMap.set(String(f.id), f);
-      }
-    }
-    try {
-      const files = await fs.readdir(legacyForksDir);
-      for (const file of files) {
-        if (!file.endsWith(".json")) continue;
-        const raw = await fs.readFile(path.join(legacyForksDir, file), "utf-8");
-        const data = JSON.parse(raw) as any;
-        if (data && data.id) forkMap.set(String(data.id), data);
-      }
-    } catch {
-      // ignore
-    }
-
-    const remaining = new Map(forkMap);
-    const processed = new Set<string>();
-    let safety = 0;
-    while (remaining.size > 0 && safety < remaining.size * 4) {
-      safety += 1;
-      let progressed = false;
-      for (const [id, fork] of remaining) {
-        const parentId = fork.parentId ? String(fork.parentId) : undefined;
-        if (parentId && !processed.has(parentId)) continue;
-        const docText = typeof fork.documentText === "string" ? fork.documentText : "";
-        await this.createFork({
-          workspaceRoot,
-          conversationId,
-          parentId,
-          documentText: docText,
-          forkId: String(id),
-          createdAt: fork.createdAt,
-          label: fork.label,
-          forkSummary: fork.forkSummary,
-          agentRules: this.normalizeAgentRules(fork),
-          providerThreadId: fork.providerThreadId,
-          supervisorThreadId: fork.supervisorThreadId,
-          providerName: fork.providerName,
-          model: fork.model,
-          agentModel: fork.agentModel,
-          supervisorModel: fork.supervisorModel,
-          actions: fork.actions,
-          actionSummary: fork.actionSummary,
-        });
-        processed.add(id);
-        remaining.delete(id);
-        progressed = true;
-      }
-      if (!progressed) break;
-    }
-
-    const idx = await this.loadIndex(workspaceRoot, conversationId);
-    const allIds = idx.forks.map((f) => f.id);
-    const parentIds = new Set(idx.forks.map((f) => f.parentId).filter(Boolean) as string[]);
-    const heads = allIds.filter((id) => !parentIds.has(id));
-    idx.headIds = heads;
-    if (legacyIndex?.headId && allIds.includes(legacyIndex.headId)) {
-      idx.headId = legacyIndex.headId;
-    } else {
-      idx.headId = heads[0];
-    }
-    await this.saveIndex(workspaceRoot, conversationId, idx);
-    return idx;
   }
 
   private normalizeIndex(idx: ConversationIndex): ConversationIndex {

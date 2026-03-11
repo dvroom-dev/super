@@ -63,6 +63,7 @@ export interface CodexAppServerClientLike {
   request<T = unknown>(method: string, params?: unknown, options?: CodexAppServerRequestOptions): Promise<T>;
   notify(method: string, params?: unknown): Promise<void>;
   subscribe(handler: (notification: CodexAppServerNotification) => void): () => void;
+  onExit(handler: (error: Error) => void): () => void;
   waitForNotification(
     predicate: (notification: CodexAppServerNotification) => boolean,
     options?: CodexAppServerRequestOptions,
@@ -204,8 +205,10 @@ export class CodexAppServerClient implements CodexAppServerClientLike {
   private startPromise: Promise<void> | undefined;
   private pending = new Map<JsonRpcId, PendingRequest>();
   private notificationHandlers = new Set<(notification: CodexAppServerNotification) => void>();
+  private exitHandlers = new Set<(error: Error) => void>();
   private stdoutInterface: readline.Interface | undefined;
   private recentStderr = "";
+  private exitError: Error | undefined;
 
   constructor(options: CodexAppServerClientOptions) {
     this.options = options;
@@ -270,6 +273,15 @@ export class CodexAppServerClient implements CodexAppServerClientLike {
     return () => this.notificationHandlers.delete(handler);
   }
 
+  onExit(handler: (error: Error) => void): () => void {
+    if (this.exitError) {
+      handler(this.exitError);
+      return () => {};
+    }
+    this.exitHandlers.add(handler);
+    return () => this.exitHandlers.delete(handler);
+  }
+
   async waitForNotification(
     predicate: (notification: CodexAppServerNotification) => boolean,
     options?: CodexAppServerRequestOptions,
@@ -281,6 +293,7 @@ export class CodexAppServerClient implements CodexAppServerClientLike {
         return;
       }
       let timeout: ReturnType<typeof setTimeout> | undefined;
+      let unsubscribeExit: (() => void) | undefined;
       const unsubscribe = this.subscribe((notification) => {
         if (!predicate(notification)) return;
         cleanup();
@@ -292,9 +305,14 @@ export class CodexAppServerClient implements CodexAppServerClientLike {
       };
       const cleanup = () => {
         unsubscribe();
+        unsubscribeExit?.();
         if (timeout) clearTimeout(timeout);
         options?.signal?.removeEventListener("abort", abortHandler);
       };
+      unsubscribeExit = this.onExit((error) => {
+        cleanup();
+        reject(error);
+      });
       if (options?.timeoutMs && options.timeoutMs > 0) {
         timeout = setTimeout(() => {
           cleanup();
@@ -441,14 +459,28 @@ export class CodexAppServerClient implements CodexAppServerClientLike {
   }
 
   private handleProcessExit(error: Error): void {
-    if (this.closed) return;
+    if (this.exitError) return;
     const errorWithStderr = annotateErrorWithStderr(error.message, this.recentStderr);
+    this.exitError = errorWithStderr;
+    this.process = undefined;
+    this.started = false;
+    this.startPromise = undefined;
+    this.stdoutInterface?.close();
+    this.stdoutInterface = undefined;
     for (const [id, pending] of this.pending.entries()) {
       this.pending.delete(id);
       if (pending.timeoutHandle) clearTimeout(pending.timeoutHandle);
       if (pending.abortHandler && pending.signal) pending.signal.removeEventListener("abort", pending.abortHandler);
       pending.reject(errorWithStderr);
     }
+    for (const handler of [...this.exitHandlers]) {
+      try {
+        handler(errorWithStderr);
+      } catch {
+        // keep notifying remaining handlers
+      }
+    }
+    this.exitHandlers.clear();
   }
 
   async close(): Promise<void> {
@@ -457,6 +489,7 @@ export class CodexAppServerClient implements CodexAppServerClientLike {
     this.started = false;
     this.startPromise = undefined;
     this.notificationHandlers.clear();
+    this.exitHandlers.clear();
     this.stdoutInterface?.close();
     const child = this.process;
     this.process = undefined;

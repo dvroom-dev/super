@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ProviderName } from "./types.js";
+import { isWorkspacePath, resolveRealpathLikeSync } from "../utils/workspace_paths.js";
 
 export type ProviderFilesystemPathPolicy = {
   allow?: string[];
@@ -112,22 +113,15 @@ function detectShellMutation(commandText: string): "read" | "write" | "create" {
   return "read";
 }
 
-function normalizeResolvedPath(workspaceRoot: string, candidatePath: string): string {
-  return path.isAbsolute(candidatePath)
-    ? path.resolve(candidatePath)
-    : path.resolve(workspaceRoot, candidatePath);
-}
-
 function isPathInsideWorkspace(workspaceRoot: string, candidatePath: string): boolean {
-  const root = path.resolve(workspaceRoot);
-  const candidate = path.resolve(candidatePath);
-  const rel = path.relative(root, candidate);
-  if (!rel) return true;
-  return !rel.startsWith("..") && !path.isAbsolute(rel);
+  return isWorkspacePath(workspaceRoot, candidatePath, { allowMissing: true });
 }
 
 function pathMatchesRule(workspaceRoot: string, candidatePath: string, rawRule: string): boolean {
-  const resolvedRule = normalizeResolvedPath(workspaceRoot, rawRule);
+  const absoluteRulePath = path.isAbsolute(rawRule)
+    ? path.resolve(rawRule)
+    : path.resolve(workspaceRoot, rawRule);
+  const resolvedRule = resolveRealpathLikeSync(absoluteRulePath, { allowMissing: true });
   const rel = path.relative(resolvedRule, candidatePath);
   if (!rel) return true;
   return !rel.startsWith("..") && !path.isAbsolute(rel);
@@ -209,7 +203,21 @@ function collectCandidatePaths(args: {
   if (blockedPath) candidates.add(blockedPath);
   collectPathLikeFields(args.input, candidates);
   collectShellCommandPaths(args.toolName, args.input, candidates);
-  return [...candidates].map((candidate) => normalizeResolvedPath(args.workspaceRoot, candidate));
+  const resolved: string[] = [];
+  for (const candidate of candidates) {
+    try {
+      const absoluteCandidatePath = path.isAbsolute(candidate)
+        ? path.resolve(candidate)
+        : path.resolve(args.workspaceRoot, candidate);
+      resolved.push(resolveRealpathLikeSync(absoluteCandidatePath, { allowMissing: true }));
+    } catch {
+      const absoluteCandidatePath = path.isAbsolute(candidate)
+        ? path.resolve(candidate)
+        : path.resolve(args.workspaceRoot, candidate);
+      resolved.push(absoluteCandidatePath);
+    }
+  }
+  return resolved;
 }
 
 export function firstOutsideWorkspacePath(args: {

@@ -5,6 +5,7 @@ import type { CodexAppServerNotification } from "./codex_app_server_client.js";
 
 export type NotificationQueue = {
   push: (notification: CodexAppServerNotification) => void;
+  fail: (error: Error) => void;
   next: () => Promise<CodexAppServerNotification>;
 };
 
@@ -197,16 +198,26 @@ export function sandboxForThread(config: ProviderConfig): "read-only" | "workspa
 
 export function createNotificationQueue(): NotificationQueue {
   const buffered: CodexAppServerNotification[] = [];
-  const waiters: Array<(value: CodexAppServerNotification) => void> = [];
+  const waiters: Array<{ resolve: (value: CodexAppServerNotification) => void; reject: (error: Error) => void }> = [];
+  let failedError: Error | undefined;
   return {
     push(notification) {
+      if (failedError) return;
       const waiter = waiters.shift();
-      if (waiter) waiter(notification);
+      if (waiter) waiter.resolve(notification);
       else buffered.push(notification);
+    },
+    fail(error) {
+      if (failedError) return;
+      failedError = error;
+      while (waiters.length > 0) {
+        waiters.shift()?.reject(error);
+      }
     },
     async next() {
       if (buffered.length) return buffered.shift() as CodexAppServerNotification;
-      return new Promise<CodexAppServerNotification>((resolve) => waiters.push(resolve));
+      if (failedError) throw failedError;
+      return new Promise<CodexAppServerNotification>((resolve, reject) => waiters.push({ resolve, reject }));
     },
   };
 }

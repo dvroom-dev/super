@@ -18,6 +18,7 @@ class FakeAppServerClient implements CodexAppServerClientLike {
   requests: RequestRecord[] = [];
   private handlers = new Map<string, (params?: unknown, options?: CodexAppServerRequestOptions) => unknown | Promise<unknown>>();
   private notificationHandlers = new Set<(notification: CodexAppServerNotification) => void>();
+  private exitHandlers = new Set<(error: Error) => void>();
 
   setHandler(
     method: string,
@@ -55,12 +56,18 @@ class FakeAppServerClient implements CodexAppServerClientLike {
     return () => this.notificationHandlers.delete(handler);
   }
 
+  onExit(handler: (error: Error) => void): () => void {
+    this.exitHandlers.add(handler);
+    return () => this.exitHandlers.delete(handler);
+  }
+
   async waitForNotification(): Promise<CodexAppServerNotification> {
     throw new Error("not used in control tests");
   }
 
   async close(): Promise<void> {
     this.notificationHandlers.clear();
+    this.exitHandlers.clear();
   }
 }
 

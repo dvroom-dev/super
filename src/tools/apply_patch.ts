@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolveWorkspacePath } from "../utils/workspace_paths.js";
 
 type PatchOp =
   | { type: "add"; path: string; lines: string[] }
@@ -12,15 +13,6 @@ type Hunk = {
 
 const BEGIN = "*** Begin Patch";
 const END = "*** End Patch";
-
-function ensureInside(root: string, p: string): string {
-  const abs = path.isAbsolute(p) ? p : path.join(root, p);
-  const rel = path.relative(root, abs);
-  if (rel.startsWith("..") || (path.isAbsolute(rel) && rel.includes(".."))) {
-    throw new Error(`Path escapes workspace root: ${p}`);
-  }
-  return abs;
-}
 
 function parsePatch(text: string): PatchOp[] {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
@@ -152,7 +144,7 @@ export async function applyPatch(workspaceRoot: string, patchText: string): Prom
 
   for (const op of ops) {
     if (op.type === "add") {
-      const abs = ensureInside(workspaceRoot, op.path);
+      const abs = await resolveWorkspacePath(workspaceRoot, op.path, { allowMissing: true });
       await fs.mkdir(path.dirname(abs), { recursive: true });
       const content = op.lines.join("\n") + "\n";
       await fs.writeFile(abs, content, "utf-8");
@@ -160,12 +152,12 @@ export async function applyPatch(workspaceRoot: string, patchText: string): Prom
     }
 
     if (op.type === "delete") {
-      const abs = ensureInside(workspaceRoot, op.path);
+      const abs = await resolveWorkspacePath(workspaceRoot, op.path);
       await fs.rm(abs, { force: true });
       continue;
     }
 
-    const abs = ensureInside(workspaceRoot, op.path);
+    const abs = await resolveWorkspacePath(workspaceRoot, op.path);
     const raw = await fs.readFile(abs, "utf-8");
     const hadTrailingNewline = raw.endsWith("\n");
     const currentLines = raw.replace(/\r\n/g, "\n").split("\n");
@@ -177,7 +169,7 @@ export async function applyPatch(workspaceRoot: string, patchText: string): Prom
     await fs.writeFile(abs, nextContent, "utf-8");
 
     if (op.moveTo) {
-      const dest = ensureInside(workspaceRoot, op.moveTo);
+      const dest = await resolveWorkspacePath(workspaceRoot, op.moveTo, { allowMissing: true });
       await fs.mkdir(path.dirname(dest), { recursive: true });
       await fs.rm(dest, { force: true });
       await fs.rename(abs, dest);

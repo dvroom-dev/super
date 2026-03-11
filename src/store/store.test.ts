@@ -172,6 +172,14 @@ Only assistant
       expect(idx2.headId).toBe("fork_1");
       expect(idx2.headIds).toEqual(["fork_1"]);
     });
+
+    it("fails loudly on malformed index data", async () => {
+      const indexPath = path.join(workspaceRoot, ".ai-supervisor", "conversations", "conv123", "index.json");
+      await fs.mkdir(path.dirname(indexPath), { recursive: true });
+      await fs.writeFile(indexPath, "{not-json", "utf8");
+
+      await expect(store.loadIndex(workspaceRoot, "conv123")).rejects.toThrow("conversation index is unreadable");
+    });
   });
 
   describe("saveIndex and loadIndex roundtrip", () => {

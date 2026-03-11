@@ -15,6 +15,7 @@ import {
   shellInvocationPolicyViolation,
   type ShellInvocationPolicy,
 } from "./shell_invocation_policy.js";
+import { resolveWorkspacePath } from "../utils/workspace_paths.js";
 
 export type ToolCall = {
   name: string;
@@ -33,15 +34,6 @@ export type ExecuteToolOptions = {
   customTools?: CustomToolDefinition[];
   shellInvocationPolicy?: ShellInvocationPolicy;
 };
-
-function ensureInside(root: string, p: string): string {
-  const abs = path.isAbsolute(p) ? p : path.join(root, p);
-  const rel = path.relative(root, abs);
-  if (rel.startsWith("..") || path.isAbsolute(rel) && rel.includes("..")) {
-    throw new Error(`Path escapes workspace root: ${p}`);
-  }
-  return abs;
-}
 
 export async function executeTool(
   workspaceRoot: string,
@@ -75,7 +67,7 @@ export async function executeTool(
 
   if (customTool) {
     const cwdArg = customTool.cwd ?? ".";
-    const cwd = ensureInside(workspaceRoot, String(cwdArg));
+    const cwd = await resolveWorkspacePath(workspaceRoot, String(cwdArg));
     const argsJson = JSON.stringify(call.args ?? {});
     const env = {
       ...process.env,
@@ -101,14 +93,14 @@ export async function executeTool(
       throw new Error(violation);
     }
     const cwdArg = call.args?.cwd ?? ".";
-    const cwd = ensureInside(workspaceRoot, String(cwdArg));
+    const cwd = await resolveWorkspacePath(workspaceRoot, String(cwdArg));
     return await runCommand(cmd, cwd);
   }
 
   if (call.name === "read_file") {
     const file = String(call.args?.path ?? "");
     if (!file) throw new Error("read_file requires args.path");
-    const abs = ensureInside(workspaceRoot, file);
+    const abs = await resolveWorkspacePath(workspaceRoot, file);
     const content = await fs.readFile(abs, "utf-8");
     return { ok: true, output: content };
   }
@@ -117,7 +109,7 @@ export async function executeTool(
     const file = String(call.args?.path ?? "");
     const content = String(call.args?.content ?? "");
     if (!file) throw new Error("write_file requires args.path");
-    const abs = ensureInside(workspaceRoot, file);
+    const abs = await resolveWorkspacePath(workspaceRoot, file, { allowMissing: true });
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, content, "utf-8");
     return { ok: true, output: "ok" };
@@ -125,7 +117,7 @@ export async function executeTool(
 
   if (call.name === "list_dir") {
     const dir = String(call.args?.path ?? ".");
-    const abs = ensureInside(workspaceRoot, dir);
+    const abs = await resolveWorkspacePath(workspaceRoot, dir);
     const entries = await fs.readdir(abs, { withFileTypes: true });
     const lines = entries.map((e) => (e.isDirectory() ? e.name + "/" : e.name));
     return { ok: true, output: lines.join("\n") };
