@@ -1,5 +1,6 @@
 import type { ProviderEvent } from "../../../providers/types.js";
 import type { InlineToolCall } from "./inline_tools.js";
+import { extractShellCommandText } from "../../../tools/shell_invocation_policy.js";
 
 export type ProviderToolInterceptionEvent = {
   when: "invocation" | "response";
@@ -9,6 +10,7 @@ export type ProviderToolInterceptionEvent = {
 };
 
 const RUNTIME_INLINE_PROVIDER_TOOLS = new Set(["switch_mode", "check_supervisor", "check_rules"]);
+const SWITCH_MODE_BASH_TOOL_NAMES = new Set(["bash", "shell"]);
 
 function normalizeRuntimeInlineToolName(name: string): string {
   const trimmed = String(name ?? "").trim();
@@ -30,6 +32,111 @@ function parseToolArgs(value: unknown): Record<string, unknown> {
     // ignored: fallback to empty args
   }
   return {};
+}
+
+function tokenizeShellCommand(commandText: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  let escape = false;
+  for (const ch of String(commandText ?? "")) {
+    if (escape) {
+      current += ch;
+      escape = false;
+      continue;
+    }
+    if (quote === "\"") {
+      if (ch === "\\") {
+        escape = true;
+      } else if (ch === "\"") {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (quote === "'") {
+      if (ch === "'") {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === "\"") {
+      quote = ch as "'" | "\"";
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        out.push(current);
+        current = "";
+      }
+      continue;
+    }
+    if (ch === "\\") {
+      escape = true;
+      continue;
+    }
+    current += ch;
+  }
+  if (current) out.push(current);
+  return out;
+}
+
+function parseSwitchModeShellArgs(commandText: string): Record<string, unknown> | null {
+  const tokens = tokenizeShellCommand(commandText);
+  if (!tokens.length || tokens[0] !== "switch_mode") return null;
+  const args: Record<string, unknown> = {};
+  const modePayload: Record<string, unknown> = {};
+  let positionalTarget: string | undefined;
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    const next = tokens[i + 1];
+    if (token === "--target-mode" || token === "--target") {
+      if (next) {
+        args.target_mode = next;
+        i += 1;
+      }
+      continue;
+    }
+    if (token === "--reason") {
+      if (next) {
+        args.reason = next;
+        i += 1;
+      }
+      continue;
+    }
+    if (token === "--user-message") {
+      if (next) {
+        modePayload.user_message = next;
+        i += 1;
+      }
+      continue;
+    }
+    if (token === "--wrapup-certified") {
+      modePayload.wrapup_certified = "true";
+      continue;
+    }
+    if (token === "--wrapup-level") {
+      if (next) {
+        modePayload.wrapup_level = next;
+        i += 1;
+      }
+      continue;
+    }
+    if (token === "--terminal") {
+      args.terminal = true;
+      continue;
+    }
+    if (!token.startsWith("-") && !positionalTarget) {
+      positionalTarget = token;
+    }
+  }
+  if (!args.target_mode && positionalTarget) args.target_mode = positionalTarget;
+  if (Object.keys(modePayload).length > 0) args.mode_payload = modePayload;
+  args.terminal = true;
+  return args;
 }
 
 type ProviderToolSignal =
@@ -123,9 +230,47 @@ export function extractRuntimeInlineCallsFromProviderEvent(event: ProviderEvent)
   if (event.type !== "provider_item") return [];
   if (event.item.kind !== "tool_call") return [];
   const toolName = normalizeRuntimeInlineToolName(String(event.item.name ?? "").trim());
-  if (!RUNTIME_INLINE_PROVIDER_TOOLS.has(toolName)) return [];
   const raw = event.raw as Record<string, unknown> | undefined;
   if (!raw || typeof raw !== "object") return [];
+  if (SWITCH_MODE_BASH_TOOL_NAMES.has(toolName.toLowerCase())) {
+    const type = String(raw.type ?? "").trim().toLowerCase();
+    if (type === "assistant") {
+      const message = raw.message as Record<string, unknown> | undefined;
+      const content = Array.isArray(message?.content) ? message.content : [];
+      const out: InlineToolCall[] = [];
+      for (const block of content) {
+        if (!block || typeof block !== "object") continue;
+        const toolUse = block as Record<string, unknown>;
+        if (String(toolUse.type ?? "").trim() !== "tool_use") continue;
+        const blockName = normalizeRuntimeInlineToolName(String(toolUse.name ?? "").trim());
+        if (!SWITCH_MODE_BASH_TOOL_NAMES.has(blockName.toLowerCase())) continue;
+        const commandText = extractShellCommandText(toolUse.input) ?? "";
+        const args = parseSwitchModeShellArgs(commandText);
+        if (!args) continue;
+        const topLevelUserMessage =
+          typeof (args.mode_payload as Record<string, unknown> | undefined)?.user_message === "string"
+            ? String((args.mode_payload as Record<string, unknown>).user_message)
+            : undefined;
+        if (topLevelUserMessage) args.user_message = topLevelUserMessage;
+        out.push({ name: "switch_mode", args, body: JSON.stringify(args, null, 2) });
+      }
+      if (out.length > 0) return out;
+    }
+    const params = raw.params && typeof raw.params === "object" ? raw.params as Record<string, unknown> : undefined;
+    const rawItem = (params?.item && typeof params.item === "object" ? params.item : raw.item) as Record<string, unknown> | undefined;
+    const commandText = extractShellCommandText(rawItem) ?? extractShellCommandText(params) ?? "";
+    const args = parseSwitchModeShellArgs(commandText);
+    if (args) {
+      const topLevelUserMessage =
+        typeof (args.mode_payload as Record<string, unknown> | undefined)?.user_message === "string"
+          ? String((args.mode_payload as Record<string, unknown>).user_message)
+          : undefined;
+      if (topLevelUserMessage) args.user_message = topLevelUserMessage;
+      return [{ name: "switch_mode", args, body: JSON.stringify(args, null, 2) }];
+    }
+    return [];
+  }
+  if (!RUNTIME_INLINE_PROVIDER_TOOLS.has(toolName)) return [];
   const type = String(raw.type ?? "").trim().toLowerCase();
   if (type === "assistant") {
     const message = raw.message as Record<string, unknown> | undefined;

@@ -299,8 +299,8 @@ describe("runAgentTurn", () => {
         item: {
           provider: "claude",
           kind: "tool_call",
-          name: "mcp__super_custom_tools__switch_mode",
-          summary: "tool_call mcp__super_custom_tools__switch_mode",
+          name: "Bash",
+          summary: "tool_call Bash",
         },
         raw: {
           type: "assistant",
@@ -308,9 +308,11 @@ describe("runAgentTurn", () => {
             content: [
               {
                 type: "tool_use",
-                id: "toolu_mcp_1",
-                name: "mcp__super_custom_tools__switch_mode",
-                input: { target_mode: "explore_game" },
+                id: "toolu_bash_2",
+                name: "Bash",
+                input: {
+                  command: "switch_mode --target-mode explore_game --reason theory_complete",
+                },
               },
             ],
           },
@@ -322,7 +324,7 @@ describe("runAgentTurn", () => {
           provider: "claude",
           kind: "tool_result",
           name: "tool_result",
-          summary: "tool_result toolu_mcp_1",
+          summary: "tool_result toolu_bash_2",
           text: "{\"ok\":true}",
         },
         raw: {
@@ -331,7 +333,7 @@ describe("runAgentTurn", () => {
             content: [
               {
                 type: "tool_result",
-                tool_use_id: "toolu_mcp_1",
+                tool_use_id: "toolu_bash_2",
                 content: "{\"ok\":true}",
               },
             ],
@@ -368,19 +370,19 @@ describe("runAgentTurn", () => {
       },
       {
         when: "invocation",
-        toolName: "mcp__super_custom_tools__switch_mode",
-        args: { target_mode: "explore_game" },
+        toolName: "Bash",
+        args: { command: "switch_mode --target-mode explore_game --reason theory_complete" },
       },
       {
         when: "response",
-        toolName: "mcp__super_custom_tools__switch_mode",
-        args: { target_mode: "explore_game" },
+        toolName: "Bash",
+        args: { command: "switch_mode --target-mode explore_game --reason theory_complete" },
         outputText: "{\"ok\":true}",
       },
     ]);
   });
 
-  it("captures claude MCP switch_mode tool calls for runtime handling", async () => {
+  it("captures bash CLI switch_mode calls for runtime handling", async () => {
     const ctx: any = {
       sendNotification() {},
     };
@@ -390,8 +392,8 @@ describe("runAgentTurn", () => {
         item: {
           provider: "claude",
           kind: "tool_call",
-          name: "mcp__super_custom_tools__switch_mode",
-          summary: "tool_call mcp__super_custom_tools__switch_mode",
+          name: "Bash",
+          summary: "tool_call Bash",
         },
         raw: {
           type: "assistant",
@@ -399,18 +401,17 @@ describe("runAgentTurn", () => {
             content: [
               {
                 type: "tool_use",
-                name: "mcp__super_custom_tools__switch_mode",
+                name: "Bash",
                 input: {
-                  target_mode: "explore_game",
-                  reason: "theory complete",
-                  mode_payload: { user_message: "probe next feature" },
+                  command:
+                    "switch_mode --target-mode explore_game --reason theory_complete --user-message probe_next_feature",
                 },
               },
             ],
           },
         },
       },
-      { type: "done", threadId: "thread_switch_mode_mcp" },
+      { type: "done", threadId: "thread_switch_mode_bash" },
     ]);
     const result = await runAgentTurn({
       ctx,
@@ -428,8 +429,8 @@ describe("runAgentTurn", () => {
 
     expect(result.toolCalls?.map((call) => call.name)).toEqual(["switch_mode"]);
     expect(result.toolCalls?.[0]?.args?.target_mode).toBe("explore_game");
-    expect(result.toolCalls?.[0]?.args?.reason).toBe("theory complete");
-    expect(result.toolCalls?.[0]?.args?.mode_payload?.user_message).toBe("probe next feature");
+    expect(result.toolCalls?.[0]?.args?.reason).toBe("theory_complete");
+    expect(result.toolCalls?.[0]?.args?.user_message).toBe("probe_next_feature");
   });
 
   it("marks cadence on token limit without interrupt in boundary mode", async () => {

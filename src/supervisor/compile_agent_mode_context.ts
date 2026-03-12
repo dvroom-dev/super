@@ -23,7 +23,7 @@ export function appendAgentModeContext(promptParts: string[], input: AgentModeCo
       "",
       modeContractJson,
       "",
-      "Use `switch_mode` only when you need to move to another mode. Choose `target_mode` from `candidate_modes` and include a concise `reason`.",
+      "Use the `switch_mode` CLI only when you need to move to another mode. Choose `--target-mode` from `candidate_modes` and include a concise `--reason`.",
       "",
     );
   }

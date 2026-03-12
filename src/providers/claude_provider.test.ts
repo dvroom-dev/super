@@ -365,7 +365,7 @@ describe("ClaudeProvider", () => {
     expect(allow?.behavior).toBe("allow");
   });
 
-  it("allows custom MCP tools even when builtin allow list is narrow", async () => {
+  it("allows configured custom MCP tools even when builtin allow list is narrow", async () => {
     const capture: { invocation?: QueryInvocation; closed?: boolean } = {};
     const query = makeQueryStub(
       [{ type: "result", subtype: "success", result: "{\"action\":\"ok\"}", session_id: "sess_mcp_allow" }],
@@ -383,11 +383,7 @@ describe("ClaudeProvider", () => {
     await provider.runOnce(promptContentFromText("mcp allow"));
 
     const options = (capture.invocation?.options ?? {}) as Record<string, any>;
-    const allow = await options.canUseTool(
-      "mcp__super_custom_tools__switch_mode",
-      {},
-      { toolUseID: "tool_mcp_allow" },
-    );
+    const allow = await options.canUseTool("mcp__super_custom_tools__arc_action", {}, { toolUseID: "tool_mcp_allow" });
     expect(allow?.behavior).toBe("allow");
   });
 
@@ -598,7 +594,7 @@ describe("ClaudeProvider", () => {
     expect(options.allowedTools).toContain("arc_action");
   });
 
-  it("registers switch_mode with an explicit MCP input schema", async () => {
+  it("registers generic custom tools with a permissive MCP input schema", async () => {
     const capture: { invocation?: QueryInvocation; closed?: boolean } = {};
     const createCalls: Array<Record<string, unknown>> = [];
     const createSdkMcpServer = (options: Record<string, unknown>) => {
@@ -606,7 +602,7 @@ describe("ClaudeProvider", () => {
       return { type: "sdk", name: String(options.name ?? "super_custom_tools") };
     };
     const query = makeQueryStub(
-      [{ type: "result", subtype: "success", result: "{\"action\":\"ok\"}", session_id: "sess_switch_mode_schema" }],
+      [{ type: "result", subtype: "success", result: "{\"action\":\"ok\"}", session_id: "sess_custom_schema" }],
       capture,
     );
     const provider = new ClaudeProvider(
@@ -614,8 +610,8 @@ describe("ClaudeProvider", () => {
         ...baseConfig,
         customTools: [
           {
-            name: "switch_mode",
-            description: "Request a mode transition",
+            name: "arc_action",
+            description: "Execute ARC helper action",
             command: ["/usr/bin/true"],
           },
         ],
@@ -623,51 +619,23 @@ describe("ClaudeProvider", () => {
       { query, createSdkMcpServer },
     );
 
-    await provider.runOnce(promptContentFromText("switch mode"));
+    await provider.runOnce(promptContentFromText("custom tool"));
 
     expect(createCalls.length).toBe(1);
     const firstCall = createCalls[0] as any;
-    const switchModeTool = Array.isArray(firstCall.tools)
-      ? firstCall.tools.find((tool: any) => tool?.name === "switch_mode")
+    const customTool = Array.isArray(firstCall.tools)
+      ? firstCall.tools.find((tool: any) => tool?.name === "arc_action")
       : undefined;
-    expect(switchModeTool).toBeTruthy();
-    expect(switchModeTool.inputSchema).toMatchObject({
+    expect(customTool).toBeTruthy();
+    expect(customTool.inputSchema).toMatchObject({
       type: "object",
-      properties: {
-        target_mode: { type: "string" },
-        reason: { type: "string" },
-        terminal: { type: "boolean" },
-      },
+      additionalProperties: true,
     });
-    expect(typeof switchModeTool.inputSchema?.safeParseAsync).toBe("function");
-    expect(typeof switchModeTool.inputSchema?.parseAsync).toBe("function");
-    await expect(
-      switchModeTool.inputSchema.parseAsync({
-        target_mode: "explore_and_solve",
-        reason: "handoff",
-        mode_payload: '{"user_message":"probe ACTION1"}',
-      }),
-    ).resolves.toMatchObject({
-      target_mode: "explore_and_solve",
-      reason: "handoff",
-      mode_payload: { user_message: "probe ACTION1" },
-    });
-    await expect(
-      switchModeTool.inputSchema.parseAsync({
-        target_mode: "explore_and_solve",
-        reason: "handoff",
-        user_message: "probe ACTION1",
-        wrapup_certified: true,
-        wrapup_level: 1,
-      }),
-    ).resolves.toMatchObject({
-      target_mode: "explore_and_solve",
-      reason: "handoff",
-      mode_payload: {
-        user_message: "probe ACTION1",
-        wrapup_certified: "true",
-        wrapup_level: "1",
-      },
+    expect(typeof customTool.inputSchema?.safeParseAsync).toBe("function");
+    expect(typeof customTool.inputSchema?.parseAsync).toBe("function");
+    await expect(customTool.inputSchema.parseAsync({ any: "payload", nested: { ok: true } })).resolves.toMatchObject({
+      any: "payload",
+      nested: { ok: true },
     });
   });
 
