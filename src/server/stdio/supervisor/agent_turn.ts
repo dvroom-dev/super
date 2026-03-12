@@ -68,6 +68,19 @@ export type CadenceHitEvent = {
   }>;
 };
 
+function isSuccessfulSwitchModeResponse(event: ProviderToolInterceptionEvent): boolean {
+  if (event.when !== "response") return false;
+  if (String(event.toolName ?? "").trim() !== "switch_mode") return false;
+  const text = String(event.outputText ?? "").trim();
+  if (!text) return false;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && (parsed as Record<string, unknown>).ok === true;
+  } catch {
+    return /\(ok\s*=\s*true\)/i.test(text) || /"ok"\s*:\s*true/i.test(text);
+  }
+}
+
 export async function runAgentTurn(args: {
   ctx: RuntimeContext;
   docPath: string;
@@ -326,7 +339,12 @@ export async function runAgentTurn(args: {
           toolCalls = [...(toolCalls ?? []), ...runtimeInlineCalls];
         }
         const capturedProviderToolEvents = providerToolCollector.collect(ev);
-        if (capturedProviderToolEvents.length > 0) providerToolEvents = [...(providerToolEvents ?? []), ...capturedProviderToolEvents];
+        if (capturedProviderToolEvents.length > 0) {
+          providerToolEvents = [...(providerToolEvents ?? []), ...capturedProviderToolEvents];
+          if (capturedProviderToolEvents.some(isSuccessfulSwitchModeResponse)) {
+            requestInterrupt("agent_switch_mode_request");
+          }
+        }
         const compacted = await maybeCompactProviderItem({ item: ev.item, workspaceRoot, conversationId, toolOutput });
         if (ev.raw !== undefined) {
           await appendRawProviderEvent({
@@ -341,6 +359,7 @@ export async function runAgentTurn(args: {
         const md = renderProviderItemForTranscript(compacted.item);
         if (md) appendMarkdown(md);
         if (isToolBoundaryItem(compacted.item)) await notifyToolBoundary();
+        if (interrupted) break;
       } else if (ev.type === "status") {
         if ((ev.message || "").includes("turn.failed") || (ev.message || "").includes("error")) {
           hadError = true;

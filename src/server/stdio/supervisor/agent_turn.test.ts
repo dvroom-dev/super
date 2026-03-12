@@ -431,6 +431,96 @@ describe("runAgentTurn", () => {
     expect(result.toolCalls?.[0]?.args?.target_mode).toBe("explore_game");
     expect(result.toolCalls?.[0]?.args?.reason).toBe("theory_complete");
     expect(result.toolCalls?.[0]?.args?.user_message).toBe("probe_next_feature");
+    expect(result.providerToolEvents).toEqual([
+      {
+        when: "invocation",
+        toolName: "Bash",
+        args: {
+          command:
+            "switch_mode --target-mode explore_game --reason theory_complete --user-message probe_next_feature",
+        },
+      },
+    ]);
+  });
+
+  it("interrupts the turn after a successful bash switch_mode response", async () => {
+    const notifications: any[] = [];
+    const ctx: any = {
+      sendNotification(note: any) {
+        notifications.push(note);
+      },
+    };
+    const provider = providerFromEvents([
+      {
+        type: "provider_item",
+        item: {
+          provider: "claude",
+          kind: "tool_call",
+          name: "Bash",
+          summary:
+            "switch_mode --target-mode explore_game --reason theory_complete --user-message probe_next_feature",
+        },
+        raw: {
+          method: "item/started",
+          params: {
+            item: {
+              id: "bash_switch",
+              name: "Bash",
+              input: {
+                command:
+                  "switch_mode --target-mode explore_game --reason theory_complete --user-message probe_next_feature",
+              },
+            },
+          },
+        },
+      },
+      {
+        type: "provider_item",
+        item: {
+          provider: "claude",
+          kind: "tool_result",
+          name: "Bash",
+          id: "bash_switch",
+          summary: "{\"ok\":true}",
+          text: "{\"ok\":true}",
+        },
+        raw: {
+          method: "item/completed",
+          params: {
+            item: {
+              id: "bash_switch",
+              name: "Bash",
+              summary: "{\"ok\":true}",
+              input: {
+                command:
+                  "switch_mode --target-mode explore_game --reason theory_complete --user-message probe_next_feature",
+              },
+              output: "{\"ok\":true}",
+              status: "completed",
+            },
+          },
+        },
+      },
+      { type: "assistant_message", text: "This should not continue after switch_mode." },
+      { type: "done", threadId: "thread_switch_mode_interrupt" },
+    ]);
+    const result = await runAgentTurn({
+      ctx,
+      docPath: "/tmp/session.md",
+      provider,
+      prompt: promptContentFromText("switch"),
+      supervisor: {},
+      budget: makeBudget(),
+      currentModel: "mock-model",
+      controller: new AbortController(),
+      sendBudgetUpdate: () => {},
+      workspaceRoot: "/tmp/work",
+      conversationId: "conversation_1",
+    });
+
+    expect(result.interrupted).toBe(true);
+    expect(result.interruptionReason).toBe("agent_switch_mode_request");
+    expect(result.assistantText).not.toContain("This should not continue");
   });
 
   it("marks cadence on token limit without interrupt in boundary mode", async () => {

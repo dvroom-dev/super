@@ -203,8 +203,13 @@ function extractProviderToolSignals(event: ProviderEvent): ProviderToolSignal[] 
       const rawItem = asRecord(params?.item) ?? asRecord(raw.item);
       if (rawItem) {
         const id = asString(rawItem.id) ?? asString(params?.itemId) ?? asString(params?.item_id);
-        const name = asString(rawItem.name) ?? asString(rawItem.tool_name) ?? asString(rawItem.tool) ?? asString(rawItem.command) ?? asString(event.item.name);
-        const args = parseToolArgs(rawItem.input ?? rawItem.args ?? rawItem.arguments ?? rawItem.parameters ?? rawItem.params);
+        const fallbackName = asString(rawItem.name) ?? asString(rawItem.tool_name) ?? asString(rawItem.tool) ?? asString(rawItem.command) ?? asString(event.item.name);
+        const commandText = extractShellCommandText(rawItem) ?? extractShellCommandText(params) ?? "";
+        const switchModeArgs = fallbackName && SWITCH_MODE_BASH_TOOL_NAMES.has(fallbackName.toLowerCase())
+          ? parseSwitchModeShellArgs(commandText)
+          : null;
+        const name = switchModeArgs ? "switch_mode" : fallbackName;
+        const args = switchModeArgs ?? parseToolArgs(rawItem.input ?? rawItem.args ?? rawItem.arguments ?? rawItem.parameters ?? rawItem.params);
         const outputText = pickText(rawItem.output ?? rawItem.result ?? rawItem.content ?? rawItem.error);
         const status = (asString(rawItem.status) ?? "").toLowerCase();
         const started = method === "item/started" || status.includes("progress") || status.includes("inprogress") || status.includes("in_");
@@ -219,7 +224,12 @@ function extractProviderToolSignals(event: ProviderEvent): ProviderToolSignal[] 
     }
   }
   if (event.item.kind === "tool_call" && event.item.name) {
-    out.push({ kind: "call", id: event.item.id, name: event.item.name, args: {} });
+    const fallbackName = String(event.item.name ?? "");
+    const commandText = extractShellCommandText((event.raw && typeof event.raw === "object") ? event.raw : undefined) ?? "";
+    const switchModeArgs = SWITCH_MODE_BASH_TOOL_NAMES.has(fallbackName.toLowerCase())
+      ? parseSwitchModeShellArgs(commandText)
+      : null;
+    out.push({ kind: "call", id: event.item.id, name: switchModeArgs ? "switch_mode" : fallbackName, args: switchModeArgs ?? {} });
   } else if (event.item.kind === "tool_result" || event.item.kind === "tool_error") {
     out.push({ kind: "result", id: event.item.id, name: event.item.name, outputText: String(event.item.text ?? "") });
   }
