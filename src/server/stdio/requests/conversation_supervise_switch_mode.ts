@@ -190,7 +190,10 @@ export function parseSwitchModeInlineCall(args: ParseSwitchModeInlineCallArgs): 
   if (toolName !== "switch_mode") return { kind: "not_switch_mode" };
 
   if (!isToolAllowedByPolicy(args.toolConfig?.builtinPolicy, "switch_mode")) {
-    return errorOutcome("Tool disabled by config: switch_mode");
+    // `switch_mode` is now intended to flow through the dedicated CLI path.
+    // If the model still emits an inline/custom-tool switch request, ignore it
+    // instead of appending a misleading `(ok=false)` tool result blob.
+    return { kind: "not_switch_mode" };
   }
   const targetMode = String(args.call.args?.target_mode ?? "").trim();
   const reason = String(args.call.args?.reason ?? "").trim();

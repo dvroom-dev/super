@@ -3,7 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { handleConversationSupervise } from "./conversation_supervise.js";
-import { inferSwitchModeRequestFromAssistantText } from "./conversation_supervise_switch_mode.js";
+import {
+  inferSwitchModeRequestFromAssistantText,
+  parseSwitchModeInlineCall,
+} from "./conversation_supervise_switch_mode.js";
 
 const tempRoots: string[] = [];
 
@@ -144,6 +147,24 @@ function mockSupervisorDecision(decision: string, payload: Record<string, unknow
 }
 
 describe("agent switch_mode inline tool", () => {
+  it("ignores disabled inline switch_mode requests when CLI switching is the active path", () => {
+    const parsed = parseSwitchModeInlineCall({
+      call: {
+        name: "switch_mode",
+        body: '{"target_mode":"explore","reason":"go explore"}',
+        args: { target_mode: "explore", reason: "go explore" },
+      },
+      toolConfig: {
+        builtinPolicy: {
+          mode: "deny",
+          names: ["switch_mode"],
+        },
+      } as any,
+    });
+
+    expect(parsed).toEqual({ kind: "not_switch_mode" });
+  });
+
   it("infers switch_mode requests from visible assistant handoff text", () => {
     const request = inferSwitchModeRequestFromAssistantText([
       "Coverage passes.",
