@@ -2,6 +2,7 @@ export type InlineToolCall = {
   name: string;
   body: string;
   args: any;
+  source?: "inline" | "runtime_provider";
 };
 
 function parseSwitchModeXmlBlocks(text: string): InlineToolCall[] | null {
@@ -43,6 +44,7 @@ function parseSwitchModeXmlBlocks(text: string): InlineToolCall[] | null {
       name: "switch_mode",
       body: JSON.stringify(args, null, 2),
       args,
+      source: "inline",
     });
   }
   return calls.length ? calls : null;
@@ -70,7 +72,7 @@ export function extractInlineToolCalls(text: string): InlineToolCall[] | null {
     } catch {
       args = { _raw: body };
     }
-    calls.push({ name, body, args });
+    calls.push({ name, body, args, source: "inline" });
     lastIndex = re.lastIndex;
   }
   if (trimmed.slice(lastIndex).trim()) return null;

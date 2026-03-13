@@ -262,7 +262,7 @@ export function extractRuntimeInlineCallsFromProviderEvent(event: ProviderEvent)
             ? String((args.mode_payload as Record<string, unknown>).user_message)
             : undefined;
         if (topLevelUserMessage) args.user_message = topLevelUserMessage;
-        out.push({ name: "switch_mode", args, body: JSON.stringify(args, null, 2) });
+        out.push({ name: "switch_mode", args, body: JSON.stringify(args, null, 2), source: "runtime_provider" });
       }
       if (out.length > 0) return out;
     }
@@ -276,7 +276,7 @@ export function extractRuntimeInlineCallsFromProviderEvent(event: ProviderEvent)
           ? String((args.mode_payload as Record<string, unknown>).user_message)
           : undefined;
       if (topLevelUserMessage) args.user_message = topLevelUserMessage;
-      return [{ name: "switch_mode", args, body: JSON.stringify(args, null, 2) }];
+      return [{ name: "switch_mode", args, body: JSON.stringify(args, null, 2), source: "runtime_provider" }];
     }
     return [];
   }
@@ -293,7 +293,7 @@ export function extractRuntimeInlineCallsFromProviderEvent(event: ProviderEvent)
       const name = normalizeRuntimeInlineToolName(String(toolUse.name ?? "").trim());
       if (!RUNTIME_INLINE_PROVIDER_TOOLS.has(name)) continue;
       const args = parseToolArgs(toolUse.input);
-      out.push({ name, args, body: JSON.stringify(args, null, 2) });
+      out.push({ name, args, body: JSON.stringify(args, null, 2), source: "runtime_provider" });
     }
     if (out.length > 0) return out;
   }
@@ -304,7 +304,7 @@ export function extractRuntimeInlineCallsFromProviderEvent(event: ProviderEvent)
   const name = rawName || toolName;
   if (!RUNTIME_INLINE_PROVIDER_TOOLS.has(name)) return [];
   const args = parseToolArgs(rawItem.input ?? rawItem.args ?? rawItem.arguments ?? rawItem.parameters ?? rawItem.params);
-  return [{ name, args, body: JSON.stringify(args, null, 2) }];
+  return [{ name, args, body: JSON.stringify(args, null, 2), source: "runtime_provider" }];
 }
 
 type PendingProviderCall = { id?: string; name: string; args: Record<string, unknown> };

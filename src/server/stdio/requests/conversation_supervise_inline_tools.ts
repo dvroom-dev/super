@@ -12,7 +12,6 @@ import {
 } from "./conversation_supervise_inline_mode_helpers.js";
 import { applyInlineCheckSupervisorOutcome } from "./conversation_supervise_check_supervisor.js";
 import {
-  applyInferredSwitchModeRequestFork,
   applySwitchModeRequestFork,
   parseSwitchModeInlineCall,
 } from "./conversation_supervise_switch_mode.js";
@@ -23,6 +22,13 @@ import {
 } from "./conversation_supervise_tool_interception.js";
 import { runInlineToolInterceptionReview } from "./conversation_supervise_tool_interception_review.js";
 import type { InlineToolCallOutcome, ProcessInlineToolCallsArgs } from "./conversation_supervise_inline_tools_types.js";
+
+function normalizeInlineToolName(name: string): string {
+  const trimmed = String(name ?? "").trim();
+  const mcpPrefix = "mcp__super_custom_tools__";
+  const normalized = trimmed.startsWith(mcpPrefix) ? trimmed.slice(mcpPrefix.length).trim() : trimmed;
+  return normalized === "check_rules" ? "check_supervisor" : normalized;
+}
 
 export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): Promise<InlineToolCallOutcome> {
   const toolCalls = Array.isArray(args.result.toolCalls) ? args.result.toolCalls : [];
@@ -123,46 +129,20 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
   let checkSupervisorReview: SupervisorReviewResult | undefined;
   for (let i = 0; i < toolCalls.length; i += 1) {
     const call = toolCalls[i];
+    const toolName = normalizeInlineToolName(call.name);
     const switchParse = parseSwitchModeInlineCall({
       call,
       toolConfig: args.toolConfig,
     });
+    if (toolName === "switch_mode" && switchParse.kind === "not_switch_mode") {
+      appendInlineError(
+        "switch_mode requests must come from the runtime CLI capture path. Inline/custom switch_mode tool calls are not supported.",
+      );
+      return continueAfterInlineTermination();
+    }
     if (switchParse.kind === "error") {
-      const inferredDirect = await applyInferredSwitchModeRequestFork({
-        ctx: args.ctx,
-        workspaceRoot: args.workspaceRoot,
-        docPath: args.docPath,
-        conversationId: args.conversationId,
-        activeForkId: args.activeForkId,
-        switchActiveFork: args.switchActiveFork,
-        renderedRunConfig: args.renderedRunConfig,
-        runConfigPath: args.runConfigPath,
-        configBaseDir: args.configBaseDir,
-        agentBaseDir: args.agentBaseDir,
-        supervisorBaseDir: args.supervisorBaseDir,
-        requestAgentRuleRequirements: args.requestAgentRuleRequirements,
-        activeMode: args.activeMode,
-        allowedNextModes: args.allowedNextModes,
-        modePayloadFieldsByMode: args.modePayloadFieldsByMode,
-        budget: args.budget,
-        providerName: args.providerName,
-        currentModel: args.currentModel,
-        supervisorModel: args.supervisorModel,
-        currentSupervisorThreadId: args.currentSupervisorThreadId,
-        assistantText: args.result.assistantText,
-        sourceLabel: "agent",
-      });
-      if (inferredDirect?.kind === "switched") {
-        return {
-          kind: "continue",
-          currentDocText: inferredDirect.docText,
-          currentThreadId: inferredDirect.threadId,
-          currentSupervisorThreadId: inferredDirect.supervisorThreadId,
-          fullResyncNeeded: inferredDirect.fullResyncNeeded,
-        };
-      }
       appendInlineMarkdown(switchParse.markdown);
-      continue;
+      return continueAfterInlineTermination();
     }
     if (switchParse.kind === "request") {
       if (args.disableSupervision || args.effectiveSupervisor.enabled === false) {
@@ -192,7 +172,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
         });
         if (direct.kind === "error") {
           appendInlineMarkdown(direct.markdown);
-          continue;
+          return continueAfterInlineTermination();
         }
         return { kind: "continue", currentDocText: direct.docText, currentThreadId: direct.threadId, currentSupervisorThreadId: direct.supervisorThreadId, fullResyncNeeded: direct.fullResyncNeeded };
       }
@@ -308,6 +288,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
         || switchReview.review.decision === "resume_mode_head"
       ) {
         appendInlineError("Supervisor requested an invalid mode branch transition for switch_mode request.");
+        return continueAfterInlineTermination();
       }
 
       if (switchReview.review.decision === "append_message_and_continue") {
@@ -323,6 +304,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
         });
         if (!injected) {
           appendInlineError("Supervisor returned append_message_and_continue with no injectable message.");
+          return continueAfterInlineTermination();
         } else {
           const remainingToolCalls = toolCalls.length - i;
           nextDocText = replaceLastBlocks(
@@ -337,6 +319,44 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
             params: { docPath: args.docPath, documentText: nextDocText },
           });
         }
+      }
+
+      if (switchReview.review.decision === "continue") {
+        const accepted = await applySwitchModeRequestFork({
+          ctx: args.ctx,
+          workspaceRoot: args.workspaceRoot,
+          docPath: args.docPath,
+          conversationId: args.conversationId,
+          activeForkId: args.activeForkId,
+          switchActiveFork: args.switchActiveFork,
+          renderedRunConfig: args.renderedRunConfig,
+          requestAgentRuleRequirements: args.requestAgentRuleRequirements,
+          activeMode: args.activeMode,
+          allowedNextModes: args.allowedNextModes,
+          modePayloadFieldsByMode: args.modePayloadFieldsByMode,
+          runConfigPath: args.runConfigPath,
+          configBaseDir: args.configBaseDir,
+          agentBaseDir: args.agentBaseDir,
+          supervisorBaseDir: args.supervisorBaseDir,
+          budget: args.budget,
+          providerName: args.providerName,
+          currentModel: args.currentModel,
+          supervisorModel: args.supervisorModel,
+          currentSupervisorThreadId: nextSupervisorThreadId,
+          request: switchParse.request,
+          sourceLabel: "agent",
+        });
+        if (accepted.kind === "error") {
+          appendInlineMarkdown(accepted.markdown);
+          return continueAfterInlineTermination();
+        }
+        return {
+          kind: "continue",
+          currentDocText: accepted.docText,
+          currentThreadId: accepted.threadId,
+          currentSupervisorThreadId: accepted.supervisorThreadId,
+          fullResyncNeeded: accepted.fullResyncNeeded,
+        };
       }
 
       args.budget.cadenceAnchorAt = Date.now();

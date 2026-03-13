@@ -283,6 +283,7 @@ describe("conversation.supervise resume_mode_head", () => {
     expect(resumeFork.parentId).toBe("fork_init_head");
     expect(resumeFork.providerThreadId).toBe("thread_init_head");
     expect(resumeFork.supervisorThreadId).toBe("super_init_head");
+    expect(resumeFork.actionSummary).toBe("resume_mode_head (hard)");
     const forkDoc = String(resumeFork.documentText ?? "");
     expect(forkDoc).toContain("mode: init");
     expect(forkDoc).toContain("```chat role=system");
@@ -603,5 +604,7 @@ describe("conversation.supervise resume_mode_head", () => {
     expect(codeToExplore?.supervisorThreadId).toBe("super_explore_live");
     expect(codeToExplore?.docText).toContain("prior targeted probe output");
     expect(codeToExplore?.docText).toContain("probe completion with one action");
+    const resumedExploreFork = createForkCalls.at(-1);
+    expect(resumedExploreFork?.actionSummary).toBe("resume_mode_head (hard)");
   });
 });

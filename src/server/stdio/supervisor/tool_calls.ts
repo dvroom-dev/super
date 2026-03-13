@@ -43,6 +43,16 @@ export async function executeInlineToolCall(args: {
 
   try {
     const toolName = args.call.name === "check_rules" ? "check_supervisor" : args.call.name;
+    if (toolName === "switch_mode") {
+      if (args.call.source === "runtime_provider") {
+        throw new Error(
+          "BUG: runtime-captured switch_mode reached generic inline tool execution instead of the dedicated mode-switch handler.",
+        );
+      }
+      throw new Error(
+        "Inline/custom switch_mode tool calls are unsupported. Run the runtime `switch_mode` CLI path instead.",
+      );
+    }
     if (isBuiltinToolName(toolName) && !isToolAllowedByPolicy(builtinToolPolicy, toolName)) {
       throw new Error(`Tool disabled by config: ${toolName}`);
     }

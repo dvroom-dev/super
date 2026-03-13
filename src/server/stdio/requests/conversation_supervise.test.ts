@@ -37,6 +37,25 @@ function makeDoc(conversationId = "conversation_test", forkId = "fork_doc"): str
   ].join("\n");
 }
 
+function makeModeDoc(args: {
+  conversationId?: string;
+  forkId?: string;
+  mode: string;
+  userMessage?: string;
+}): string {
+  return [
+    "---",
+    `conversation_id: ${args.conversationId ?? "conversation_test"}`,
+    `fork_id: ${args.forkId ?? "fork_doc"}`,
+    `mode: ${args.mode}`,
+    "---",
+    "",
+    "```chat role=user",
+    args.userMessage ?? `Seed for ${args.mode}`,
+    "```",
+  ].join("\n");
+}
+
 function strictSupervisorPayload(overrides: Record<string, unknown>): Record<string, unknown> {
   return {
     reason: null,
@@ -113,7 +132,7 @@ describe("shouldUseFullPromptForSupervise", () => {
 });
 
 describe("handleConversationSupervise", () => {
-  it.serial("applies inferred switch_mode fallback from visible assistant text in live turns", async () => {
+  it.serial("does not infer switch_mode from visible assistant text alone", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
     await fs.writeFile(
@@ -161,10 +180,460 @@ describe("handleConversationSupervise", () => {
       supervisor: { enabled: true },
     });
 
-    expect(result.stopReasons).toContain("cycle_limit");
-    expect(createForkCalls).toHaveLength(2);
-    expect(createForkCalls[1].actionSummary).toBe("agent:switch_mode theory->explore_and_solve");
-    expect(String(createForkCalls[1].documentText ?? "")).toContain("mode: explore_and_solve");
+    expect(result.stopReasons).toContain("agent_stop");
+    expect(createForkCalls.length).toBeGreaterThanOrEqual(1);
+    expect(createForkCalls.some((call) => call.actionSummary === "agent:switch_mode theory->explore_and_solve")).toBe(
+      false,
+    );
+    expect(
+      createForkCalls.some((call) => String(call.documentText ?? "").includes("mode: explore_and_solve")),
+    ).toBe(false);
+  });
+
+  it.serial("routes runtime-captured bash switch_mode calls into a real mode fork", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory seed",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - template: \"probe seed {{supervisor.user_message}}\"",
+        "mode_state_machine:",
+        "  initial_mode: theory",
+        "  transitions:",
+        "    theory: [theory, explore_and_solve]",
+        "    explore_and_solve: [explore_and_solve]",
+      ].join("\n"),
+      "utf8",
+    );
+    process.env.MOCK_PROVIDER_SKIP_DELTAS = "1";
+    process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE = "1";
+    process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+      {
+        type: "provider_item",
+        item: {
+          provider: "claude",
+          kind: "tool_call",
+          name: "Bash",
+          summary:
+            "switch_mode --target-mode explore_and_solve --reason theory_complete --user-message probe_next_feature",
+        },
+        raw: {
+          method: "item/started",
+          params: {
+            item: {
+              id: "bash_switch",
+              name: "Bash",
+              input: {
+                command:
+                  "switch_mode --target-mode explore_and_solve --reason theory_complete --user-message probe_next_feature",
+              },
+            },
+          },
+        },
+      },
+      {
+        type: "provider_item",
+        item: {
+          provider: "claude",
+          kind: "tool_result",
+          name: "Bash",
+          id: "bash_switch",
+          summary: "{\"ok\":true}",
+          text: "{\"ok\":true}",
+        },
+        raw: {
+          method: "item/completed",
+          params: {
+            item: {
+              id: "bash_switch",
+              name: "Bash",
+              summary: "{\"ok\":true}",
+              input: {
+                command:
+                  "switch_mode --target-mode explore_and_solve --reason theory_complete --user-message probe_next_feature",
+              },
+              output: "{\"ok\":true}",
+              status: "completed",
+            },
+          },
+        },
+      },
+      { type: "assistant_message", text: "This should not continue after switch_mode." },
+      { type: "done", threadId: "thread_switch_mode_interrupt" },
+    ]);
+    try {
+      const { ctx, createForkCalls } = makeCtx({
+        conversationId: "conversation_runtime_switch",
+        docForkId: "fork_doc",
+      });
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeDoc("conversation_runtime_switch", "fork_doc"),
+        models: ["mock-model"],
+        provider: "mock",
+        disableSupervision: true,
+        cycleLimit: 1,
+        supervisor: { enabled: true },
+      });
+
+      expect(result.stopReasons).toEqual(["cycle_limit"]);
+      expect(createForkCalls).toHaveLength(2);
+      expect(createForkCalls[1].actionSummary).toBe("agent:switch_mode theory->explore_and_solve");
+      expect(String(createForkCalls[1].documentText ?? "")).toContain("mode: explore_and_solve");
+      expect(String(createForkCalls[1].documentText ?? "")).toContain("probe seed probe_next_feature");
+    } finally {
+      delete process.env.MOCK_PROVIDER_SKIP_DELTAS;
+      delete process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE;
+      delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
+    }
+  });
+
+  it.serial("reuses an existing target-mode thread for runtime switch_mode requests", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory seed",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - template: \"probe seed {{supervisor.user_message}}\"",
+        "mode_state_machine:",
+        "  initial_mode: theory",
+        "  transitions:",
+        "    theory: [theory, explore_and_solve]",
+        "    explore_and_solve: [explore_and_solve]",
+      ].join("\n"),
+      "utf8",
+    );
+    process.env.MOCK_PROVIDER_SKIP_DELTAS = "1";
+    process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE = "1";
+    process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+      {
+        type: "provider_item",
+        item: {
+          provider: "claude",
+          kind: "tool_call",
+          name: "Bash",
+          summary:
+            "switch_mode --target-mode explore_and_solve --reason theory_complete --user-message probe_next_feature",
+        },
+        raw: {
+          method: "item/started",
+          params: {
+            item: {
+              id: "bash_switch",
+              name: "Bash",
+              input: {
+                command:
+                  "switch_mode --target-mode explore_and_solve --reason theory_complete --user-message probe_next_feature",
+              },
+            },
+          },
+        },
+      },
+      {
+        type: "provider_item",
+        item: {
+          provider: "claude",
+          kind: "tool_result",
+          name: "Bash",
+          id: "bash_switch",
+          summary: "{\"ok\":true}",
+          text: "{\"ok\":true}",
+        },
+        raw: {
+          method: "item/completed",
+          params: {
+            item: {
+              id: "bash_switch",
+              name: "Bash",
+              summary: "{\"ok\":true}",
+              input: {
+                command:
+                  "switch_mode --target-mode explore_and_solve --reason theory_complete --user-message probe_next_feature",
+              },
+              output: "{\"ok\":true}",
+              status: "completed",
+            },
+          },
+        },
+      },
+      { type: "done", threadId: "thread_switch_mode_interrupt" },
+    ]);
+    try {
+      const conversationId = "conversation_runtime_switch_reuse";
+      const currentDoc = makeModeDoc({
+        conversationId,
+        forkId: "fork_doc",
+        mode: "theory",
+        userMessage: "Current theory work",
+      });
+      const exploreDoc = makeModeDoc({
+        conversationId,
+        forkId: "fork_explore_existing",
+        mode: "explore_and_solve",
+        userMessage: "Existing explore thread",
+      });
+      const { ctx, createForkCalls } = makeCtx({
+        conversationId,
+        docForkId: "fork_doc",
+        index: {
+          conversationId,
+          headId: "fork_doc",
+          headIds: ["fork_doc", "fork_explore_existing"],
+          forks: [{ id: "fork_doc" }, { id: "fork_explore_existing" }],
+        },
+        forksById: {
+          fork_doc: { id: "fork_doc", documentText: currentDoc, providerThreadId: "thread_theory" },
+          fork_explore_existing: {
+            id: "fork_explore_existing",
+            documentText: exploreDoc,
+            providerThreadId: "thread_explore_existing",
+          },
+        },
+      });
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: currentDoc,
+        models: ["mock-model"],
+        provider: "mock",
+        disableSupervision: true,
+        cycleLimit: 1,
+        supervisor: { enabled: true },
+      });
+
+      expect(result.stopReasons).toEqual(["cycle_limit"]);
+      expect(createForkCalls).toHaveLength(2);
+      expect(createForkCalls[1].parentId).toBe("fork_explore_existing");
+      expect(createForkCalls[1].providerThreadId).toBe("thread_explore_existing");
+      expect(String(createForkCalls[1].documentText ?? "")).toContain("mode: explore_and_solve");
+      expect(String(createForkCalls[1].documentText ?? "")).toContain("probe seed probe_next_feature");
+    } finally {
+      delete process.env.MOCK_PROVIDER_SKIP_DELTAS;
+      delete process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE;
+      delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
+    }
+  });
+
+  it.serial("applies accepted switch_mode requests when supervisor returns continue", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory seed",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - template: \"probe seed {{supervisor.user_message}}\"",
+        "mode_state_machine:",
+        "  initial_mode: theory",
+        "  transitions:",
+        "    theory: [theory, explore_and_solve]",
+        "    explore_and_solve: [explore_and_solve]",
+      ].join("\n"),
+      "utf8",
+    );
+    process.env.MOCK_PROVIDER_SKIP_DELTAS = "1";
+    process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE = "1";
+    process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+      {
+        type: "provider_item",
+        item: {
+          provider: "claude",
+          kind: "tool_call",
+          name: "Bash",
+          summary:
+            "switch_mode --target-mode explore_and_solve --reason theory_complete --user-message probe_next_feature",
+        },
+        raw: {
+          method: "item/started",
+          params: {
+            item: {
+              id: "bash_switch",
+              name: "Bash",
+              input: {
+                command:
+                  "switch_mode --target-mode explore_and_solve --reason theory_complete --user-message probe_next_feature",
+              },
+            },
+          },
+        },
+      },
+      {
+        type: "provider_item",
+        item: {
+          provider: "claude",
+          kind: "tool_result",
+          name: "Bash",
+          id: "bash_switch",
+          summary: "{\"ok\":true}",
+          text: "{\"ok\":true}",
+        },
+        raw: {
+          method: "item/completed",
+          params: {
+            item: {
+              id: "bash_switch",
+              name: "Bash",
+              summary: "{\"ok\":true}",
+              input: {
+                command:
+                  "switch_mode --target-mode explore_and_solve --reason theory_complete --user-message probe_next_feature",
+              },
+              output: "{\"ok\":true}",
+              status: "completed",
+            },
+          },
+        },
+      },
+      { type: "done", threadId: "thread_switch_mode_interrupt" },
+    ]);
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "continue",
+      payload: strictSupervisorPayload({ reason: "accept the requested switch" }),
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [
+          { mode: "explore_and_solve", confidence: "high", evidence: "single concrete probe target" },
+        ],
+        recommended_action: "continue",
+      },
+      reasoning: "accept switch",
+      agent_model: null,
+    });
+    try {
+      const conversationId = "conversation_runtime_switch_supervisor_continue";
+      const currentDoc = makeModeDoc({
+        conversationId,
+        forkId: "fork_doc",
+        mode: "theory",
+        userMessage: "Current theory work",
+      });
+      const exploreDoc = makeModeDoc({
+        conversationId,
+        forkId: "fork_explore_existing",
+        mode: "explore_and_solve",
+        userMessage: "Existing explore thread",
+      });
+      const { ctx, createForkCalls } = makeCtx({
+        conversationId,
+        docForkId: "fork_doc",
+        index: {
+          conversationId,
+          headId: "fork_doc",
+          headIds: ["fork_doc", "fork_explore_existing"],
+          forks: [{ id: "fork_doc" }, { id: "fork_explore_existing" }],
+        },
+        forksById: {
+          fork_doc: {
+            id: "fork_doc",
+            documentText: currentDoc,
+            providerThreadId: "thread_theory",
+            supervisorThreadId: "supervisor_thread",
+          },
+          fork_explore_existing: {
+            id: "fork_explore_existing",
+            documentText: exploreDoc,
+            providerThreadId: "thread_explore_existing",
+            supervisorThreadId: "supervisor_thread",
+          },
+        },
+      });
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: currentDoc,
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+        supervisor: { enabled: true },
+      });
+
+      expect(result.stopReasons).toEqual(["cycle_limit"]);
+      expect(createForkCalls.length).toBeGreaterThanOrEqual(2);
+      expect(createForkCalls[1].parentId).toBe("fork_explore_existing");
+      expect(createForkCalls[1].providerThreadId).toBe("thread_explore_existing");
+      expect(String(createForkCalls[1].documentText ?? "")).toContain("probe seed probe_next_feature");
+    } finally {
+      delete process.env.MOCK_PROVIDER_SKIP_DELTAS;
+      delete process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE;
+      delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+    }
+  });
+
+  it.serial("fails loudly and stops remaining inline tools for unsupported inline switch_mode calls", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-");
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```tool_call name=switch_mode",
+      '{"target_mode":"explore","reason":"go explore"}',
+      "```",
+      "",
+      "```tool_call name=write_file",
+      '{"path":"should-not-exist.txt","content":"unexpected"}',
+      "```",
+    ].join("\n");
+    try {
+      const { ctx, notifications } = makeCtx({
+        conversationId: "conversation_inline_switch_error",
+        docForkId: "fork_doc",
+      });
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeDoc("conversation_inline_switch_error", "fork_doc"),
+        models: ["mock-model"],
+        provider: "mock",
+        disableSupervision: true,
+        cycleLimit: 1,
+        supervisor: { enabled: true },
+      });
+
+      expect(result.stopReasons).toEqual(["cycle_limit"]);
+      await expect(fs.stat(path.join(workspaceRoot, "should-not-exist.txt"))).rejects.toThrow();
+      const appended = notifications
+        .filter((note) => note.method === "conversation.append")
+        .map((note) => String(note.params?.markdown ?? ""))
+        .join("\n");
+      expect(appended).toContain("switch_mode requests must come from the runtime CLI capture path");
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
   });
 
   it("runs a no-supervision turn and persists a post-turn fork", async () => {
@@ -822,6 +1291,137 @@ describe("handleConversationSupervise", () => {
     expect(typeof createForkCalls[1].actionSummary).toBe("string");
     expect(notifications.some((n) => n.method === "conversation.supervisor_run_start")).toBe(true);
     expect(notifications.some((n) => n.method === "conversation.supervisor_run_end")).toBe(true);
+  });
+
+  it.serial("forces theory to resume explore when compare is clean and one concrete Explore Plan already exists", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory seed",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: explore seed",
+        "mode_state_machine:",
+        "  initial_mode: theory",
+        "  transitions:",
+        "    theory: [theory, explore_and_solve]",
+        "    explore_and_solve: [explore_and_solve]",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, "current_compare.md"),
+      [
+        "# Current Compare (Level 1)",
+        "",
+        "- compare_ok: true",
+        "- all_match: true",
+        "- compared_sequences: 1",
+        "- diverged_sequences: 0",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, "theory.md"),
+      [
+        "Game test Theory",
+        "",
+        "# Explore Plan",
+        "- Target class: box-interior-entry-test",
+        "  - Goal: Test whether the stack can enter the box interior.",
+        "  - Actions: ACTION1 once from current position.",
+        "  - Stop: After this single action, record result and return to theory.",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const conversationId = "conversation_force_explore_resume";
+    const currentDoc = makeModeDoc({
+      conversationId,
+      forkId: "fork_doc",
+      mode: "theory",
+      userMessage: "Theory seed",
+    });
+    const exploreDoc = makeModeDoc({
+      conversationId,
+      forkId: "fork_explore_existing",
+      mode: "explore_and_solve",
+      userMessage: "Existing explore thread",
+    });
+    const { ctx, createForkCalls } = makeCtx({
+      conversationId,
+      docForkId: "fork_doc",
+      index: {
+        conversationId,
+        headId: "fork_doc",
+        headIds: ["fork_doc", "fork_explore_existing"],
+        forks: [{ id: "fork_doc" }, { id: "fork_explore_existing" }],
+      },
+      forksById: {
+        fork_doc: {
+          id: "fork_doc",
+          documentText: currentDoc,
+          providerThreadId: "thread_theory",
+          supervisorThreadId: "supervisor_thread",
+        },
+        fork_explore_existing: {
+          id: "fork_explore_existing",
+          documentText: exploreDoc,
+          providerThreadId: "thread_explore_existing",
+          supervisorThreadId: "supervisor_thread",
+        },
+      },
+    });
+    const reviewOverrideJson = JSON.stringify({
+      decision: "append_message_and_continue",
+      payload: {
+        message: "Keep refining theory before switching.",
+        message_template: "custom",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: false,
+        candidate_modes_ranked: [{ mode: "explore_and_solve", confidence: "low", evidence: "supervisor said continue" }],
+        recommended_action: "continue",
+      },
+      reasoning: "",
+      agent_model: null,
+    });
+
+    process.env.MOCK_PROVIDER_SKIP_DELTAS = "1";
+    try {
+      await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: currentDoc,
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+        supervisor: { enabled: true, stopCondition: "task complete", reviewOverrideJson },
+      });
+    } finally {
+      delete process.env.MOCK_PROVIDER_SKIP_DELTAS;
+    }
+
+    expect(createForkCalls.length).toBeGreaterThanOrEqual(2);
+    const resumedFork = createForkCalls.find((call) => call.actionSummary === "resume_mode_head (hard)");
+    expect(resumedFork).toBeTruthy();
+    expect(resumedFork.parentId).toBe("fork_explore_existing");
+    expect(resumedFork.providerThreadId).toBe("thread_explore_existing");
+    expect(String(resumedFork.documentText ?? "")).toContain("mode: explore_and_solve");
+    expect(String(resumedFork.documentText ?? "")).toContain("Current compare is clean");
   });
 
   it("emits a budget update when supervisor switches the active agent model", async () => {

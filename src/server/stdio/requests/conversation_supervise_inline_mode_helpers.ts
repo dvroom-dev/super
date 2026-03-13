@@ -18,6 +18,7 @@ import {
 } from "../supervisor/mode_runtime.js";
 import type { RuntimeContext } from "./context.js";
 import type { SwitchModeRequest } from "./conversation_supervise_switch_mode.js";
+import { validateSwitchModeHandoffText } from "./conversation_supervise_switch_mode.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
 import { shouldForceFreshForkAcrossLevelBoundary } from "./conversation_supervise_level_boundary.js";
@@ -106,9 +107,11 @@ function buildResumeHandoffMessage(args: {
   const reviewMessageType: ChatRole = args.review.decision === "resume_mode_head"
     ? (args.review.payload.message_type ?? "user")
     : "user";
-  const agentMessage = String(args.agentMessage ?? "").trim();
   const agentRequestMessage = String(args.agentRequestMessage ?? "").trim();
-  const handoffSource = agentMessage || agentRequestMessage;
+  const agentMessage = args.transitionTrigger === "agent_switch_mode_request"
+    ? ""
+    : String(args.agentMessage ?? "").trim();
+  const handoffSource = agentRequestMessage || agentMessage;
   if (args.transitionTrigger !== "agent_switch_mode_request" || !handoffSource) {
     return { text: reviewMessage, messageType: reviewMessageType };
   }
@@ -184,6 +187,13 @@ export async function applySupervisorForkDecision(args: {
     agentRequestMessage: args.currentAgentRequestMessage,
     transitionTrigger: args.transitionTrigger,
   });
+  const handoffValidationError = validateSwitchModeHandoffText({
+    targetMode: requestedMode,
+    text: handoff.text,
+  });
+  if (handoffValidationError) {
+    throw new Error(handoffValidationError);
+  }
   const forceFreshAcrossLevelBoundary = await shouldForceFreshForkAcrossLevelBoundary({
     workspaceRoot: args.workspaceRoot,
     agentBaseDir: args.agentBaseDir,
@@ -336,7 +346,7 @@ export async function applySupervisorForkDecision(args: {
       requestedMode,
     );
     const actionEntry = buildSupervisorAction({
-      action: "fork",
+      action: "resume_mode_head",
       mode: "hard",
       review: args.review,
       stopReasons: [args.reasonLabel],

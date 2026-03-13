@@ -431,6 +431,7 @@ describe("runAgentTurn", () => {
     expect(result.toolCalls?.[0]?.args?.target_mode).toBe("explore_game");
     expect(result.toolCalls?.[0]?.args?.reason).toBe("theory_complete");
     expect(result.toolCalls?.[0]?.args?.user_message).toBe("probe_next_feature");
+    expect(result.toolCalls?.[0]?.source).toBe("runtime_provider");
     expect(result.providerToolEvents).toEqual([
       {
         when: "invocation",

@@ -1,6 +1,5 @@
 import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { BudgetState, TurnResult } from "../supervisor/agent_turn.js";
-import { maybeApplyInferredSwitchModeFromAssistantText } from "./conversation_supervise_inferred_switch.js";
 import { processProviderToolInterceptions } from "./conversation_supervise_provider_tool_interception.js";
 import type { RuntimeContext } from "./context.js";
 import type { SupervisorConfig } from "../types.js";
@@ -57,30 +56,6 @@ export async function handlePostTurnInterceptions(args: {
   providerName: "mock" | "codex" | "claude";
 }) {
   const providerInterception = await processProviderToolInterceptions(args);
-  const inferredSwitch = !args.result.toolCalls?.length
-    ? await maybeApplyInferredSwitchModeFromAssistantText({
-        ctx: args.ctx,
-        workspaceRoot: args.workspaceRoot,
-        docPath: args.docPath,
-        conversationId: args.conversationId,
-        activeForkId: args.activeForkId,
-        switchActiveFork: args.switchActiveFork,
-        renderedRunConfig: args.renderedRunConfig,
-        requestAgentRuleRequirements: args.requestAgentRuleRequirements,
-        activeMode: args.activeMode,
-        allowedNextModes: args.allowedNextModes,
-        modePayloadFieldsByMode: args.modePayloadFieldsByMode,
-        runConfigPath: args.runConfigPath,
-        configBaseDir: args.configBaseDir,
-        agentBaseDir: args.agentBaseDir,
-        supervisorBaseDir: args.supervisorBaseDir,
-        budget: args.budget,
-        providerName: args.providerName,
-        currentModel: args.currentModel,
-        supervisorModel: args.supervisorModel,
-        currentSupervisorThreadId: args.currentSupervisorThreadId,
-        assistantText: args.result.assistantText,
-      })
-    : undefined;
+  const inferredSwitch = undefined;
   return { providerInterception, inferredSwitch };
 }
