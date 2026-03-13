@@ -519,6 +519,26 @@ describe("run_config", () => {
     expect(rendered?.supervisor?.reviewTimeoutMs).toBe(120000);
   });
 
+  it("allows cadence to be disabled explicitly", async () => {
+    const root = await makeTempRoot("run-config-");
+    await fs.mkdir(path.join(root, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, ".ai-supervisor", "config.yaml"),
+      baseConfig({
+        extra: [
+          "  cadence_enabled: false",
+        ],
+      }),
+      "utf8",
+    );
+
+    const loaded = await loadRunConfigForDirectory(root, { globalHomeDir: path.join(root, "missing-home") });
+    const rendered = await renderRunConfig(loaded);
+    expect(rendered?.supervisor?.cadenceEnabled).toBe(false);
+    expect(rendered?.supervisor?.cadenceTimeMs).toBeUndefined();
+    expect(rendered?.supervisor?.cadenceTokensAdjusted).toBeUndefined();
+  });
+
   it("loads default trigger rationale prompts for all supervisor trigger types", async () => {
     const root = await makeTempRoot("run-config-");
     await fs.mkdir(path.join(root, ".ai-supervisor"), { recursive: true });

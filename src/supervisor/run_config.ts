@@ -426,6 +426,14 @@ export async function renderRunConfig(
   const defaultSupervisor = await loadDefaultSupervisorConfig();
   let supervisor = defaultSupervisor || config.supervisor ? { ...(defaultSupervisor ?? {}), ...(config.supervisor ?? {}) } : undefined;
   if (typeof config.reviewTimeoutMs === "number") supervisor = { ...(supervisor ?? {}), reviewTimeoutMs: config.reviewTimeoutMs };
+  if (supervisor?.cadenceEnabled === false) {
+    supervisor = {
+      ...supervisor,
+      cadenceTimeMs: undefined,
+      cadenceTokensAdjusted: undefined,
+      cadenceInterruptPolicy: undefined,
+    };
+  }
   const renderedSupervisor = supervisor
     ? {
         ...supervisor,

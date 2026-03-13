@@ -118,8 +118,9 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   let turnIndex = await loadLastTurnTelemetryTurn(workspaceRoot, conversationId);
   let cycleTurnCount = 0;
   const startedAt = Date.now();
+  const cadenceEnabled = disableSupervision ? false : (supervisorBase.cadenceEnabled ?? true);
   const timeBudgetMs = disableSupervision ? 0 : (supervisorBase.timeBudgetMs ?? 0), tokenBudgetAdjusted = disableSupervision ? 0 : (supervisorBase.tokenBudgetAdjusted ?? 0);
-  const cadenceTimeMs = disableSupervision ? 0 : (supervisorBase.cadenceTimeMs ?? 0), cadenceTokensAdjusted = disableSupervision ? 0 : (supervisorBase.cadenceTokensAdjusted ?? 0);
+  const cadenceTimeMs = !cadenceEnabled ? 0 : (supervisorBase.cadenceTimeMs ?? 0), cadenceTokensAdjusted = !cadenceEnabled ? 0 : (supervisorBase.cadenceTokensAdjusted ?? 0);
   const pricing = supervisorBase.pricing;
   const budget: BudgetState = {
     startedAt,
@@ -209,8 +210,14 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       label: "tools.provider_filesystem",
     });
     const effectiveSupervisor: SupervisorConfig = disableSupervision
-      ? { ...supervisorBase, enabled: false, timeBudgetMs: 0, tokenBudgetAdjusted: 0, cadenceTimeMs: 0, cadenceTokensAdjusted: 0 }
-      : { ...supervisorBase, enabled: supervisorBase.enabled ?? true };
+      ? { ...supervisorBase, enabled: false, cadenceEnabled: false, timeBudgetMs: 0, tokenBudgetAdjusted: 0, cadenceTimeMs: 0, cadenceTokensAdjusted: 0 }
+      : {
+          ...supervisorBase,
+          enabled: supervisorBase.enabled ?? true,
+          cadenceEnabled,
+          cadenceTimeMs,
+          cadenceTokensAdjusted,
+        };
     const allowedNextModes = await allowedNextModesFor({
       renderedRunConfig,
       activeMode,

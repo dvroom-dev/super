@@ -36,6 +36,7 @@ export type SupervisorMessageTemplatesByTrigger = Partial<
 
 export type RunConfigSupervisor = {
   enabled?: boolean;
+  cadenceEnabled?: boolean;
   timeBudgetMs?: number;
   tokenBudgetAdjusted?: number;
   cadenceTimeMs?: number;
@@ -275,6 +276,11 @@ export function normalizeSupervisorConfig(raw: unknown, sourcePath: string): Run
   }
 
   const enabled = normalizeBoolean(obj.enabled, "supervisor.enabled", sourcePath);
+  const cadenceEnabled = normalizeBoolean(
+    obj.cadence_enabled ?? obj.cadenceEnabled,
+    "supervisor.cadence_enabled",
+    sourcePath,
+  );
   const timeBudgetMs = normalizePositiveNumber(obj.time_budget_ms, "supervisor.time_budget_ms", sourcePath);
   const tokenBudgetAdjusted = normalizePositiveNumber(
     obj.token_budget_adjusted,
@@ -345,6 +351,7 @@ export function normalizeSupervisorConfig(raw: unknown, sourcePath: string): Run
 
   if (
     enabled == null &&
+    cadenceEnabled == null &&
     timeBudgetMs == null &&
     tokenBudgetAdjusted == null &&
     cadenceTimeMs == null &&
@@ -365,6 +372,7 @@ export function normalizeSupervisorConfig(raw: unknown, sourcePath: string): Run
 
   const out: RunConfigSupervisor = {};
   if (enabled != null) out.enabled = enabled;
+  if (cadenceEnabled != null) out.cadenceEnabled = cadenceEnabled;
   if (timeBudgetMs != null) out.timeBudgetMs = timeBudgetMs;
   if (tokenBudgetAdjusted != null) out.tokenBudgetAdjusted = tokenBudgetAdjusted;
   if (cadenceTimeMs != null) out.cadenceTimeMs = cadenceTimeMs;

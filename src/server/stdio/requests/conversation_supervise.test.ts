@@ -1641,6 +1641,38 @@ describe("handleConversationSupervise", () => {
     }
   });
 
+  it("disables cadence reviews when cadence_enabled=false", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-no-cadence-");
+    const { ctx, notifications } = makeCtx();
+    process.env.MOCK_PROVIDER_DELAY_MS = "5";
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeDoc(),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+        supervisor: {
+          enabled: true,
+          stopCondition: "task complete",
+          cadenceEnabled: false,
+          cadenceTimeMs: 1,
+        },
+      });
+      expect(result.stopReasons).not.toContain("cadence_time");
+      expect(
+        notifications.some(
+          (note) => note.method === "conversation.status" && String(note.params?.message ?? "").includes("cadence"),
+        ),
+      ).toBe(false);
+    } finally {
+      delete process.env.MOCK_PROVIDER_DELAY_MS;
+    }
+  });
+
   it.serial("merges mode-specific supervisor instructions with global instructions", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });

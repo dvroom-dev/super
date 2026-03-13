@@ -11,6 +11,7 @@ export type ServerState = {
 
 export type SupervisorConfig = {
   enabled?: boolean;
+  cadenceEnabled?: boolean;
   timeBudgetMs?: number;
   tokenBudgetAdjusted?: number;
   cadenceTimeMs?: number;
