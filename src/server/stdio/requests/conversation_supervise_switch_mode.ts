@@ -1,20 +1,24 @@
 import { renderToolResult } from "../../../markdown/render.js";
-import { isToolAllowedByPolicy } from "../../../tools/definitions.js";
 import { newId } from "../../../utils/ids.js";
 import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { RunConfigTools } from "../../../supervisor/run_config_tools.js";
 import {
+  appendChatMessage,
   applySupervisorTemplateFields,
   buildFreshModeDocument,
+  frontmatterValue,
   mergeAgentRuleSet,
   modeTransitionAllowed,
   resolveModeConfig,
+  updateFrontmatterField,
 } from "../supervisor/mode_runtime.js";
 import type { BudgetState } from "../supervisor/agent_turn.js";
 import type { InlineToolCall } from "../supervisor/inline_tools.js";
 import type { RuntimeContext } from "./context.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
+import { updateFrontmatterForkId } from "../supervisor/fork_utils.js";
+import { shouldForceFreshForkAcrossLevelBoundary } from "./conversation_supervise_level_boundary.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -53,10 +57,6 @@ type ApplySwitchModeRequestForkArgs = {
   currentSupervisorThreadId?: string;
   request: SwitchModeRequest;
   sourceLabel: "agent" | "supervisor";
-};
-
-type ApplyInferredSwitchModeRequestForkArgs = Omit<ApplySwitchModeRequestForkArgs, "request"> & {
-  assistantText: string;
 };
 
 export type ParsedSwitchModeInlineOutcome =
@@ -126,60 +126,76 @@ function trimInlineText(text: string): string {
   return text.replace(/\r/g, "").trim();
 }
 
-export function inferSwitchModeRequestFromAssistantText(text: string): SwitchModeRequest | null {
-  const source = trimInlineText(text);
-  if (!source) return null;
-  const explicitTargetPatterns = [
-    /\*\*Switch target\*\*:\s*`?([a-z_][a-z0-9_]*)`?/i,
-    /Switch target:\s*`?([a-z_][a-z0-9_]*)`?/i,
+function validateWrapupCertificationTarget(args: {
+  targetMode: string;
+  modePayload: Record<string, string>;
+}): string | null {
+  const hasWrapupFlags =
+    args.modePayload.wrapup_certified != null ||
+    args.modePayload.wrapup_level != null;
+  if (!hasWrapupFlags) return null;
+  if (args.targetMode !== "theory" && args.targetMode !== "code_model") return null;
+  return [
+    `switch_mode target_mode '${args.targetMode}' remains inside solved-level wrap-up.`,
+    "wrapup_certified/wrapup_level are reserved for the final release out of wrap-up.",
+  ].join(" ");
+}
+
+export function validateSwitchModeHandoffText(args: {
+  targetMode: string;
+  text: string;
+}): string | null {
+  if (args.targetMode !== "explore_and_solve") return null;
+  const text = trimInlineText(args.text);
+  if (!text) return null;
+  const directionalSteps = text.match(/\b(?:up|down|left|right)\s*x\d+\b/gi) ?? [];
+  const boundedRouteSignals = [
+    /\bstop condition\b/i,
+    /\bwatch for\b/i,
+    /\bnovel event\b/i,
+    /\broute exhausted\b/i,
+    /\buntil (?:completion|a novel event|route exhausted|blocked)\b/i,
+    /\bcompletion trigger\b/i,
+    /\blevel transition\b/i,
   ];
-  for (const pattern of explicitTargetPatterns) {
-    const direct = source.match(pattern);
-    const targetMode = String(direct?.[1] ?? "").trim();
-    if (targetMode) {
-      const reasonMatch =
-        source.match(/\*\*Reason\*\*:\s*([\s\S]*?)(?:\n\s*\n|$)/i) ??
-        source.match(/Reason:\s*([\s\S]*?)(?:\n\s*\n|$)/i);
-      const handoffMatch =
-        source.match(/\*\*Handoff(?:[^:]*)\*\*:\s*([\s\S]*?)(?:\n\s*\n|$)/i) ??
-        source.match(/Handoff(?:[^:]*):\s*([\s\S]*?)(?:\n\s*\n|$)/i);
-      const reason =
-        trimInlineText(reasonMatch?.[1] ?? "") ||
-        trimInlineText(handoffMatch?.[1] ?? "") ||
-        `assistant requested switch to ${targetMode} in visible handoff text`;
-      return {
-        targetMode,
-        reason,
-        modePayload: {},
-        terminal: true,
-      };
-    }
+  const mixedAgendaSignals = [
+    /\bif confirmed\b/i,
+    /\bafter this\b/i,
+    /\bnext target\b/i,
+    /\bthen (?:switch back|plan|begin)\b/i,
+  ];
+  if (directionalSteps.length >= 2 && mixedAgendaSignals.some((pattern) => pattern.test(text))) {
+    return [
+      "explore_and_solve handoff is invalid: mixed staged agendas are not allowed in the mode handoff.",
+      "Use either one bounded route with an explicit stop condition, or one smaller probe target, but not a probe-plus-then-route script.",
+    ].join(" ");
   }
-  const pattern = /switch(?:ing)?(?:\s+back)?\s+to\s+`?([a-z_][a-z0-9_]*)`?(?:\s+mode)?/gi;
-  let lastMatch: RegExpExecArray | null = null;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(source))) {
-    lastMatch = match;
+  if (directionalSteps.length >= 2 && !boundedRouteSignals.some((pattern) => pattern.test(text))) {
+    return [
+      "explore_and_solve handoff is invalid: multi-action routes require an explicit stop condition.",
+      "Name one bounded route target and say when to stop: completion, novel event, route exhausted, or blocked.",
+    ].join(" ");
   }
-  const targetMode = String(lastMatch?.[1] ?? "").trim();
-  if (!targetMode) return null;
+  return null;
+}
 
-  const handoffPattern = new RegExp(
-    String.raw`(?:\*\*Handoff to ${targetMode}:\*\*|Handoff to ${targetMode}:)\s*([\s\S]*?)(?:\n\s*\n|$)`,
-    "i",
-  );
-  const handoffMatch = source.match(handoffPattern);
-  const reason =
-    trimInlineText(handoffMatch?.[1] ?? "") ||
-    `assistant requested switch to ${targetMode} in visible handoff text`;
-  if (!reason) return null;
-
-  return {
-    targetMode,
-    reason,
-    modePayload: {},
-    terminal: true,
-  };
+async function loadLatestForkInMode(args: {
+  ctx: RuntimeContext;
+  workspaceRoot: string;
+  conversationId: string;
+  mode: string;
+}) {
+  const idx = await args.ctx.store.loadIndex(args.workspaceRoot, args.conversationId);
+  let fallback: any = undefined;
+  for (let i = idx.forks.length - 1; i >= 0; i -= 1) {
+    const forkSummary = idx.forks[i];
+    const fork = await args.ctx.store.loadFork(args.workspaceRoot, args.conversationId, forkSummary.id);
+    const forkMode = frontmatterValue(fork.documentText ?? "", "mode")?.trim() || "";
+    if (forkMode !== args.mode) continue;
+    if (fork.providerThreadId) return fork;
+    if (!fallback) fallback = fork;
+  }
+  return fallback;
 }
 
 export function parseSwitchModeInlineCall(args: ParseSwitchModeInlineCallArgs): ParsedSwitchModeInlineOutcome {
@@ -188,11 +204,10 @@ export function parseSwitchModeInlineCall(args: ParseSwitchModeInlineCallArgs): 
     : args.call.name;
   const toolName = normalizedName === "check_rules" ? "check_supervisor" : normalizedName;
   if (toolName !== "switch_mode") return { kind: "not_switch_mode" };
-
-  if (!isToolAllowedByPolicy(args.toolConfig?.builtinPolicy, "switch_mode")) {
-    // `switch_mode` is now intended to flow through the dedicated CLI path.
-    // If the model still emits an inline/custom-tool switch request, ignore it
-    // instead of appending a misleading `(ok=false)` tool result blob.
+  if (args.call.source !== "runtime_provider") {
+    // `switch_mode` should flow through the dedicated CLI/runtime path.
+    // Ignore plain inline/custom-tool requests so the agent cannot fake a
+    // mode transition inside the transcript.
     return { kind: "not_switch_mode" };
   }
   const targetMode = String(args.call.args?.target_mode ?? "").trim();
@@ -259,6 +274,11 @@ export async function applySwitchModeRequestFork(
     modePayload: args.request.modePayload,
     requiredFields,
   });
+  const wrapupCertificationError = validateWrapupCertificationTarget({
+    targetMode,
+    modePayload: normalizedRequestedPayload,
+  });
+  if (wrapupCertificationError) return errorOutcome(wrapupCertificationError);
   const allowedFields = new Set(requiredFields);
   for (const [rawKey, rawValue] of Object.entries(normalizedRequestedPayload)) {
     const key = String(rawKey ?? "").trim();
@@ -279,11 +299,76 @@ export async function applySwitchModeRequestFork(
   if (!seeded.trim()) {
     return errorOutcome(`switch_mode requires modes.${targetMode}.user_message to render non-empty text`);
   }
+  const handoffValidationError = validateSwitchModeHandoffText({
+    targetMode,
+    text: seeded,
+  });
+  if (handoffValidationError) {
+    return errorOutcome(handoffValidationError);
+  }
   const nextModeRuleSet = mergeAgentRuleSet({
     requestRequirements: args.requestAgentRuleRequirements,
     configured: targetModeConfig.agentRules ?? effectiveRenderedRunConfig?.agentRules,
   });
+  const forceFreshAcrossLevelBoundary = await shouldForceFreshForkAcrossLevelBoundary({
+    workspaceRoot: args.workspaceRoot,
+    agentBaseDir: args.agentBaseDir,
+  });
+  const targetModeFork = forceFreshAcrossLevelBoundary
+    ? undefined
+    : await loadLatestForkInMode({
+        ctx: args.ctx,
+        workspaceRoot: args.workspaceRoot,
+        conversationId: args.conversationId,
+        mode: targetMode,
+      });
   const nextForkId = newId("fork");
+  if (targetModeFork) {
+    const resumedDoc = appendChatMessage(
+      targetModeFork.documentText ?? "",
+      "user",
+      seeded,
+    );
+    const nextDoc = updateFrontmatterField(
+      updateFrontmatterForkId(resumedDoc, args.conversationId, nextForkId),
+      "mode",
+      targetMode,
+    );
+    const nextFork = await args.ctx.store.createFork({
+      workspaceRoot: args.workspaceRoot,
+      conversationId: args.conversationId,
+      parentId: targetModeFork.id,
+      forkId: nextForkId,
+      documentText: nextDoc,
+      agentRules: targetModeFork.agentRules ?? nextModeRuleSet.requirements,
+      providerName: args.providerName,
+      model: args.currentModel,
+      providerThreadId: targetModeFork.providerThreadId,
+      supervisorThreadId: targetModeFork.supervisorThreadId ?? args.currentSupervisorThreadId,
+      actionSummary: `${args.sourceLabel}:switch_mode ${args.activeMode}->${targetMode}`,
+      forkSummary: `${args.sourceLabel} switch_mode: ${args.activeMode} -> ${targetMode}`,
+      agentModel: args.currentModel,
+      supervisorModel: args.supervisorModel,
+    });
+    args.ctx.sendNotification({
+      method: "fork.created",
+      params: { conversationId: args.conversationId, forkId: nextFork.id, headId: nextFork.id },
+    });
+    args.switchActiveFork(nextFork.id);
+    args.ctx.sendNotification({
+      method: "conversation.replace",
+      params: { docPath: args.docPath, documentText: nextDoc, baseForkId: nextFork.id },
+    });
+    args.budget.cadenceAnchorAt = Date.now();
+    args.budget.cadenceTokensAnchor = args.budget.adjustedTokensUsed;
+    return {
+      kind: "switched",
+      docText: nextDoc,
+      threadId: targetModeFork.providerThreadId,
+      supervisorThreadId: targetModeFork.supervisorThreadId ?? args.currentSupervisorThreadId,
+      fullResyncNeeded: true,
+    };
+  }
   const forkDoc = buildFreshModeDocument({
     conversationId: args.conversationId,
     forkId: nextForkId,
@@ -335,15 +420,4 @@ export async function applySwitchModeRequestFork(
     supervisorThreadId: args.currentSupervisorThreadId,
     fullResyncNeeded: true,
   };
-}
-
-export async function applyInferredSwitchModeRequestFork(
-  args: ApplyInferredSwitchModeRequestForkArgs,
-): Promise<SwitchModeRequestForkOutcome | undefined> {
-  const request = inferSwitchModeRequestFromAssistantText(args.assistantText);
-  if (!request) return undefined;
-  return applySwitchModeRequestFork({
-    ...args,
-    request,
-  });
 }

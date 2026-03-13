@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { handleConversationSupervise } from "./conversation_supervise.js";
 import {
-  inferSwitchModeRequestFromAssistantText,
   parseSwitchModeInlineCall,
+  validateSwitchModeHandoffText,
 } from "./conversation_supervise_switch_mode.js";
 
 const tempRoots: string[] = [];
@@ -51,6 +51,40 @@ async function writeModeConfig(workspaceRoot: string, transitions = "    theory:
       "  initial_mode: theory",
       "  transitions:",
       ...transitions.split("\n"),
+    ].join("\n"),
+    "utf8",
+  );
+}
+
+async function writeWrapupModeConfig(workspaceRoot: string): Promise<void> {
+  await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+    [
+      "supervisor:",
+      "  stop_condition: task complete",
+      "modes:",
+      "  theory:",
+      "    user_message:",
+      "      operation: append",
+      "      parts:",
+      "        - template: \"theory wrapup {{supervisor.wrapup_certified}} level {{supervisor.wrapup_level}}\"",
+      "  code_model:",
+      "    user_message:",
+      "      operation: append",
+      "      parts:",
+      "        - template: \"code wrapup {{supervisor.wrapup_certified}} level {{supervisor.wrapup_level}}\"",
+      "  release:",
+      "    user_message:",
+      "      operation: append",
+      "      parts:",
+      "        - template: \"release wrapup {{supervisor.wrapup_certified}} level {{supervisor.wrapup_level}}\"",
+      "mode_state_machine:",
+      "  initial_mode: theory",
+      "  transitions:",
+      "    theory: [theory, code_model, release]",
+      "    code_model: [theory, code_model, release]",
+      "    release: [release]",
     ].join("\n"),
     "utf8",
   );
@@ -106,12 +140,66 @@ function makeCtx(conversationId = "conversation_test") {
   return { ctx, notifications, createForkCalls };
 }
 
+function setRuntimeSwitchProviderEvents(command: string): void {
+  process.env.MOCK_PROVIDER_SKIP_DELTAS = "1";
+  process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE = "1";
+  process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+    {
+      type: "provider_item",
+      item: {
+        provider: "claude",
+        kind: "tool_call",
+        name: "Bash",
+        summary: command,
+      },
+      raw: {
+        method: "item/started",
+        params: {
+          item: {
+            id: "bash_switch",
+            name: "Bash",
+            input: { command },
+          },
+        },
+      },
+    },
+    {
+      type: "provider_item",
+      item: {
+        provider: "claude",
+        kind: "tool_result",
+        name: "Bash",
+        id: "bash_switch",
+        summary: "{\"ok\":true}",
+        text: "{\"ok\":true}",
+      },
+      raw: {
+        method: "item/completed",
+        params: {
+          item: {
+            id: "bash_switch",
+            name: "Bash",
+            summary: "{\"ok\":true}",
+            input: { command },
+            output: "{\"ok\":true}",
+            status: "completed",
+          },
+        },
+      },
+    },
+    { type: "done", threadId: "thread_switch_mode_interrupt" },
+  ]);
+}
+
 afterEach(async () => {
   delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
   delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
   delete process.env.MOCK_PROVIDER_RUNONCE_TEXT_SEQUENCE;
   delete process.env.MOCK_PROVIDER_RUNONCE_EMPTY;
   delete process.env.MOCK_PROVIDER_RUNONCE_ERROR;
+  delete process.env.MOCK_PROVIDER_SKIP_DELTAS;
+  delete process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE;
+  delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
   delete process.env.SWITCH_SEED;
   while (tempRoots.length > 0) {
     const dir = tempRoots.pop();
@@ -165,406 +253,114 @@ describe("agent switch_mode inline tool", () => {
     expect(parsed).toEqual({ kind: "not_switch_mode" });
   });
 
-  it("infers switch_mode requests from visible assistant handoff text", () => {
-    const request = inferSwitchModeRequestFromAssistantText([
-      "Coverage passes.",
-      "",
-      "I should switch to `explore_and_solve` mode.",
-      "",
-      "**Handoff to explore_and_solve:** Probe ACTION1 to see if the small_marker moves.",
-      "",
-      "I'm ready to switch to `explore_and_solve` mode with a concrete probe plan.",
-    ].join("\n"));
-
-    expect(request).toEqual({
-      targetMode: "explore_and_solve",
-      reason: "Probe ACTION1 to see if the small_marker moves.",
-      modePayload: {},
-      terminal: true,
-    });
-  });
-
-  it.serial("switches mode in no-supervision runs", async () => {
-    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
-    await writeModeConfig(workspaceRoot);
-    const { ctx, createForkCalls } = makeCtx("conversation_switch_mode_success");
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
-      "```tool_call name=switch_mode",
-      '{"target_mode":"explore","reason":"need exploratory lane","mode_payload":{"seed":"from-agent"}}',
-      "```",
-    ].join("\n");
-
-    const result = await handleConversationSupervise(ctx, {
-      workspaceRoot,
-      docPath: path.join(workspaceRoot, "session.md"),
-      documentText: makeDoc("conversation_switch_mode_success", "fork_doc"),
-      models: ["mock-model"],
-      provider: "mock",
-      disableSupervision: true,
-      cycleLimit: 1,
-      supervisor: {
-        enabled: true,
-        stopCondition: "task complete",
-      },
-    });
-
-    expect(result.stopReasons).toEqual(["cycle_limit"]);
-    expect(createForkCalls).toHaveLength(2);
-    expect(createForkCalls[1].actionSummary).toBe("agent:switch_mode theory->explore");
-    expect(String(createForkCalls[1].documentText ?? "")).toContain("mode: explore");
-    expect(String(createForkCalls[1].documentText ?? "")).toContain("explore seed from-agent");
-  });
-
-  it.serial("rejects switch_mode target outside allowed transitions", async () => {
-    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
-    await writeModeConfig(workspaceRoot, "    theory: [theory]\n    explore: [explore]");
-    const { ctx, notifications, createForkCalls } = makeCtx("conversation_switch_mode_bad_transition");
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
-      "```tool_call name=switch_mode",
-      '{"target_mode":"explore","reason":"try transition","mode_payload":{"seed":"from-agent"}}',
-      "```",
-    ].join("\n");
-
-    const result = await handleConversationSupervise(ctx, {
-      workspaceRoot,
-      docPath: path.join(workspaceRoot, "session.md"),
-      documentText: makeDoc("conversation_switch_mode_bad_transition", "fork_doc"),
-      models: ["mock-model"],
-      provider: "mock",
-      disableSupervision: true,
-      cycleLimit: 1,
-      supervisor: {
-        enabled: true,
-        stopCondition: "task complete",
-      },
-    });
-
-    expect(result.stopReasons).toEqual(["cycle_limit"]);
-    expect(createForkCalls).toHaveLength(1);
-    const appendEvents = notifications.filter((note) => note.method === "conversation.append");
-    const markdown = appendEvents.map((note) => String(note.params?.markdown ?? "")).join("\n");
-    expect(markdown).toContain("switch_mode target_mode 'explore' is not an allowed transition");
-  });
-
-  it.serial("validates switch_mode payload fields for target mode", async () => {
-    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
-    await writeModeConfig(workspaceRoot);
-    const { ctx, notifications, createForkCalls } = makeCtx("conversation_switch_mode_bad_payload");
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
-      "```tool_call name=switch_mode",
-      '{"target_mode":"explore","reason":"missing payload field","mode_payload":{}}',
-      "```",
-    ].join("\n");
-
-    const result = await handleConversationSupervise(ctx, {
-      workspaceRoot,
-      docPath: path.join(workspaceRoot, "session.md"),
-      documentText: makeDoc("conversation_switch_mode_bad_payload", "fork_doc"),
-      models: ["mock-model"],
-      provider: "mock",
-      disableSupervision: true,
-      cycleLimit: 1,
-      supervisor: {
-        enabled: true,
-        stopCondition: "task complete",
-      },
-    });
-
-    expect(result.stopReasons).toEqual(["cycle_limit"]);
-    expect(createForkCalls).toHaveLength(1);
-    const appendEvents = notifications.filter((note) => note.method === "conversation.append");
-    const markdown = appendEvents.map((note) => String(note.params?.markdown ?? "")).join("\n");
-    expect(markdown).toContain("switch_mode.mode_payload.seed is required");
-  });
-
-  it.serial("accepts stringified JSON mode_payload from provider tool calls", async () => {
-    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
-    await writeModeConfig(workspaceRoot);
-    const { ctx, createForkCalls } = makeCtx("conversation_switch_mode_string_payload");
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
-      "```tool_call name=switch_mode",
-      '{"target_mode":"explore","reason":"string payload","mode_payload":"{\\"seed\\":\\"from-agent\\"}"}',
-      "```",
-    ].join("\n");
-
-    const result = await handleConversationSupervise(ctx, {
-      workspaceRoot,
-      docPath: path.join(workspaceRoot, "session.md"),
-      documentText: makeDoc("conversation_switch_mode_string_payload", "fork_doc"),
-      models: ["mock-model"],
-      provider: "mock",
-      disableSupervision: true,
-      cycleLimit: 1,
-      supervisor: {
-        enabled: true,
-        stopCondition: "task complete",
-      },
-    });
-
-    expect(result.stopReasons).toEqual(["cycle_limit"]);
-    expect(createForkCalls).toHaveLength(2);
-    expect(String(createForkCalls[1].documentText ?? "")).toContain("explore seed from-agent");
-  });
-
-  it.serial("accepts top-level structured handoff fields for provider tool calls", async () => {
-    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
-    await writeModeConfig(workspaceRoot);
-    const { ctx, createForkCalls } = makeCtx("conversation_switch_mode_top_level_payload");
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
-      "```tool_call name=switch_mode",
-      '{"target_mode":"explore","reason":"top level payload","user_message":"from-agent"}',
-      "```",
-    ].join("\n");
-
-    const result = await handleConversationSupervise(ctx, {
-      workspaceRoot,
-      docPath: path.join(workspaceRoot, "session.md"),
-      documentText: makeDoc("conversation_switch_mode_top_level_payload", "fork_doc"),
-      models: ["mock-model"],
-      provider: "mock",
-      disableSupervision: true,
-      cycleLimit: 1,
-      supervisor: {
-        enabled: true,
-        stopCondition: "task complete",
-      },
-    });
-
-    expect(result.stopReasons).toEqual(["cycle_limit"]);
-    expect(createForkCalls).toHaveLength(2);
-    expect(String(createForkCalls[1].documentText ?? "")).toContain("explore seed from-agent");
-  });
-
-  it.serial("treats successful switch_mode as terminal for remaining inline tool calls", async () => {
-    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
-    await writeModeConfig(workspaceRoot);
-    const { ctx, createForkCalls } = makeCtx("conversation_switch_mode_terminal");
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
-      "```tool_call name=switch_mode",
-      '{"target_mode":"explore","reason":"switch now","mode_payload":{"seed":"from-agent"}}',
-      "```",
-      "",
-      "```tool_call name=write_file",
-      '{"path":"should-not-exist.txt","content":"unexpected"}',
-      "```",
-    ].join("\n");
-
-    const result = await handleConversationSupervise(ctx, {
-      workspaceRoot,
-      docPath: path.join(workspaceRoot, "session.md"),
-      documentText: makeDoc("conversation_switch_mode_terminal", "fork_doc"),
-      models: ["mock-model"],
-      provider: "mock",
-      disableSupervision: true,
-      cycleLimit: 1,
-      supervisor: {
-        enabled: true,
-        stopCondition: "task complete",
-      },
-    });
-
-    expect(result.stopReasons).toEqual(["cycle_limit"]);
-    expect(createForkCalls).toHaveLength(2);
-    await expect(fs.stat(path.join(workspaceRoot, "should-not-exist.txt"))).rejects.toThrow();
-  });
-
-  it.serial("routes switch_mode through supervisor and can replace tool call with a user message", async () => {
-    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
-    await writeModeConfig(workspaceRoot);
-    const { ctx, notifications, createForkCalls } = makeCtx("conversation_switch_mode_supervisor_replace");
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
-      "```tool_call name=switch_mode",
-      '{"target_mode":"explore","reason":"switch now","mode_payload":{"seed":"from-agent"}}',
-      "```",
-      "",
-      "```tool_call name=write_file",
-      '{"path":"should-not-exist.txt","content":"unexpected"}',
-      "```",
-    ].join("\n");
-    process.env.MOCK_PROVIDER_RUNONCE_TEXT = mockSupervisorDecision(
-      "append_message_and_continue",
-      {
-        message: "Do not switch modes yet. Continue in the current mode.",
-        message_template: "replace_switch_mode_with_guidance",
-      },
-    );
-
-    const result = await handleConversationSupervise(ctx, {
-      workspaceRoot,
-      docPath: path.join(workspaceRoot, "session.md"),
-      documentText: makeDoc("conversation_switch_mode_supervisor_replace", "fork_doc"),
-      models: ["mock-model"],
-      provider: "mock",
-      supervisorProvider: "mock",
-      disableSupervision: false,
-      cycleLimit: 1,
-      supervisor: {
-        enabled: true,
-        stopCondition: "task complete",
-      },
-    });
-
-    expect(result.stopReasons).toEqual(["cycle_limit"]);
-    expect(createForkCalls).toHaveLength(1);
-    const replaceEvents = notifications.filter((note) => note.method === "conversation.replace");
-    const replacedDocument = String(replaceEvents[replaceEvents.length - 1]?.params?.documentText ?? "");
-    expect(replacedDocument).toContain("```chat role=user");
-    expect(replacedDocument).toContain("Do not switch modes yet. Continue in the current mode.");
-    expect(replacedDocument).not.toContain("```tool_call name=switch_mode");
-    expect(replacedDocument).not.toContain("```tool_call name=write_file");
-    await expect(fs.stat(path.join(workspaceRoot, "should-not-exist.txt"))).rejects.toThrow();
-  });
-
-  it.serial("lets supervisor choose final fork target for switch_mode requests", async () => {
-    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
-    await writeModeConfig(workspaceRoot);
-    const { ctx, createForkCalls } = makeCtx("conversation_switch_mode_supervisor_fork");
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
-      "```tool_call name=switch_mode",
-      '{"target_mode":"theory","reason":"agent suggestion","mode_payload":{}}',
-      "```",
-    ].join("\n");
-    process.env.MOCK_PROVIDER_RUNONCE_TEXT = mockSupervisorDecision(
-      "fork_new_conversation",
-      {
-        mode: "explore",
-        mode_payload: {
-          theory: null,
-          explore: { seed: "from-supervisor" },
+  it("parses runtime-captured switch_mode requests even when builtin policy omits switch_mode", () => {
+    const parsed = parseSwitchModeInlineCall({
+      call: {
+        name: "switch_mode",
+        body: '{"target_mode":"explore_and_solve","reason":"need one probe","user_message":"Probe one action."}',
+        args: {
+          target_mode: "explore_and_solve",
+          reason: "need one probe",
+          user_message: "Probe one action.",
         },
+        source: "runtime_provider",
       },
-      {
-        current_mode_stop_satisfied: true,
-        candidate_modes_ranked: [{ mode: "explore", confidence: "high", evidence: "test" }],
-        recommended_action: "fork_new_conversation",
-      },
-    );
-
-    const result = await handleConversationSupervise(ctx, {
-      workspaceRoot,
-      docPath: path.join(workspaceRoot, "session.md"),
-      documentText: makeDoc("conversation_switch_mode_supervisor_fork", "fork_doc"),
-      models: ["mock-model"],
-      provider: "mock",
-      supervisorProvider: "mock",
-      disableSupervision: false,
-      cycleLimit: 1,
-      supervisor: {
-        enabled: true,
-        stopCondition: "task complete",
-      },
-    });
-
-    expect(result.stopReasons).toEqual(["cycle_limit"]);
-    expect(createForkCalls).toHaveLength(3);
-    const finalForkDoc = String(createForkCalls[createForkCalls.length - 1].documentText ?? "");
-    expect(finalForkDoc).toContain("mode: explore");
-    expect(finalForkDoc).toContain("explore seed from-supervisor");
-  });
-
-  it.serial("preserves the full agent message in switch_mode handoff branches", async () => {
-    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
-    await writeModeConfig(workspaceRoot);
-    const { ctx, createForkCalls } = makeCtx("conversation_switch_mode_handoff");
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
-      "```tool_call name=switch_mode",
-      '{"target_mode":"explore","reason":"need one completion probe","mode_payload":{"seed":"from-agent"}}',
-      "```",
-    ].join("\n");
-    process.env.MOCK_PROVIDER_RUNONCE_TEXT = mockSupervisorDecision(
-      "fork_new_conversation",
-      {
-        mode: "explore",
-        message: "Run one minimal completion probe, then report whether completion triggers.",
-        message_type: "user",
-        mode_payload: {
-          theory: null,
-          explore: { seed: "from-supervisor" },
+      toolConfig: {
+        builtinPolicy: {
+          mode: "allow",
+          names: ["shell", "read_file"],
         },
-      },
-      {
-        current_mode_stop_satisfied: true,
-        candidate_modes_ranked: [{ mode: "explore", confidence: "high", evidence: "test" }],
-        recommended_action: "fork_new_conversation",
-      },
-    );
-
-    const result = await handleConversationSupervise(ctx, {
-      workspaceRoot,
-      docPath: path.join(workspaceRoot, "session.md"),
-      documentText: makeDoc("conversation_switch_mode_handoff", "fork_doc"),
-      models: ["mock-model"],
-      provider: "mock",
-      supervisorProvider: "mock",
-      disableSupervision: false,
-      cycleLimit: 1,
-      supervisor: {
-        enabled: true,
-        stopCondition: "task complete",
-      },
+      } as any,
     });
 
-    expect(result.stopReasons).toEqual(["cycle_limit"]);
-    expect(createForkCalls).toHaveLength(3);
-    const handoffDoc = String(createForkCalls[createForkCalls.length - 1].documentText ?? "");
-    expect(handoffDoc).toContain("<mode-handoff source=\"agent_switch_mode_request\">");
-    expect(handoffDoc).toContain("<agent-message>");
-    expect(handoffDoc).toContain("```tool_call name=switch_mode");
-    expect(handoffDoc).toContain("\"reason\":\"need one completion probe\"");
+    expect(parsed).toEqual({
+      kind: "request",
+      request: {
+        targetMode: "explore_and_solve",
+        reason: "need one probe",
+        modePayload: { user_message: "Probe one action." },
+        terminal: true,
+      },
+    });
   });
 
-  it.serial("re-renders mode template env vars on each switch-mode fork", async () => {
-    const workspaceRoot = await makeTempRoot("conv-supervise-switch-mode-");
-    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
-    await fs.writeFile(
-      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
-      [
-        "supervisor:",
-        "  stop_condition: task complete",
-        "modes:",
-        "  theory:",
-        "    user_message:",
-        "      operation: append",
-        "      parts:",
-        "        - literal: theory seed",
-        "  explore:",
-        "    user_message:",
-        "      operation: append",
-        "      parts:",
-        "        - literal: explore seed ${env.SWITCH_SEED}",
-        "mode_state_machine:",
-        "  initial_mode: theory",
-        "  transitions:",
-        "    theory: [explore]",
-        "    explore: [explore]",
-      ].join("\n"),
-      "utf8",
+  it("rejects mixed probe-plus-route explore handoffs", () => {
+    expect(
+      validateSwitchModeHandoffText({
+        targetMode: "explore_and_solve",
+        text: [
+          "Probe ACTION1 to confirm vertical movement.",
+          "If confirmed, execute UP x3, LEFT x5, DOWN x1 to reach marker_a.",
+        ].join(" "),
+      }),
+    ).toContain("mixed staged agendas");
+  });
+
+  it("allows bounded multi-action explore routes with an explicit stop condition", () => {
+    expect(
+      validateSwitchModeHandoffText({
+        targetMode: "explore_and_solve",
+        text: [
+          "Target class: reach marker_a overlap to test the completion-trigger theory.",
+          "Probe sequence: LEFT x3, DOWN x1.",
+          "Stop condition: stop on completion, a novel event, route exhausted, or blocked.",
+        ].join(" "),
+      }),
+    ).toBeNull();
+  });
+
+  it.serial("rejects runtime-captured wrapup certification flags for theory/code_model targets", async () => {
+    for (const targetMode of ["theory", "code_model"]) {
+      const workspaceRoot = await makeTempRoot(`conv-supervise-switch-wrapup-${targetMode}-`);
+      await writeWrapupModeConfig(workspaceRoot);
+      setRuntimeSwitchProviderEvents(
+        `switch_mode --target-mode ${targetMode} --reason solved_level_wrapup --wrapup-certified --wrapup-level 7`,
+      );
+      const { ctx, notifications, createForkCalls } = makeCtx(`conversation_wrapup_${targetMode}`);
+
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeDoc(`conversation_wrapup_${targetMode}`, "fork_doc"),
+        models: ["mock-model"],
+        provider: "mock",
+        disableSupervision: true,
+        cycleLimit: 1,
+        supervisor: {
+          enabled: true,
+          stopCondition: "task complete",
+        },
+      });
+
+      expect(result.stopReasons).toEqual(["cycle_limit"]);
+      expect(
+        createForkCalls.some((call) => call.actionSummary === `agent:switch_mode theory->${targetMode}`),
+      ).toBe(false);
+      const appended = notifications
+        .filter((note) => note.method === "conversation.append")
+        .map((note) => String(note.params?.markdown ?? ""))
+        .join("\n");
+      expect(appended).toContain(`switch_mode target_mode '${targetMode}' remains inside solved-level wrap-up`);
+      expect(appended).toContain("wrapup_certified/wrapup_level are reserved for the final release out of wrap-up");
+    }
+  });
+
+  it.serial("allows runtime-captured wrapup certification flags on the final release transition", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-switch-wrapup-release-");
+    await writeWrapupModeConfig(workspaceRoot);
+    setRuntimeSwitchProviderEvents(
+      "switch_mode --target-mode release --reason solved_level_wrapup --wrapup-certified --wrapup-level 7",
     );
-    const { ctx, createForkCalls } = makeCtx("conversation_switch_mode_env_refresh");
-    let envSwitched = false;
-    const originalSendNotification = ctx.sendNotification.bind(ctx);
-    ctx.sendNotification = (note: any) => {
-      originalSendNotification(note);
-      if (!envSwitched && note?.method === "conversation.replace") {
-        envSwitched = true;
-        process.env.SWITCH_SEED = "seed_two";
-      }
-    };
-    process.env.SWITCH_SEED = "seed_one";
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
-      "```tool_call name=switch_mode",
-      '{"target_mode":"explore","reason":"keep switching","mode_payload":{}}',
-      "```",
-    ].join("\n");
+    const { ctx, notifications, createForkCalls } = makeCtx("conversation_wrapup_release");
 
     const result = await handleConversationSupervise(ctx, {
       workspaceRoot,
       docPath: path.join(workspaceRoot, "session.md"),
-      documentText: makeDoc("conversation_switch_mode_env_refresh", "fork_doc"),
+      documentText: makeDoc("conversation_wrapup_release", "fork_doc"),
       models: ["mock-model"],
       provider: "mock",
       disableSupervision: true,
-      cycleLimit: 2,
+      cycleLimit: 1,
       supervisor: {
         enabled: true,
         stopCondition: "task complete",
@@ -572,8 +368,14 @@ describe("agent switch_mode inline tool", () => {
     });
 
     expect(result.stopReasons).toEqual(["cycle_limit"]);
-    expect(createForkCalls).toHaveLength(3);
-    expect(String(createForkCalls[1]?.documentText ?? "")).toContain("explore seed seed_one");
-    expect(String(createForkCalls[2]?.documentText ?? "")).toContain("explore seed seed_two");
+    const switchFork = createForkCalls.find((call) => call.actionSummary === "agent:switch_mode theory->release");
+    expect(switchFork).toBeDefined();
+    expect(String(switchFork?.documentText ?? "")).toContain("mode: release");
+    expect(String(switchFork?.documentText ?? "")).toContain("release wrapup true level 7");
+    const appended = notifications
+      .filter((note) => note.method === "conversation.append")
+      .map((note) => String(note.params?.markdown ?? ""))
+      .join("\n");
+    expect(appended).not.toContain("reserved for the final release out of wrap-up");
   });
 });
