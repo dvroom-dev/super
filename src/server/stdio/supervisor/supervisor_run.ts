@@ -1,6 +1,8 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { createProvider } from "../../../providers/factory.js";
+import { getProviderOverflowRecovery } from "../../../providers/provider_overflow_recovery.js";
+import type { SupervisorOverflowRecoveryResult } from "../../../providers/provider_overflow_recovery_helpers.js";
 import type { ProviderConfig, ProviderName, ProviderPermissionProfile } from "../../../providers/types.js";
 import { compileSupervisorReview } from "../../../supervisor/compile.js";
 import type { SkillInstruction, SkillMetadata } from "../../../skills/types.js";
@@ -101,6 +103,19 @@ export type SupervisorReviewOutcome = {
 };
 
 const PRECOMPACT_SKELETON_BYTES = 128 * 1024;
+const CLAUDE_CONTEXT_RETRY_OPTIONS = {
+  maxSourceBytes: 192 * 1024,
+  maxTailBlocks: 12,
+  maxInlineBytes: 96,
+  kindsToOffload: ["tool_result", "tool_call", "chat"],
+};
+
+type ReviewPromptBundle = {
+  prompt: ReturnType<typeof compileSupervisorReview>;
+  managedContext: Awaited<ReturnType<typeof buildManagedSupervisorReviewContext>>;
+  runHistory: Awaited<ReturnType<typeof buildSupervisorRunHistoryContext>>;
+  reviewContextText: string;
+};
 
 export async function runSupervisorReview(input: SupervisorReviewInputs): Promise<SupervisorReviewOutcome> {
   const stopReasons = input.stopReasons && input.stopReasons.length ? input.stopReasons : ["manual"];
@@ -130,62 +145,82 @@ export async function runSupervisorReview(input: SupervisorReviewInputs): Promis
     input.supervisorWorkspaceRoot ??
     path.join(input.workspaceRoot, ".ai-supervisor", "supervisor", input.conversationId);
   await fs.mkdir(supervisorWorkspaceRoot, { recursive: true });
-  const managedContext = await buildManagedSupervisorReviewContext({
-    documentText: input.documentText,
-    workspaceRoot: input.workspaceRoot,
-    conversationId: input.conversationId,
-    blobDir: path.join(supervisorWorkspaceRoot, "review_blobs"),
-    blobPathBase: "review_blobs",
-  });
-  const runHistory = await buildSupervisorRunHistoryContext({
-    workspaceRoot: input.workspaceRoot,
-    currentConversationId: input.conversationId,
-    currentSupervisorThreadId: input.threadId,
-  });
-  const reviewContextText = [
-    "## Run-Wide Supervisor View",
-    runHistory.overviewText,
-    "",
-    "## Incremental Changes Since Last Supervisor Review",
-    runHistory.deltaText,
-    "",
-    "## Active Conversation Tail Skeleton",
-    managedContext.skeletonText,
-  ]
-    .join("\n")
-    .trim();
-  const prompt = compileSupervisorReview({
-    documentText: reviewContextText,
-    workspaceRoot: input.workspaceRoot,
-    provider: input.providerName as ProviderName,
-    agentRules: input.agentRules,
-    agentRuleViolations,
-    supervisorInstructions: input.supervisorInstructions,
-    assistantText: input.assistantText ?? "",
-    stopReasons,
-    model: input.model,
-    agentsMd: input.agentsText,
-    workspaceListing: input.workspaceListingText,
-    taggedFiles: input.taggedFiles,
-    openFiles: input.openFiles,
-    utilities: input.utilities,
-    skills: input.skills,
-    skillsToInvoke: input.skillsToInvoke,
-    skillInstructions: input.skillInstructions,
-    configuredSystemMessage,
-    stopCondition: input.stopCondition,
-    currentMode: input.currentMode,
-    allowedNextModes,
-    trigger: input.trigger,
-    modePayloadFieldsByMode: input.modePayloadFieldsByMode,
-    modeGuidanceByMode: input.modeGuidanceByMode,
-    responseSchema,
-    supervisorCarryover: input.supervisorCarryover,
-    mode: input.mode ?? "hard",
-    agentModel: input.agentModel ?? input.model,
-    supervisorModel: input.supervisorModel ?? input.model,
-    disableSyntheticCheckSupervisorOnRuleFailure: input.disableSyntheticCheckSupervisorOnRuleFailure,
-  });
+  const buildPromptBundle = async (
+    contextOptions?: {
+      maxSourceBytes?: number;
+      maxTailBlocks?: number;
+      maxInlineBytes?: number;
+      kindsToOffload?: string[];
+    },
+  ): Promise<ReviewPromptBundle> => {
+    const managedContext = await buildManagedSupervisorReviewContext({
+      documentText: input.documentText,
+      workspaceRoot: input.workspaceRoot,
+      conversationId: input.conversationId,
+      blobDir: path.join(supervisorWorkspaceRoot, "review_blobs"),
+      blobPathBase: "review_blobs",
+      ...contextOptions,
+    });
+    const runHistory = await buildSupervisorRunHistoryContext({
+      workspaceRoot: input.workspaceRoot,
+      currentConversationId: input.conversationId,
+      currentSupervisorThreadId: input.threadId,
+    });
+    const reviewContextText = [
+      "## Run-Wide Supervisor View",
+      runHistory.overviewText,
+      "",
+      "## Incremental Changes Since Last Supervisor Review",
+      runHistory.deltaText,
+      "",
+      "## Active Conversation Tail Skeleton",
+      managedContext.skeletonText,
+    ]
+      .join("\n")
+      .trim();
+    const prompt = compileSupervisorReview({
+      documentText: reviewContextText,
+      workspaceRoot: input.workspaceRoot,
+      provider: input.providerName as ProviderName,
+      agentRules: input.agentRules,
+      agentRuleViolations,
+      supervisorInstructions: input.supervisorInstructions,
+      assistantText: input.assistantText ?? "",
+      stopReasons,
+      model: input.model,
+      agentsMd: input.agentsText,
+      workspaceListing: input.workspaceListingText,
+      taggedFiles: input.taggedFiles,
+      openFiles: input.openFiles,
+      utilities: input.utilities,
+      skills: input.skills,
+      skillsToInvoke: input.skillsToInvoke,
+      skillInstructions: input.skillInstructions,
+      configuredSystemMessage,
+      stopCondition: input.stopCondition,
+      currentMode: input.currentMode,
+      allowedNextModes,
+      trigger: input.trigger,
+      modePayloadFieldsByMode: input.modePayloadFieldsByMode,
+      modeGuidanceByMode: input.modeGuidanceByMode,
+      responseSchema,
+      supervisorCarryover: input.supervisorCarryover,
+      mode: input.mode ?? "hard",
+      agentModel: input.agentModel ?? input.model,
+      supervisorModel: input.supervisorModel ?? input.model,
+      disableSyntheticCheckSupervisorOnRuleFailure: input.disableSyntheticCheckSupervisorOnRuleFailure,
+    });
+    return {
+      prompt,
+      managedContext,
+      runHistory,
+      reviewContextText,
+    };
+  };
+  let promptBundle = await buildPromptBundle();
+  let prompt = promptBundle.prompt;
+  let managedContext = promptBundle.managedContext;
+  let runHistory = promptBundle.runHistory;
   const logDirName = "reviews";
   const logId = newId("review");
   const baseDir = path.join(input.workspaceRoot, ".ai-supervisor", "conversations", input.conversationId, logDirName);
@@ -208,8 +243,8 @@ export async function runSupervisorReview(input: SupervisorReviewInputs): Promis
     );
     await trace(`prompt_bytes=${Buffer.byteLength(prompt.promptText, "utf8")} prompt_log=${promptLogRel}`);
     await trace(
-      `managed_context original_bytes=${managedContext.originalBytes} managed_bytes=${managedContext.managedBytes} skeleton_bytes=${managedContext.skeletonBytes} dropped_blocks=${managedContext.droppedBlocks} offloaded_blocks=${managedContext.offloadedBlocks} offloaded_bytes=${managedContext.offloadedBytes} run_history_forks=${runHistory.index.forks.length} run_history_new_forks=${runHistory.newForkCount}`,
-    );
+        `managed_context original_bytes=${managedContext.originalBytes} managed_bytes=${managedContext.managedBytes} skeleton_bytes=${managedContext.skeletonBytes} dropped_blocks=${managedContext.droppedBlocks} offloaded_blocks=${managedContext.offloadedBlocks} offloaded_bytes=${managedContext.offloadedBytes} run_history_forks=${runHistory.index.forks.length} run_history_new_forks=${runHistory.newForkCount}`,
+      );
   } catch {
     // Best-effort logging; continue if filesystem write fails.
   }
@@ -240,21 +275,32 @@ export async function runSupervisorReview(input: SupervisorReviewInputs): Promis
     let reviewText = "";
     let supervisorThreadId = supervisorThreadSeed;
     let errorInfo: SupervisorReviewOutcome["error"] | undefined, parsedOk = false, parsedReview = parseJsonSafe(reviewText);
-    let compactionRetryUsed = false;
-    const tryCompactSupervisorThread = async (reason: string): Promise<boolean> => {
-      if (typeof reviewer.compactThread !== "function") {
-        await trace(`compaction_skipped reason=${reason} detail=no_provider_compaction_hook`);
-        return false;
-      }
-      const result = await reviewer.compactThread({ reason });
-      if (result.threadId) supervisorThreadId = result.threadId;
-      await trace(
-        `compaction_result reason=${reason} compacted=${String(result.compacted)} thread_id=${result.threadId ?? "(none)"} detail=${result.details ?? "(none)"}`,
-      );
-      return Boolean(result.compacted);
-    };
+    let providerCompactionRetryUsed = false;
+    let localPromptRetryUsed = false;
+    const overflowRecovery = getProviderOverflowRecovery(input.providerName as ProviderName);
     if (managedContext.skeletonBytes >= PRECOMPACT_SKELETON_BYTES) {
-      await tryCompactSupervisorThread(`preflight_large_skeleton_bytes_${managedContext.skeletonBytes}`);
+      const preflight = await overflowRecovery.prepareSupervisorReview<ReviewPromptBundle>({
+        reason: `preflight_large_skeleton_bytes_${managedContext.skeletonBytes}`,
+        skeletonBytes: managedContext.skeletonBytes,
+        compactThread: reviewer.compactThread?.bind(reviewer),
+        rebuildPrompt: () => buildPromptBundle(CLAUDE_CONTEXT_RETRY_OPTIONS),
+      });
+      if (preflight.mode === "local_prompt_rebuild" && preflight.nextPromptState) {
+        promptBundle = preflight.nextPromptState;
+        prompt = promptBundle.prompt;
+        managedContext = promptBundle.managedContext;
+        runHistory = promptBundle.runHistory;
+        reviewPrompt = prompt.prompt;
+        localPromptRetryUsed = true;
+        await trace(
+          `preflight_local_compaction skeleton_bytes=${managedContext.skeletonBytes} managed_bytes=${managedContext.managedBytes} dropped_blocks=${managedContext.droppedBlocks} offloaded_blocks=${managedContext.offloadedBlocks}`,
+        );
+      } else if (preflight.mode === "provider_compaction") {
+        if (preflight.threadId) supervisorThreadId = preflight.threadId;
+        await trace(
+          `compaction_result reason=preflight_large_skeleton_bytes_${managedContext.skeletonBytes} compacted=${String(preflight.applied)} thread_id=${preflight.threadId ?? "(none)"} detail=${preflight.details ?? "(none)"}`,
+        );
+      }
     }
     for (let attempt = 0; attempt <= maxSchemaRetries; attempt += 1) {
       const controller = new AbortController();
@@ -291,13 +337,41 @@ export async function runSupervisorReview(input: SupervisorReviewInputs): Promis
         }
         const errorKind: SupervisorReviewErrorKind =
           err?.name === "ProviderExecutionError" ? "provider_execution_error" : "execution_error";
-        if (looksLikeContextWindowError(message) && !compactionRetryUsed) {
-          compactionRetryUsed = true;
-          await trace(`context_overflow_detected attempt=${attempt + 1} retrying_with_compaction=true`);
-          const compacted = await tryCompactSupervisorThread(`context_overflow_attempt_${attempt + 1}`);
-          if (compacted) {
+        if (looksLikeContextWindowError(message)) {
+          const recovery: SupervisorOverflowRecoveryResult<ReviewPromptBundle> =
+            await overflowRecovery.recoverSupervisorReview<ReviewPromptBundle>({
+            retryUsed: localPromptRetryUsed || providerCompactionRetryUsed,
+            reason: `context_overflow_attempt_${attempt + 1}`,
+            compactThread: reviewer.compactThread?.bind(reviewer),
+            rebuildPrompt: () => buildPromptBundle(CLAUDE_CONTEXT_RETRY_OPTIONS),
+            });
+          if (recovery.mode === "local_prompt_rebuild" && recovery.nextPromptState) {
+            localPromptRetryUsed = recovery.retryUsed;
+            promptBundle = recovery.nextPromptState;
+            prompt = promptBundle.prompt;
+            managedContext = promptBundle.managedContext;
+            runHistory = promptBundle.runHistory;
+            reviewPrompt = prompt.prompt;
+            await trace(
+              `context_overflow_detected attempt=${attempt + 1} retrying_with_local_compaction=true managed_bytes=${managedContext.managedBytes} skeleton_bytes=${managedContext.skeletonBytes} dropped_blocks=${managedContext.droppedBlocks} offloaded_blocks=${managedContext.offloadedBlocks}`,
+            );
             attempt -= 1;
             continue;
+          }
+          if (recovery.mode === "provider_compaction") {
+            providerCompactionRetryUsed = recovery.retryUsed;
+            if (recovery.threadId) {
+              supervisorThreadId = recovery.threadId;
+              reviewLane.updateThreadId(recovery.threadId);
+            }
+            await trace(`context_overflow_detected attempt=${attempt + 1} retrying_with_compaction=true`);
+            await trace(
+              `compaction_result reason=context_overflow_attempt_${attempt + 1} compacted=${String(recovery.retry)} thread_id=${recovery.threadId ?? "(none)"} detail=${recovery.details ?? "(none)"}`,
+            );
+            if (recovery.retry) {
+              attempt -= 1;
+              continue;
+            }
           }
         }
         if (timedOut) {

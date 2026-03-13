@@ -229,6 +229,35 @@ describe("ClaudeProvider", () => {
     expect(result?.details).toContain("no thread");
   });
 
+  it("compacts the discovered live Claude session even when no threadId was seeded", async () => {
+    const invocations: QueryInvocation[] = [];
+    const responses = [
+      { type: "result", subtype: "success", result: "{\"action\":\"ok\"}", session_id: "sess_live_discovered" },
+      { type: "result", subtype: "success", result: "compacted", session_id: "sess_live_compacted" },
+    ];
+    const query = (invocation: QueryInvocation) => {
+      const next = responses.shift();
+      if (!next) throw new Error("unexpected extra query");
+      invocations.push(invocation);
+      return {
+        [Symbol.asyncIterator]: async function* () {
+          yield next;
+        },
+      };
+    };
+    const provider = new ClaudeProvider(baseConfig, { query });
+
+    const first = await provider.runOnce(promptContentFromText("discover session"));
+    const compacted = await provider.compactThread?.({ reason: "preflight" });
+
+    expect(first.threadId).toBe("sess_live_discovered");
+    expect(compacted).toEqual({ compacted: true, threadId: "sess_live_compacted" });
+    expect(invocations).toHaveLength(2);
+    expect(invocations[1]?.prompt).toBe("/compact");
+    const options = (invocations[1]?.options ?? {}) as Record<string, any>;
+    expect(options.resume).toBe("sess_live_discovered");
+  });
+
   it("denies blocked filesystem paths outside working directory while auto-allowing others", async () => {
     const capture: { invocation?: QueryInvocation; closed?: boolean } = {};
     const query = makeQueryStub(

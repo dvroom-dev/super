@@ -131,7 +131,8 @@ export class ClaudeProvider implements AgentProvider {
       },
       permissionMode: "default",
     };
-    if (this.config.threadId) out.resume = this.config.threadId;
+    const resumeThreadId = this.activeSessionId ?? this.config.threadId;
+    if (resumeThreadId) out.resume = resumeThreadId;
     if (this.config.sandboxMode === "read-only") {
       const configuredDisallowed = asToolNameList(out.disallowedTools);
       out.disallowedTools = Array.from(new Set([...configuredDisallowed, ...READ_ONLY_DISALLOWED_TOOLS]));
@@ -254,12 +255,13 @@ export class ClaudeProvider implements AgentProvider {
   async compactThread(
     options?: { signal?: AbortSignal; reason?: string },
   ): Promise<ProviderCompactionResult> {
-    if (!this.config.threadId) {
+    const currentThreadId = this.activeSessionId ?? this.config.threadId;
+    if (!currentThreadId) {
       return { compacted: false, details: "no thread to compact" };
     }
     const query = await this.ensureQuery();
     let stream: ClaudeQueryStream | undefined;
-    let threadId: string | undefined = this.config.threadId;
+    let threadId: string | undefined = currentThreadId;
     try {
       stream = query({
         prompt: "/compact",
@@ -268,12 +270,15 @@ export class ClaudeProvider implements AgentProvider {
       for await (const msg of stream) {
         if (typeof msg?.session_id === "string") threadId = msg.session_id;
       }
-      if (threadId) this.config.threadId = threadId;
+      if (threadId) {
+        this.activeSessionId = threadId;
+        this.config.threadId = threadId;
+      }
       return { compacted: true, threadId };
     } catch (err: any) {
       return {
         compacted: false,
-        threadId: threadId ?? this.config.threadId,
+        threadId: threadId ?? currentThreadId,
         details: err?.message ?? String(err),
       };
     } finally {
@@ -395,16 +400,20 @@ export class ClaudeProvider implements AgentProvider {
   ): Promise<{ text: string; threadId?: string; items?: any[] }> {
     const query = await this.ensureQuery();
     let finalText = "";
-    let threadId: string | undefined = this.config.threadId;
+    let threadId: string | undefined = this.activeSessionId ?? this.config.threadId;
     const items: any[] = [];
     let stream: ClaudeQueryStream | undefined;
 
     try {
       const queryPrompt = await this.buildQueryPrompt(prompt);
       stream = query({ prompt: queryPrompt, options: await this.buildQueryOptions(options) });
+      this.activeSessionId = threadId;
       for await (const msg of stream) {
         if (!msg || typeof msg !== "object") continue;
-        if (typeof msg?.session_id === "string") threadId = msg.session_id;
+        if (typeof msg?.session_id === "string") {
+          threadId = msg.session_id;
+          this.activeSessionId = threadId;
+        }
 
         if (msg.type === "assistant") {
           const reasoning = normalizeClaudeReasoningMessage(msg.message);
@@ -446,6 +455,10 @@ export class ClaudeProvider implements AgentProvider {
       }
     }
 
+    if (threadId) {
+      this.activeSessionId = threadId;
+      this.config.threadId = threadId;
+    }
     return { text: finalText, threadId, items };
   }
 }

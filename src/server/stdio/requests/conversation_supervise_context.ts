@@ -1,4 +1,8 @@
-import { prepareManagedAgentContext, type ManagedAgentContextResult } from "../../../supervisor/context_management.js";
+import {
+  prepareManagedAgentContext,
+  type ContextManagementOverrides,
+  type ManagedAgentContextResult,
+} from "../../../supervisor/context_management.js";
 import { emitContextStats } from "../supervisor/supervise_notifications.js";
 
 export async function buildManagedSuperviseContext(args: {
@@ -6,12 +10,14 @@ export async function buildManagedSuperviseContext(args: {
   workspaceRoot: string;
   conversationId: string;
   strategy?: "conservative" | "balanced" | "focused" | "aggressive";
+  overrides?: ContextManagementOverrides;
 }): Promise<ManagedAgentContextResult> {
   return prepareManagedAgentContext({
     documentText: args.documentText,
     workspaceRoot: args.workspaceRoot,
     conversationId: args.conversationId,
     strategy: args.strategy,
+    overrides: args.overrides,
   });
 }
 

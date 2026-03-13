@@ -71,6 +71,12 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   if (!models.length) throw new Error("models[] required"); if (models.length > 1) throw new Error("conversation.supervise supports a single model only"); if (!documentText.trim()) throw new Error("documentText required");
   const model = models[0];
   const supervisorModel = String((params as any)?.supervisorModel ?? model);
+  const CLAUDE_AGENT_CONTEXT_RETRY_OPTIONS = {
+    maxInlineBytes: 96,
+    kindsToOffload: ["tool_result", "tool_call", "chat"],
+    keepRecentReasoningSnapshots: 4,
+    maxEventBlocks: 12,
+  };
   const idx = await ctx.store.loadIndex(workspaceRoot, conversationId);
   const docForkId = ctx.store.forkIdFromDocument(documentText);
   const explicitBaseForkId = typeof (params as any)?.baseForkId === "string" ? String((params as any).baseForkId) : undefined;
@@ -325,10 +331,49 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       fullResyncNeeded = bootstrapFork.fullResyncNeeded;
       continue;
     }
-    const managedContext = await buildManagedSuperviseContext({ documentText: currentDocText, workspaceRoot, conversationId, strategy: renderedRunConfig?.contextManagementStrategy });
     const shouldUseFullPrompt = shouldUseFullPromptForSupervise(fullResyncNeeded, currentThreadId);
-    const compileArgs = { documentText: managedContext.documentText, workspaceRoot, provider: providerName, agentRules: effectiveAgentRequirements, currentMode: activeMode, allowedNextModes, modePayloadFieldsByMode: modePayloadFields, modeGuidanceByMode: modeGuidance, availableToolsMarkdown: toolDefinitionsMarkdown(effectiveToolConfig), agentRuleViolations: effectiveAgentViolations, model: currentModel, agentsMd: agentsText, workspaceListing: workspaceListingText, taggedFiles, openFiles, utilities, skills, skillsToInvoke, skillInstructions, configuredSystemMessage: effectiveAgentConfiguredSystemMessage, defaultSystemMessage: disableSupervision ? undefined : renderedRunConfig?.supervisor?.agentDefaultSystemMessage };
-    const compile = shouldUseFullPrompt ? compileFullPrompt(compileArgs) : compileIncrementalPrompt(compileArgs);
+    const buildCompiledAgentPrompt = async (overrides?: {
+      maxInlineBytes?: number;
+      kindsToOffload?: string[];
+      keepRecentReasoningSnapshots?: number;
+      maxEventBlocks?: number;
+    }) => {
+      const managedContext = await buildManagedSuperviseContext({
+        documentText: currentDocText,
+        workspaceRoot,
+        conversationId,
+        strategy: renderedRunConfig?.contextManagementStrategy,
+        overrides,
+      });
+      const compileArgs = {
+        documentText: managedContext.documentText,
+        workspaceRoot,
+        provider: providerName,
+        agentRules: effectiveAgentRequirements,
+        currentMode: activeMode,
+        allowedNextModes,
+        modePayloadFieldsByMode: modePayloadFields,
+        modeGuidanceByMode: modeGuidance,
+        availableToolsMarkdown: toolDefinitionsMarkdown(effectiveToolConfig),
+        agentRuleViolations: effectiveAgentViolations,
+        model: currentModel,
+        agentsMd: agentsText,
+        workspaceListing: workspaceListingText,
+        taggedFiles,
+        openFiles,
+        utilities,
+        skills,
+        skillsToInvoke,
+        skillInstructions,
+        configuredSystemMessage: effectiveAgentConfiguredSystemMessage,
+        defaultSystemMessage: disableSupervision ? undefined : renderedRunConfig?.supervisor?.agentDefaultSystemMessage,
+      };
+      const compile = shouldUseFullPrompt
+        ? compileFullPrompt(compileArgs)
+        : compileIncrementalPrompt(compileArgs);
+      return { managedContext, compile };
+    };
+    const { managedContext, compile } = await buildCompiledAgentPrompt();
     const sourceBytes = Buffer.byteLength(currentDocText, "utf8");
     const managedBytes = Buffer.byteLength(managedContext.documentText, "utf8");
     const promptBytes = promptContentByteLength(compile.prompt);
@@ -362,6 +407,25 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       providerFilesystemPolicy: effectiveAgentFilesystemPolicy,
       customTools: effectiveToolConfig?.customTools,
       compilePrompt: compile.prompt,
+      rebuildPromptForOverflow: async () => {
+        const overflowBuild = await buildCompiledAgentPrompt({ ...CLAUDE_AGENT_CONTEXT_RETRY_OPTIONS });
+        emitManagedSuperviseContextStats({
+          ctx,
+          docPath,
+          contextLimit: supervisor.contextLimit ?? null,
+          sourceBytes,
+          managedBytes: Buffer.byteLength(overflowBuild.managedContext.documentText, "utf8"),
+          managedContext: overflowBuild.managedContext,
+          fullPrompt: shouldUseFullPrompt,
+        });
+        if (overflowBuild.compile.parseErrors.length) {
+          ctx.sendNotification({
+            method: "log",
+            params: { level: "warn", message: `Parse warnings: ${overflowBuild.compile.parseErrors.join("; ")}` },
+          });
+        }
+        return overflowBuild.compile.prompt;
+      },
       outputSchema: renderedRunConfig?.outputSchema,
       effectiveSupervisor,
       budget,

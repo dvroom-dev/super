@@ -1,10 +1,13 @@
 import { createProvider } from "../../../providers/factory.js";
 import type { ProviderConfig, ProviderPermissionProfile } from "../../../providers/types.js";
+import { getProviderOverflowRecovery } from "../../../providers/provider_overflow_recovery.js";
 import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { CustomToolDefinition } from "../../../tools/definitions.js";
+import type { PromptContent } from "../../../utils/prompt_content.js";
 import { combineTranscript } from "../helpers.js";
 import { runAgentTurn, type BudgetState, type CadenceHitEvent } from "../supervisor/agent_turn.js";
 import { applyConfiguredHooks } from "../supervisor/hook_runtime.js";
+import { looksLikeContextWindowError } from "../supervisor/supervisor_run_helpers.js";
 import type { SupervisorConfig } from "../types.js";
 import type { RuntimeContext } from "./context.js";
 
@@ -43,6 +46,7 @@ type RunAgentTurnWithHooksArgs = {
   fullResyncNeeded: boolean;
   hooks: any[];
   turn: number;
+  rebuildPromptForOverflow?: () => Promise<PromptContent>;
   onCadenceHit?: (event: CadenceHitEvent) => void | Promise<void>;
   onToolBoundary?: () => void;
   onAppendMarkdown?: (markdown: string) => void;
@@ -56,8 +60,6 @@ type RunAgentTurnWithHooksResult = {
 };
 
 export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Promise<RunAgentTurnWithHooksResult> {
-  const shellPolicyConfigured = Boolean(args.toolConfig?.shellInvocationPolicy?.disallow?.length);
-  const approvalPolicy = args.providerName === "codex" && shellPolicyConfigured ? "on-request" : "never";
   const providerCustomTools = Array.isArray(args.customTools) && args.customTools.length > 0
     ? [...args.customTools]
     : undefined;
@@ -66,7 +68,7 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
     model: args.currentModel,
     workingDirectory: args.agentWorkspaceRoot,
     sandboxMode: args.sandboxMode,
-    approvalPolicy,
+    approvalPolicy: "never",
     permissionProfile: args.permissionProfile,
     skipGitRepoCheck: args.skipGitRepoCheck,
     threadId: args.shouldUseFullPrompt ? undefined : args.currentThreadId,
@@ -82,27 +84,62 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
   args.activeRunsByForkId[args.activeForkId] = controller;
 
   let result: AgentTurnResult;
+  let overflowRetryUsed = false;
+  let currentPrompt = args.compilePrompt;
+  const overflowRecovery = getProviderOverflowRecovery(args.providerName);
   try {
-    result = await runAgentTurn({
-      ctx: args.ctx,
-      docPath: args.docPath,
-      provider,
-      prompt: args.compilePrompt,
-      outputSchema: args.outputSchema,
-      supervisor: args.effectiveSupervisor,
-      budget: args.budget,
-      currentModel: args.currentModel,
-      pricing: args.pricing,
-      controller,
-      sendBudgetUpdate: args.sendBudgetUpdate,
-      workspaceRoot: args.workspaceRoot,
-      conversationId: args.conversationId,
-      toolOutput: args.toolOutput,
-      onCadenceHit: args.onCadenceHit,
-      onToolBoundary: args.onToolBoundary,
-      onAppendMarkdown: args.onAppendMarkdown,
-      onAssistantText: args.onAssistantText,
-    });
+    while (true) {
+      result = await runAgentTurn({
+        ctx: args.ctx,
+        docPath: args.docPath,
+        provider,
+        prompt: currentPrompt,
+        outputSchema: args.outputSchema,
+        supervisor: args.effectiveSupervisor,
+        budget: args.budget,
+        currentModel: args.currentModel,
+        pricing: args.pricing,
+        controller,
+        sendBudgetUpdate: args.sendBudgetUpdate,
+        workspaceRoot: args.workspaceRoot,
+        conversationId: args.conversationId,
+        toolOutput: args.toolOutput,
+        onCadenceHit: args.onCadenceHit,
+        onToolBoundary: args.onToolBoundary,
+        onAppendMarkdown: args.onAppendMarkdown,
+        onAssistantText: args.onAssistantText,
+      });
+      const shouldRetryWithProviderCompaction =
+        !overflowRetryUsed
+        && typeof provider.compactThread === "function"
+        && result.hadError
+        && looksLikeContextWindowError(String(result.errorMessage ?? ""));
+      const shouldRetryWithLocalRebuild =
+        !overflowRetryUsed
+        && result.hadError
+        && looksLikeContextWindowError(String(result.errorMessage ?? ""));
+      if (!shouldRetryWithProviderCompaction && !shouldRetryWithLocalRebuild) {
+        break;
+      }
+      const recovery = await overflowRecovery.recoverAgentTurn({
+        retryUsed: overflowRetryUsed,
+        compactThread: provider.compactThread?.bind(provider),
+        rebuildPrompt: args.rebuildPromptForOverflow,
+      });
+      if (!recovery.retry) {
+        overflowRetryUsed = recovery.retryUsed;
+        break;
+      }
+      overflowRetryUsed = recovery.retryUsed;
+      currentPrompt = recovery.nextPrompt ?? currentPrompt;
+      args.ctx.sendNotification({
+        method: "log",
+        params: {
+          level: "info",
+          message: recovery.logMessage ?? "agent context overflow: retrying",
+        },
+      });
+    }
   } finally {
     try {
       await provider.close?.();

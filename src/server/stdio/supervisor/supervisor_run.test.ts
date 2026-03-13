@@ -274,6 +274,33 @@ describe("runSupervisorReview", () => {
     }
   });
 
+  it("retries non-Claude review turns through provider compaction on context overflow", async () => {
+    const workspaceRoot = await makeTempRoot("supervisor-run-");
+    process.env.MOCK_PROVIDER_RUNONCE_ERROR_SEQUENCE = JSON.stringify([
+      "maximum context length exceeded",
+      "",
+    ]);
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify(makeValidSupervisorReview());
+    process.env.MOCK_PROVIDER_COMPACTED_THREAD_ID = "mock_review_compacted";
+    try {
+      const outcome = await runSupervisorReview({
+        ...makeBaseInputs(workspaceRoot, "conv_compact_retry"),
+        threadId: "mock_review_initial",
+      });
+      expect(outcome.parsedOk).toBe(true);
+      expect(outcome.threadId).toBe("mock_review_compacted");
+      expect(outcome.review.decision).toBe("append_message_and_continue");
+      const tracePath = path.join(workspaceRoot, outcome.traceLogRel);
+      const trace = await fs.readFile(tracePath, "utf8");
+      expect(trace).toContain("context_overflow_detected");
+      expect(trace).toContain("compaction_result reason=context_overflow_attempt_1 compacted=true");
+    } finally {
+      delete process.env.MOCK_PROVIDER_RUNONCE_ERROR_SEQUENCE;
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+      delete process.env.MOCK_PROVIDER_COMPACTED_THREAD_ID;
+    }
+  });
+
   it("treats non-schema JSON output as a schema validation error", async () => {
     const workspaceRoot = await makeTempRoot("supervisor-run-");
     process.env.MOCK_PROVIDER_RUNONCE_TEXT = "{\"ok\":true}";

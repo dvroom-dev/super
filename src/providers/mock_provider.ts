@@ -2,10 +2,24 @@ import type { AgentProvider, ProviderEvent, ProviderConfig } from "./types.js";
 import { newId } from "../utils/ids.js";
 import { promptContentToText, type PromptContent } from "../utils/prompt_content.js";
 
+function readSequenceEnv(name: string): string[] | undefined {
+  const raw = process.env[name];
+  if (typeof raw !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    return parsed.map((entry) => String(entry ?? ""));
+  } catch {
+    return undefined;
+  }
+}
+
 export class MockProvider implements AgentProvider {
   private config: ProviderConfig;
   private threadId: string;
   private runOnceCalls = 0;
+  private runStreamedCalls = 0;
+  private compactCalls = 0;
 
   constructor(config: ProviderConfig) {
     this.config = config;
@@ -52,6 +66,20 @@ export class MockProvider implements AgentProvider {
       typeof process.env.MOCK_PROVIDER_STREAMED_TEXT === "string"
         ? String(process.env.MOCK_PROVIDER_STREAMED_TEXT)
         : `Mock response for model=${this.config.model}. You said: ${promptEcho}`;
+    const streamedErrorSequence = readSequenceEnv("MOCK_PROVIDER_STREAMED_ERROR_SEQUENCE");
+    if (Array.isArray(streamedErrorSequence) && streamedErrorSequence.length > 0) {
+      const idx = Math.min(this.runStreamedCalls, streamedErrorSequence.length - 1);
+      const message = String(streamedErrorSequence[idx] ?? "").trim();
+      this.runStreamedCalls += 1;
+      if (message) {
+        const err = new Error(message) as Error & { name: string; threadId?: string; };
+        err.name = "ProviderExecutionError";
+        err.threadId = this.threadId;
+        throw err;
+      }
+    } else {
+      this.runStreamedCalls += 1;
+    }
     if (process.env.MOCK_PROVIDER_SKIP_DELTAS !== "1") {
       for (const chunk of ["Mock response", " for model=", this.config.model, ". ", "You said: "]) {
         yield { type: "assistant_delta", delta: chunk };
@@ -137,6 +165,21 @@ export class MockProvider implements AgentProvider {
       err.threadId = this.threadId;
       throw err;
     }
+    const runOnceErrorSequence = readSequenceEnv("MOCK_PROVIDER_RUNONCE_ERROR_SEQUENCE");
+    if (Array.isArray(runOnceErrorSequence) && runOnceErrorSequence.length > 0) {
+      const idx = Math.min(this.runOnceCalls, runOnceErrorSequence.length - 1);
+      const message = String(runOnceErrorSequence[idx] ?? "").trim();
+      if (message) {
+        this.runOnceCalls += 1;
+        const err = new Error(message) as Error & {
+          name: string;
+          threadId?: string;
+        };
+        err.name = "ProviderExecutionError";
+        err.threadId = this.threadId;
+        throw err;
+      }
+    }
     if (process.env.MOCK_PROVIDER_RUNONCE_EMPTY === "1") {
       return { text: "", threadId: this.threadId, items: [] };
     }
@@ -157,5 +200,25 @@ export class MockProvider implements AgentProvider {
     }
     const promptText = promptContentToText(prompt);
     return { text: `Mock response for model=${this.config.model}. Prompt: ${promptText}`, threadId: this.threadId, items: [] };
+  }
+
+  async compactThread(_options?: { signal?: AbortSignal; reason?: string }): Promise<{ compacted: boolean; threadId?: string; details?: string }> {
+    this.compactCalls += 1;
+    const compactSequence = readSequenceEnv("MOCK_PROVIDER_COMPACT_RESULT_SEQUENCE");
+    const compactResult = Array.isArray(compactSequence) && compactSequence.length > 0
+      ? String(compactSequence[Math.min(this.compactCalls - 1, compactSequence.length - 1)] ?? "").trim()
+      : (process.env.MOCK_PROVIDER_COMPACT_RESULT ?? "compacted").trim();
+    if (!compactResult || compactResult.toLowerCase() === "false" || compactResult.toLowerCase() === "no") {
+      return { compacted: false, threadId: this.threadId, details: "mock compact disabled" };
+    }
+    const compactedThreadId = String(
+      process.env.MOCK_PROVIDER_COMPACTED_THREAD_ID
+        ?? `${this.threadId}_compacted_${this.compactCalls}`,
+    ).trim();
+    if (compactedThreadId) {
+      this.threadId = compactedThreadId;
+      this.config.threadId = compactedThreadId;
+    }
+    return { compacted: true, threadId: this.threadId, details: compactResult };
   }
 }

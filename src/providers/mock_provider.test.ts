@@ -71,6 +71,23 @@ describe("MockProvider", () => {
         delete process.env.MOCK_PROVIDER_RUNONCE_TEXT_SEQUENCE;
       }
     });
+
+    it("supports runOnce error sequences for retry tests", async () => {
+      process.env.MOCK_PROVIDER_RUNONCE_ERROR_SEQUENCE = JSON.stringify([
+        "maximum context length exceeded",
+        "",
+      ]);
+      process.env.MOCK_PROVIDER_RUNONCE_TEXT = "recovered";
+      try {
+        const provider = new MockProvider(baseConfig);
+        await expect(provider.runOnce(promptContentFromText("test-1"))).rejects.toThrow("maximum context length exceeded");
+        const result = await provider.runOnce(promptContentFromText("test-2"));
+        expect(result.text).toBe("recovered");
+      } finally {
+        delete process.env.MOCK_PROVIDER_RUNONCE_ERROR_SEQUENCE;
+        delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+      }
+    });
   });
 
   describe("runStreamed", () => {
@@ -136,6 +153,52 @@ describe("MockProvider", () => {
       }
       const message = events.find((e) => e.type === "assistant_message") as any;
       expect(message.text).toContain("This is a very long prompt");
+    });
+
+    it("supports streamed error sequences for retry tests", async () => {
+      process.env.MOCK_PROVIDER_STREAMED_ERROR_SEQUENCE = JSON.stringify([
+        "context window exhausted",
+        "",
+      ]);
+      process.env.MOCK_PROVIDER_STREAMED_TEXT = "second turn";
+      try {
+        const provider = new MockProvider(baseConfig);
+        const firstAttempt = (async () => {
+          for await (const _event of provider.runStreamed(promptContentFromText("test"))) {
+            // iterate to trigger provider error
+          }
+        })();
+        await expect(firstAttempt).rejects.toThrow("context window exhausted");
+        const events: ProviderEvent[] = [];
+        for await (const event of provider.runStreamed(promptContentFromText("retry"))) {
+          events.push(event);
+        }
+        expect(events.some((event) => event.type === "assistant_message")).toBe(true);
+      } finally {
+        delete process.env.MOCK_PROVIDER_STREAMED_ERROR_SEQUENCE;
+        delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+      }
+    });
+  });
+
+  describe("compactThread", () => {
+    it("compacts the mock thread and updates its thread id", async () => {
+      process.env.MOCK_PROVIDER_COMPACTED_THREAD_ID = "mock_thread_compacted";
+      try {
+        const provider = new MockProvider(baseConfig);
+        const before = await provider.runOnce(promptContentFromText("before"));
+        const compacted = await provider.compactThread?.({ reason: "preflight" });
+        const after = await provider.runOnce(promptContentFromText("after"));
+        expect(before.threadId).toMatch(/^mock_thread_/);
+        expect(compacted).toEqual({
+          compacted: true,
+          threadId: "mock_thread_compacted",
+          details: "compacted",
+        });
+        expect(after.threadId).toBe("mock_thread_compacted");
+      } finally {
+        delete process.env.MOCK_PROVIDER_COMPACTED_THREAD_ID;
+      }
     });
   });
 });
