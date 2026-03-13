@@ -15,31 +15,33 @@ type StrategySpec = {
   maxEventBlocks?: number;
 };
 
+export type ContextManagementOverrides = Partial<Omit<StrategySpec, "templatePath">>;
+
 const STRATEGY_SPECS: Record<ContextManagementStrategy, StrategySpec> = {
   conservative: {
     templatePath: "context_management/conservative.md",
     maxInlineBytes: 32 * 1024,
-    kindsToOffload: ["tool_result"],
+    kindsToOffload: ["tool_result", "tool_call"],
     keepRecentReasoningSnapshots: 16,
   },
   balanced: {
     templatePath: "context_management/balanced.md",
     maxInlineBytes: 8 * 1024,
-    kindsToOffload: ["tool_result"],
+    kindsToOffload: ["tool_result", "tool_call"],
     keepRecentReasoningSnapshots: 12,
     maxEventBlocks: 24,
   },
   focused: {
     templatePath: "context_management/focused.md",
     maxInlineBytes: 8 * 1024,
-    kindsToOffload: ["tool_result"],
+    kindsToOffload: ["tool_result", "tool_call"],
     keepRecentReasoningSnapshots: 8,
     maxEventBlocks: 16,
   },
   aggressive: {
     templatePath: "context_management/aggressive.md",
     maxInlineBytes: 4 * 1024,
-    kindsToOffload: ["tool_result"],
+    kindsToOffload: ["tool_result", "tool_call"],
     keepRecentReasoningSnapshots: 4,
     maxEventBlocks: 12,
   },
@@ -221,6 +223,7 @@ export async function prepareManagedAgentContext(args: {
   workspaceRoot: string;
   conversationId: string;
   strategy?: ContextManagementStrategy;
+  overrides?: ContextManagementOverrides;
 }): Promise<ManagedAgentContextResult> {
   if (!args.strategy) {
     return {
@@ -237,7 +240,7 @@ export async function prepareManagedAgentContext(args: {
     };
   }
 
-  const spec = STRATEGY_SPECS[args.strategy];
+  const spec = { ...STRATEGY_SPECS[args.strategy], ...(args.overrides ?? {}) };
   const normalizedReasoning = replaceReasoningWithSnapshots(args.documentText);
   const trimmed = trimDocumentForStrategy(normalizedReasoning.text, args.strategy);
   const skeleton = await buildContextSkeleton({

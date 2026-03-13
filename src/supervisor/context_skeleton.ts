@@ -29,7 +29,7 @@ export type SkeletonOptions = {
 
 const DEFAULT_MAX_INLINE_BYTES = 2000;
 const DEFAULT_KINDS = ["tool_result"];
-const PREVIEW_MAX_CHARS = 240;
+const PREVIEW_MAX_CHARS = 96;
 
 function stripSupervisorBlocks(text: string): string {
   return text.replace(/```supervisor_[\s\S]*?```\n?/g, "").trim();
@@ -207,25 +207,12 @@ export async function buildContextSkeleton(opts: SkeletonOptions): Promise<Skele
     const contentEnd = end - 1;
     const inlineLines: string[] = [];
     if (shouldThinInline) {
-      if (block.kind === "tool_call" && metadata.command) {
-        inlineLines.push(`command: ${truncatePreview(metadata.command)}`);
-        if (preview && preview !== truncatePreview(metadata.command)) {
-          inlineLines.push(`first_line: ${preview}`);
-        }
-      } else {
-        if (block.kind === "tool_result" && metadata.summary) {
-          inlineLines.push(`summary: ${truncatePreview(metadata.summary)}`);
-        }
-        if (preview && (!metadata.summary || preview !== truncatePreview(metadata.summary))) {
-          inlineLines.push(`first_line: ${preview}`);
-        }
-      }
-      if (inlineLines.length === 0 && preview) {
-        inlineLines.push(`first_line: ${preview}`);
-      } else if (inlineLines.length === 0) {
-        inlineLines.push("first_line: (empty)");
-      }
       if (metadata.status) inlineLines.push(`status: ${metadata.status}`);
+      if (preview) {
+        inlineLines.push(`line: ${preview}`);
+      } else {
+        inlineLines.push("line: (empty)");
+      }
       if (metadata.exitCode != null) inlineLines.push(`exit_code: ${metadata.exitCode}`);
     } else {
       inlineLines.push(metadata.summary ? `summary: ${metadata.summary}` : "summary: (see blob)");

@@ -216,7 +216,7 @@ describe("prepareManagedAgentContext", () => {
       strategy: "aggressive",
     });
 
-    expect(managed.documentText).toContain("summary: migration batch");
+    expect(managed.documentText).toContain("line: migration batch");
     expect(managed.documentText).toContain("blob_ref: .ai-supervisor/conversations/conversation_aggressive_blob/blobs/");
     expect(managed.documentText).not.toContain("line 600: progress");
   });

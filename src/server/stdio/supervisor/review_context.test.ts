@@ -132,12 +132,12 @@ describe("buildManagedSupervisorReviewContext", () => {
 
     expect(managed.offloadedBlocks).toBeGreaterThanOrEqual(2);
     expect(managed.skeletonText).toContain("blob_ref:");
-    expect(managed.skeletonText).toContain("first_line:");
+    expect(managed.skeletonText).toContain("line:");
     expect(managed.skeletonText).not.toContain(largeChat.slice(0, 256));
     expect(managed.skeletonText).not.toContain(largeTool.slice(0, 256));
   });
 
-  it("thins tool call/result blocks to first-line previews even when they are small", async () => {
+  it("thins tool call/result blocks to one short preview line plus status even when they are small", async () => {
     const workspaceRoot = await makeTempRoot("review-context-");
     const documentText = [
       "```tool_call name=Bash",
@@ -161,11 +161,36 @@ describe("buildManagedSupervisorReviewContext", () => {
       kindsToOffload: ["tool_call", "tool_result"],
     });
 
-    expect(managed.skeletonText).toContain("command: python3 inspect_sequence.py --current-mismatch");
-    expect(managed.skeletonText).toContain("first_line: Mismatch at seq_0007 step 8");
+    expect(managed.skeletonText).toContain("line: python3 inspect_sequence.py --current-mismatch");
+    expect(managed.skeletonText).toContain("status: success");
+    expect(managed.skeletonText).toContain("line: Mismatch at seq_0007 step 8");
     expect(managed.skeletonText).toContain("blob_ref:");
     expect(managed.skeletonText).not.toContain('{"command":"python3 inspect_sequence.py --current-mismatch"}');
     expect(managed.skeletonText).not.toContain("Open level_current/sequences/seq_0007/step_0008/diff.hex");
+  });
+
+  it("caps tool previews below 100 characters", async () => {
+    const workspaceRoot = await makeTempRoot("review-context-");
+    const longLine = `tool_preview_${"x".repeat(200)}`;
+    const documentText = [
+      "```tool_result",
+      "status: success",
+      longLine,
+      "```",
+      "",
+    ].join("\n");
+
+    const managed = await buildManagedSupervisorReviewContext({
+      documentText,
+      workspaceRoot,
+      conversationId: "conv_preview_cap",
+      maxInlineBytes: 4096,
+      kindsToOffload: ["tool_result"],
+    });
+
+    const lineMatch = managed.skeletonText.match(/line:\s+([^\n]+)/);
+    expect(lineMatch).not.toBeNull();
+    expect(String(lineMatch?.[1] ?? "").length).toBeLessThan(100);
   });
 
   it("can place blob refs under a caller-provided supervisor workspace", async () => {

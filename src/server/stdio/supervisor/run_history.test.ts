@@ -106,7 +106,7 @@ describe("buildSupervisorRunHistoryContext", () => {
     const skeletonPath = path.join(workspaceRoot, first.index.forks[0].skeletonPath);
     const skeletonText = await fs.readFile(skeletonPath, "utf8");
     expect(skeletonText).toContain("```chat role=user");
-    expect(skeletonText).toContain("first_line: ok");
+    expect(skeletonText).toContain("line: ok");
 
     await persistSupervisorRunHistoryWatermark({
       workspaceRoot,
