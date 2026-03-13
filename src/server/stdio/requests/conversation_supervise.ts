@@ -331,6 +331,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       currentDocText = bootstrapFork.docText;
       currentThreadId = bootstrapFork.threadId;
       currentSupervisorThreadId = bootstrapFork.supervisorThreadId ?? currentSupervisorThreadId;
+      currentTransitionPayload = { ...bootstrapFork.activeTransitionPayload };
       fullResyncNeeded = bootstrapFork.fullResyncNeeded;
       continue;
     }
@@ -518,6 +519,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       currentDocText = toolOutcome.currentDocText;
       currentThreadId = toolOutcome.currentThreadId;
       currentSupervisorThreadId = toolOutcome.currentSupervisorThreadId;
+      currentTransitionPayload = { ...toolOutcome.activeTransitionPayload };
       fullResyncNeeded = toolOutcome.fullResyncNeeded;
       turnIndex += 1;
       cycleTurnCount += 1;
@@ -573,7 +575,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       providerName,
     });
     if (transitionOutcome.kind === "stop") { stopReasons = transitionOutcome.stopReasons; stopDetails = transitionOutcome.stopDetails; currentDocText = transitionOutcome.currentDocText; lifecycle.finishRun("stopped"); return { conversationId, forkId: transitionOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) }; }
-    if (transitionOutcome.kind === "continue") { currentDocText = transitionOutcome.currentDocText; currentThreadId = transitionOutcome.currentThreadId; currentSupervisorThreadId = transitionOutcome.currentSupervisorThreadId; fullResyncNeeded = transitionOutcome.fullResyncNeeded; turnIndex += 1; cycleTurnCount += 1; continue; }
+    if (transitionOutcome.kind === "continue") { currentDocText = transitionOutcome.currentDocText; currentThreadId = transitionOutcome.currentThreadId; currentSupervisorThreadId = transitionOutcome.currentSupervisorThreadId; currentTransitionPayload = { ...transitionOutcome.activeTransitionPayload }; fullResyncNeeded = transitionOutcome.fullResyncNeeded; turnIndex += 1; cycleTurnCount += 1; continue; }
     const finalizeOutcome = await finalizeSuperviseTurn({
       ctx,
       workspaceRoot,

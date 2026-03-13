@@ -38,6 +38,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
       currentDocText: args.currentDocText,
       currentThreadId: args.currentThreadId,
       currentSupervisorThreadId: args.currentSupervisorThreadId,
+      activeTransitionPayload: {},
       fullResyncNeeded: args.fullResyncNeeded,
     };
   }
@@ -45,6 +46,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
   let nextDocText = args.currentDocText;
   let nextThreadId = args.currentThreadId;
   let nextSupervisorThreadId = args.currentSupervisorThreadId;
+  let nextTransitionPayload: Record<string, string> = {};
   let nextResync = args.fullResyncNeeded;
   const appendInlineMarkdown = (markdown: string) => {
     args.ctx.sendNotification({ method: "conversation.append", params: { docPath: args.docPath, markdown } });
@@ -104,6 +106,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
       currentDocText: nextDocText,
       currentThreadId: nextThreadId,
       currentSupervisorThreadId: nextSupervisorThreadId,
+      activeTransitionPayload: nextTransitionPayload,
       fullResyncNeeded: nextResync,
     };
     const review = await runInlineToolInterceptionReview({
@@ -117,13 +120,21 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
     nextDocText = interceptionState.currentDocText;
     nextThreadId = interceptionState.currentThreadId;
     nextSupervisorThreadId = interceptionState.currentSupervisorThreadId;
+    nextTransitionPayload = interceptionState.activeTransitionPayload;
     nextResync = interceptionState.fullResyncNeeded;
     return review;
   };
   const continueAfterInlineTermination = (): InlineToolCallOutcome => {
     args.budget.cadenceAnchorAt = Date.now();
     args.budget.cadenceTokensAnchor = args.budget.adjustedTokensUsed;
-    return { kind: "continue", currentDocText: nextDocText, currentThreadId: nextThreadId, currentSupervisorThreadId: nextSupervisorThreadId, fullResyncNeeded: nextResync };
+    return {
+      kind: "continue",
+      currentDocText: nextDocText,
+      currentThreadId: nextThreadId,
+      currentSupervisorThreadId: nextSupervisorThreadId,
+      activeTransitionPayload: nextTransitionPayload,
+      fullResyncNeeded: nextResync,
+    };
   };
 
   let checkSupervisorReview: SupervisorReviewResult | undefined;
@@ -174,7 +185,14 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
           appendInlineMarkdown(direct.markdown);
           return continueAfterInlineTermination();
         }
-        return { kind: "continue", currentDocText: direct.docText, currentThreadId: direct.threadId, currentSupervisorThreadId: direct.supervisorThreadId, fullResyncNeeded: direct.fullResyncNeeded };
+        return {
+          kind: "continue",
+          currentDocText: direct.docText,
+          currentThreadId: direct.threadId,
+          currentSupervisorThreadId: direct.supervisorThreadId,
+          activeTransitionPayload: {},
+          fullResyncNeeded: direct.fullResyncNeeded,
+        };
       }
 
       const requestMessage = buildSwitchModeSupervisorRequestMessage({
@@ -281,7 +299,14 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
         transitionTrigger: "agent_switch_mode_request",
       });
       if (forkedFromSwitch) {
-        return { kind: "continue", currentDocText: forkedFromSwitch.docText, currentThreadId: forkedFromSwitch.threadId, currentSupervisorThreadId: forkedFromSwitch.supervisorThreadId, fullResyncNeeded: forkedFromSwitch.fullResyncNeeded };
+        return {
+          kind: "continue",
+          currentDocText: forkedFromSwitch.docText,
+          currentThreadId: forkedFromSwitch.threadId,
+          currentSupervisorThreadId: forkedFromSwitch.supervisorThreadId,
+          activeTransitionPayload: forkedFromSwitch.activeTransitionPayload,
+          fullResyncNeeded: forkedFromSwitch.fullResyncNeeded,
+        };
       }
       if (
         switchReview.review.decision === "fork_new_conversation"
@@ -355,13 +380,24 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
           currentDocText: accepted.docText,
           currentThreadId: accepted.threadId,
           currentSupervisorThreadId: accepted.supervisorThreadId,
+          activeTransitionPayload:
+            switchReview.review.transition_payload && typeof switchReview.review.transition_payload === "object"
+              ? { ...switchReview.review.transition_payload }
+              : {},
           fullResyncNeeded: accepted.fullResyncNeeded,
         };
       }
 
       args.budget.cadenceAnchorAt = Date.now();
       args.budget.cadenceTokensAnchor = args.budget.adjustedTokensUsed;
-      return { kind: "continue", currentDocText: nextDocText, currentThreadId: nextThreadId, currentSupervisorThreadId: nextSupervisorThreadId, fullResyncNeeded: nextResync };
+      return {
+        kind: "continue",
+        currentDocText: nextDocText,
+        currentThreadId: nextThreadId,
+        currentSupervisorThreadId: nextSupervisorThreadId,
+        activeTransitionPayload: nextTransitionPayload,
+        fullResyncNeeded: nextResync,
+      };
     }
 
     const interceptContext = inlineToolInterceptionContext({
@@ -438,6 +474,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
     currentDocText: nextDocText,
     currentThreadId: nextThreadId,
     currentSupervisorThreadId: nextSupervisorThreadId,
+    activeTransitionPayload: nextTransitionPayload,
     fullResyncNeeded: nextResync,
   };
   const checkSupervisorOutcome = await applyInlineCheckSupervisorOutcome({
@@ -467,10 +504,18 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
   nextDocText = checkSupervisorState.currentDocText;
   nextThreadId = checkSupervisorState.currentThreadId;
   nextSupervisorThreadId = checkSupervisorState.currentSupervisorThreadId;
+  nextTransitionPayload = checkSupervisorState.activeTransitionPayload;
   nextResync = checkSupervisorState.fullResyncNeeded;
   if (checkSupervisorOutcome.kind === "stop") return checkSupervisorOutcome;
 
   args.budget.cadenceAnchorAt = Date.now();
   args.budget.cadenceTokensAnchor = args.budget.adjustedTokensUsed;
-  return { kind: "continue", currentDocText: nextDocText, currentThreadId: nextThreadId, currentSupervisorThreadId: nextSupervisorThreadId, fullResyncNeeded: nextResync };
+  return {
+    kind: "continue",
+    currentDocText: nextDocText,
+    currentThreadId: nextThreadId,
+    currentSupervisorThreadId: nextSupervisorThreadId,
+    activeTransitionPayload: nextTransitionPayload,
+    fullResyncNeeded: nextResync,
+  };
 }

@@ -69,7 +69,11 @@ async function writeModeConfig(workspaceRoot: string, implementTransitions: stri
   );
 }
 
-function makeResumeOverride(mode = "init", modePayload?: Record<string, string>): string {
+function makeResumeOverride(
+  mode = "init",
+  modePayload?: Record<string, string>,
+  transitionPayload?: Record<string, string>,
+): string {
   return JSON.stringify({
     decision: "resume_mode_head",
     payload: {
@@ -86,6 +90,7 @@ function makeResumeOverride(mode = "init", modePayload?: Record<string, string>)
       ],
       recommended_action: "resume_mode_head",
     },
+    transition_payload: transitionPayload ?? null,
     reasoning: "",
     agent_model: null,
   });
@@ -367,6 +372,80 @@ describe("conversation.supervise resume_mode_head", () => {
     const resumedForkCall = createForkCalls[1];
     expect(resumedForkCall?.supervisorThreadId).toBe("super_impl");
     expect(resolveModePayload(String(resumedForkCall?.documentText ?? ""))).toEqual({ phase_ticket: "alpha" });
+    expect(result?.activeTransitionPayload).toEqual({});
+  });
+
+  it.serial("returns transition payload metadata when resuming an existing mode head", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-resume-transition-payload-");
+    await writeModeConfig(workspaceRoot, "[implement, init]");
+    const conversationId = "conversation_resume_transition_payload";
+    const { ctx } = makeCtx({
+      conversationId,
+      seedForks: [
+        {
+          id: "fork_init_head",
+          mode: "init",
+          createdAt: "2026-02-04T00:00:00.000Z",
+          userMessage: "latest init",
+          providerThreadId: "thread_init_head",
+          supervisorThreadId: "super_init_head",
+        },
+        {
+          id: "fork_impl_active",
+          mode: "implement",
+          createdAt: "2026-02-05T00:00:00.000Z",
+          userMessage: "implement now",
+          parentId: "fork_init_head",
+        },
+      ],
+    });
+
+    const result = await applySupervisorForkDecision({
+      ctx,
+      workspaceRoot,
+      docPath: path.join(workspaceRoot, "session.md"),
+      conversationId,
+      activeForkId: "fork_impl_active",
+      switchActiveFork: () => {},
+      renderedRunConfig: null,
+      runConfigPath: path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      configBaseDir: workspaceRoot,
+      agentBaseDir: path.join(workspaceRoot, "agent"),
+      supervisorBaseDir: path.join(workspaceRoot, ".ai-supervisor", "supervisor"),
+      requestAgentRuleRequirements: [],
+      activeMode: "implement",
+      allowedNextModes: ["implement", "init"],
+      review: JSON.parse(makeResumeOverride("init", { phase_ticket: "alpha" }, { release_ticket: "rel-1" })),
+      reasonLabel: "resume",
+      detailLabel: "metadata",
+      startedAt: Date.now(),
+      budget: {
+        startedAt: Date.now(),
+        timeBudgetMs: 60_000,
+        tokenBudgetAdjusted: 0,
+        cadenceTimeMs: 0,
+        cadenceTokensAdjusted: 0,
+        adjustedTokensUsed: 0,
+        budgetMultiplier: 1,
+        cadenceAnchorAt: Date.now(),
+        cadenceTokensAnchor: 0,
+        timeBudgetHit: false,
+        tokenBudgetHit: false,
+      },
+      providerName: "claude",
+      currentModel: "claude-test",
+      supervisorModel: "codex-test",
+      currentDocText: makeModeDoc({
+        conversationId,
+        forkId: "fork_impl_active",
+        mode: "implement",
+        userMessage: "implement now",
+      }),
+      currentThreadId: "thread_impl",
+      currentSupervisorThreadId: "super_impl",
+    });
+
+    expect(result?.activeTransitionPayload).toEqual({ release_ticket: "rel-1" });
   });
 
   it.serial("continues to resume prior mode history instead of forcing a fresh fork", async () => {

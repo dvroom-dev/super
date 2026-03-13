@@ -23,6 +23,7 @@ type InlineToolInterceptionState = {
   currentDocText: string;
   currentThreadId?: string;
   currentSupervisorThreadId?: string;
+  activeTransitionPayload: Record<string, string>;
   fullResyncNeeded: boolean;
 };
 
@@ -200,6 +201,7 @@ export async function runInlineToolInterceptionReview(
     args.state.currentDocText = switchFork.docText;
     args.state.currentThreadId = switchFork.threadId;
     args.state.currentSupervisorThreadId = switchFork.supervisorThreadId;
+    args.state.activeTransitionPayload = switchFork.activeTransitionPayload;
     args.state.fullResyncNeeded = switchFork.fullResyncNeeded;
     return { kind: "continue", terminateInlineLoop: true };
   }

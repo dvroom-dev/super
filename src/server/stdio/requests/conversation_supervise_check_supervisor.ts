@@ -11,6 +11,7 @@ type InlineState = {
   currentDocText: string;
   currentThreadId?: string;
   currentSupervisorThreadId?: string;
+  activeTransitionPayload: Record<string, string>;
   fullResyncNeeded: boolean;
 };
 
@@ -110,6 +111,7 @@ export async function applyInlineCheckSupervisorOutcome(args: {
   args.state.currentDocText = switchFork.docText;
   args.state.currentThreadId = switchFork.threadId;
   args.state.currentSupervisorThreadId = switchFork.supervisorThreadId;
+  args.state.activeTransitionPayload = switchFork.activeTransitionPayload;
   args.state.fullResyncNeeded = switchFork.fullResyncNeeded;
   return { kind: "continue" };
 }

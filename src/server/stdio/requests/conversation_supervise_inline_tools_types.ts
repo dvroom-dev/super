@@ -63,6 +63,7 @@ export type InlineToolCallOutcome =
       currentDocText: string;
       currentThreadId?: string;
       currentSupervisorThreadId?: string;
+      activeTransitionPayload: Record<string, string>;
       fullResyncNeeded: boolean;
     }
   | {

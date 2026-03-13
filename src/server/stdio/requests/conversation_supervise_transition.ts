@@ -71,6 +71,7 @@ export async function applyTurnTransitions(args: {
       currentDocText: providerInterception.currentDocText,
       currentThreadId: providerInterception.currentThreadId,
       currentSupervisorThreadId: providerInterception.currentSupervisorThreadId,
+      activeTransitionPayload: providerInterception.activeTransitionPayload,
       fullResyncNeeded: providerInterception.fullResyncNeeded,
     };
   }

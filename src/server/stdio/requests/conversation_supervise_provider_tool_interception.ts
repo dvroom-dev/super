@@ -69,6 +69,7 @@ export type ProviderToolInterceptionOutcome =
       currentDocText: string;
       currentThreadId?: string;
       currentSupervisorThreadId?: string;
+      activeTransitionPayload: Record<string, string>;
       fullResyncNeeded: boolean;
     }
   | {
@@ -76,6 +77,7 @@ export type ProviderToolInterceptionOutcome =
       currentDocText: string;
       currentThreadId?: string;
       currentSupervisorThreadId?: string;
+      activeTransitionPayload: Record<string, string>;
       fullResyncNeeded: boolean;
     }
   | {
@@ -106,6 +108,7 @@ export async function processProviderToolInterceptions(
       currentDocText: args.currentDocText,
       currentThreadId: args.currentThreadId,
       currentSupervisorThreadId: args.currentSupervisorThreadId,
+      activeTransitionPayload: {},
       fullResyncNeeded: args.fullResyncNeeded,
     };
   }
@@ -113,6 +116,7 @@ export async function processProviderToolInterceptions(
   let nextDocText = args.currentDocText;
   let nextThreadId = args.currentThreadId;
   let nextSupervisorThreadId = args.currentSupervisorThreadId;
+  let nextTransitionPayload: Record<string, string> = {};
   let nextResync = args.fullResyncNeeded;
   let matchedAny = false;
 
@@ -147,6 +151,7 @@ export async function processProviderToolInterceptions(
       currentDocText: nextDocText,
       currentThreadId: nextThreadId,
       currentSupervisorThreadId: nextSupervisorThreadId,
+      activeTransitionPayload: nextTransitionPayload,
       fullResyncNeeded: nextResync,
     };
     const review = await runInlineToolInterceptionReview({
@@ -159,6 +164,7 @@ export async function processProviderToolInterceptions(
     nextDocText = state.currentDocText;
     nextThreadId = state.currentThreadId;
     nextSupervisorThreadId = state.currentSupervisorThreadId;
+    nextTransitionPayload = state.activeTransitionPayload;
     nextResync = state.fullResyncNeeded;
     if (review.kind === "stop") return review;
     if (review.terminateInlineLoop) {
@@ -169,6 +175,7 @@ export async function processProviderToolInterceptions(
         currentDocText: nextDocText,
         currentThreadId: nextThreadId,
         currentSupervisorThreadId: nextSupervisorThreadId,
+        activeTransitionPayload: nextTransitionPayload,
         fullResyncNeeded: nextResync,
       };
     }
@@ -180,6 +187,7 @@ export async function processProviderToolInterceptions(
       currentDocText: nextDocText,
       currentThreadId: nextThreadId,
       currentSupervisorThreadId: nextSupervisorThreadId,
+      activeTransitionPayload: nextTransitionPayload,
       fullResyncNeeded: nextResync,
     };
   }
@@ -191,6 +199,7 @@ export async function processProviderToolInterceptions(
     currentDocText: nextDocText,
     currentThreadId: nextThreadId,
     currentSupervisorThreadId: nextSupervisorThreadId,
+    activeTransitionPayload: nextTransitionPayload,
     fullResyncNeeded: nextResync,
   };
 }

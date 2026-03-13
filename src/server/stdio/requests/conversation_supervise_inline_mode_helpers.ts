@@ -164,9 +164,14 @@ export async function applySupervisorForkDecision(args: {
   docText: string;
   threadId?: string;
   supervisorThreadId?: string;
+  activeTransitionPayload: Record<string, string>;
   fullResyncNeeded: true;
 } | undefined> {
   if (args.review.decision !== "fork_new_conversation" && args.review.decision !== "resume_mode_head") return undefined;
+  const activeTransitionPayload =
+    args.review.transition_payload && typeof args.review.transition_payload === "object"
+      ? { ...args.review.transition_payload }
+      : {};
   const refreshedRunConfig = await refreshRenderedRunConfigForModeFork({
     workspaceRoot: args.workspaceRoot,
     runConfigPath: args.runConfigPath,
@@ -327,6 +332,7 @@ export async function applySupervisorForkDecision(args: {
         docText: freshDoc,
         threadId: undefined,
         supervisorThreadId: args.currentSupervisorThreadId,
+        activeTransitionPayload,
         fullResyncNeeded: true,
       };
     }
@@ -390,6 +396,7 @@ export async function applySupervisorForkDecision(args: {
       docText: nextDoc,
       threadId: targetModeFork.providerThreadId,
       supervisorThreadId: args.currentSupervisorThreadId,
+      activeTransitionPayload,
       fullResyncNeeded: true,
     };
   }
@@ -467,6 +474,7 @@ export async function applySupervisorForkDecision(args: {
     docText: nextDoc,
     threadId: undefined,
     supervisorThreadId: args.currentSupervisorThreadId,
+    activeTransitionPayload,
     fullResyncNeeded: true,
   };
 }

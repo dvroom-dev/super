@@ -694,7 +694,10 @@ describe("handleConversationSupervise", () => {
     process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
       decision: "continue",
       payload: strictSupervisorPayload({}),
-      transition_payload: null,
+      transition_payload: {
+        wrapup_certified: "true",
+        wrapup_level: "1",
+      },
       mode_assessment: {
         current_mode_stop_satisfied: true,
         candidate_modes_ranked: [
@@ -758,6 +761,10 @@ describe("handleConversationSupervise", () => {
       expect(result.stopReasons).toEqual(["cycle_limit"]);
       expect(createForkCalls.length).toBeGreaterThanOrEqual(2);
       expect(result.activeMode).toBe("explore_and_solve");
+      expect(result.activeTransitionPayload).toEqual({
+        wrapup_certified: "true",
+        wrapup_level: "1",
+      });
       expect(
         createForkCalls.some((call) => String(call.documentText ?? "").includes("probe seed probe_next_feature")),
       ).toBe(true);
