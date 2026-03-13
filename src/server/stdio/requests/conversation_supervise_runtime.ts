@@ -1,15 +1,48 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { appendTurnTelemetry } from "../supervisor/telemetry.js";
 import type { RuntimeContext } from "./context.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
+type LevelCurrentMeta = {
+  level?: number;
+  analysis_level_pinned?: boolean;
+};
+
 export function shouldUseFullPromptForSupervise(fullResyncNeeded: boolean, currentThreadId?: string): boolean { return fullResyncNeeded || !currentThreadId; }
 
-export function allowedNextModesFor(args: { renderedRunConfig: RenderedRunConfig; activeMode: string }): string[] {
+async function readLevelCurrentMeta(agentBaseDir: string): Promise<LevelCurrentMeta | undefined> {
+  try {
+    const raw = await fs.readFile(path.join(agentBaseDir, "level_current", "meta.json"), "utf8");
+    const parsed = JSON.parse(raw) as LevelCurrentMeta;
+    return typeof parsed === "object" && parsed ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function allowedNextModesFor(args: {
+  renderedRunConfig: RenderedRunConfig;
+  activeMode: string;
+  agentBaseDir?: string;
+}): Promise<string[]> {
   const modesEnabled = args.renderedRunConfig?.modesEnabled ?? true;
   if (!modesEnabled) return [];
   const explicit = args.renderedRunConfig?.modeStateMachine?.transitions?.[args.activeMode];
+  if (args.agentBaseDir) {
+    const levelMeta = await readLevelCurrentMeta(args.agentBaseDir);
+    const level = Number(levelMeta?.level);
+    if (level === 1 && levelMeta?.analysis_level_pinned !== true) {
+      const allowedDuringLevelOne = new Set(["theory", "explore_and_solve"]);
+      if (Array.isArray(explicit) && explicit.length) {
+        return explicit.filter((mode) => allowedDuringLevelOne.has(String(mode ?? "").trim()));
+      }
+      const configuredModes = Object.keys(args.renderedRunConfig?.modes ?? {});
+      return configuredModes.filter((mode) => allowedDuringLevelOne.has(mode));
+    }
+  }
   if (Array.isArray(explicit) && explicit.length) return [...explicit];
   const configuredModes = Object.keys(args.renderedRunConfig?.modes ?? {});
   return configuredModes.length ? configuredModes : [];

@@ -184,7 +184,11 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     const effectiveSupervisor: SupervisorConfig = disableSupervision
       ? { ...supervisorBase, enabled: false, timeBudgetMs: 0, tokenBudgetAdjusted: 0, cadenceTimeMs: 0, cadenceTokensAdjusted: 0 }
       : { ...supervisorBase, enabled: supervisorBase.enabled ?? true };
-    const allowedNextModes = allowedNextModesFor({ renderedRunConfig, activeMode });
+    const allowedNextModes = await allowedNextModesFor({
+      renderedRunConfig,
+      activeMode,
+      agentBaseDir: agentWorkspaceRoot,
+    });
     const modePayloadFields = modePayloadFieldsByMode(renderedRunConfig, allowedNextModes);
     const modeGuidance = modeGuidanceByMode(renderedRunConfig, allowedNextModes, activeMode);
     if (!disableSupervision && effectiveSupervisor.enabled !== false && !effectiveStopCondition) throw new Error("supervised runs require supervisor.stop_condition in config.yaml");
