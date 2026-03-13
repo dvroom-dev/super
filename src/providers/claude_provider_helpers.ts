@@ -113,8 +113,6 @@ export function makeSwitchModeToolInputSchema(): ClaudeToolInputSchema {
     const terminal = record.terminal;
     const syntheticModePayload: Record<string, unknown> = {};
     if (record.user_message != null) syntheticModePayload.user_message = String(record.user_message);
-    if (record.wrapup_certified != null) syntheticModePayload.wrapup_certified = String(record.wrapup_certified);
-    if (record.wrapup_level != null) syntheticModePayload.wrapup_level = String(record.wrapup_level);
     const modePayload = normalizeModePayload(
       record.mode_payload != null
         ? record.mode_payload
@@ -134,16 +132,6 @@ export function makeSwitchModeToolInputSchema(): ClaudeToolInputSchema {
     }
     if (record.user_message != null && typeof record.user_message !== "string") {
       issues.push({ path: ["user_message"], message: "user_message must be a string", code: "invalid_type" });
-    }
-    if (record.wrapup_certified != null && typeof record.wrapup_certified !== "boolean") {
-      issues.push({ path: ["wrapup_certified"], message: "wrapup_certified must be a boolean", code: "invalid_type" });
-    }
-    if (
-      record.wrapup_level != null &&
-      typeof record.wrapup_level !== "string" &&
-      typeof record.wrapup_level !== "number"
-    ) {
-      issues.push({ path: ["wrapup_level"], message: "wrapup_level must be a string or number", code: "invalid_type" });
     }
     if (!modePayload.ok) {
       issues.push(modePayload.issue);
@@ -180,8 +168,6 @@ export function makeSwitchModeToolInputSchema(): ClaudeToolInputSchema {
           "Optional mode-specific payload fields required by the target mode. Provide a JSON object; a JSON-stringified object is also accepted.",
       },
       user_message: { type: "string", description: "Common handoff text for the target mode." },
-      wrapup_certified: { type: "boolean", description: "Set true when explicitly certifying solved-level wrap-up." },
-      wrapup_level: { type: "string", description: "Pinned solved level being certified or referenced by the handoff." },
       terminal: { type: "boolean", description: "Set true to end the current turn after the mode switch request." },
     },
     parse: (value: unknown) => {

@@ -15,13 +15,13 @@ import {
   modeTransitionAllowed,
   resolveModeConfig,
   updateFrontmatterField,
+  updateFrontmatterModePayload,
 } from "../supervisor/mode_runtime.js";
 import type { RuntimeContext } from "./context.js";
 import type { SwitchModeRequest } from "./conversation_supervise_switch_mode.js";
 import { validateSwitchModeHandoffText } from "./conversation_supervise_switch_mode.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
-import { shouldForceFreshForkAcrossLevelBoundary } from "./conversation_supervise_level_boundary.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -51,8 +51,11 @@ function decisionModePayload(args: {
   review: SupervisorReviewResult;
   mode: string;
 }): Record<string, string> {
-  if (args.review.decision !== "fork_new_conversation") return {};
-  const payload = args.review.payload.mode_payload?.[args.mode];
+  const payload = args.review.decision === "fork_new_conversation"
+    ? args.review.payload.mode_payload?.[args.mode]
+    : args.review.decision === "resume_mode_head"
+      ? args.review.payload.mode_payload
+      : undefined;
   if (!payload || typeof payload !== "object") return {};
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
@@ -194,10 +197,6 @@ export async function applySupervisorForkDecision(args: {
   if (handoffValidationError) {
     throw new Error(handoffValidationError);
   }
-  const forceFreshAcrossLevelBoundary = await shouldForceFreshForkAcrossLevelBoundary({
-    workspaceRoot: args.workspaceRoot,
-    agentBaseDir: args.agentBaseDir,
-  });
   const maybeCheckpointCurrentMode = async (): Promise<void> => {
     const currentDocText = String(args.currentDocText ?? "").trim();
     if (!currentDocText) return;
@@ -246,14 +245,13 @@ export async function applySupervisorForkDecision(args: {
     if (requestedMode !== args.activeMode) {
       await maybeCheckpointCurrentMode();
     }
-    const targetModeFork = forceFreshAcrossLevelBoundary
-      ? undefined
-      : await loadLatestForkInMode({
-          ctx: args.ctx,
-          workspaceRoot: args.workspaceRoot,
-          conversationId: args.conversationId,
-          mode: requestedMode,
-        });
+    const nextModePayload = decisionModePayload({ review: args.review, mode: requestedMode });
+    const targetModeFork = await loadLatestForkInMode({
+      ctx: args.ctx,
+      workspaceRoot: args.workspaceRoot,
+      conversationId: args.conversationId,
+      mode: requestedMode,
+    });
     const nextForkId = newId("fork");
     if (!targetModeFork) {
       const nextModeConfig = resolveModeConfig(effectiveRenderedRunConfig, requestedMode);
@@ -269,9 +267,9 @@ export async function applySupervisorForkDecision(args: {
         conversationId: args.conversationId,
         forkId: nextForkId,
         mode: requestedMode,
-        systemMessage: buildSessionSystemPromptForMode({ renderedRunConfig: effectiveRenderedRunConfig, mode: requestedMode, modePayload: {}, provider: args.providerName, model: args.currentModel, agentRules: nextModeRuleSet.requirements }),
+        systemMessage: buildSessionSystemPromptForMode({ renderedRunConfig: effectiveRenderedRunConfig, mode: requestedMode, modePayload: nextModePayload, provider: args.providerName, model: args.currentModel, agentRules: nextModeRuleSet.requirements }),
         userMessage: seeded,
-        modePayload: {},
+        modePayload: nextModePayload,
         agentRuleRequirements: nextModeRuleSet.requirements,
         agentRuleViolations: nextModeRuleSet.violations,
       });
@@ -340,11 +338,11 @@ export async function applySupervisorForkDecision(args: {
         handoff.text,
       );
     }
-    const nextDoc = updateFrontmatterField(
+    const nextDoc = updateFrontmatterModePayload(updateFrontmatterField(
       updateFrontmatterForkId(resumedDoc, args.conversationId, nextForkId),
       "mode",
       requestedMode,
-    );
+    ), nextModePayload);
     const actionEntry = buildSupervisorAction({
       action: "resume_mode_head",
       mode: "hard",
@@ -368,7 +366,7 @@ export async function applySupervisorForkDecision(args: {
       providerName: args.providerName,
       model: args.currentModel,
       providerThreadId: targetModeFork.providerThreadId,
-      supervisorThreadId: targetModeFork.supervisorThreadId,
+      supervisorThreadId: args.currentSupervisorThreadId,
       actions: [actionEntry],
       actionSummary: actionEntry.summary,
       forkSummary: summarizeFork({
@@ -391,7 +389,7 @@ export async function applySupervisorForkDecision(args: {
     return {
       docText: nextDoc,
       threadId: targetModeFork.providerThreadId,
-      supervisorThreadId: targetModeFork.supervisorThreadId,
+      supervisorThreadId: args.currentSupervisorThreadId,
       fullResyncNeeded: true,
     };
   }

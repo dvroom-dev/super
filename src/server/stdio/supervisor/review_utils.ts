@@ -107,6 +107,18 @@ function normalizeModePayload(raw: unknown): Record<string, Record<string, strin
   return out;
 }
 
+function normalizeFlatStringPayload(raw: unknown): Record<string, string> {
+  if (!isRecord(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [field, fieldValue] of Object.entries(raw)) {
+    const key = normalizeString(field);
+    const value = normalizeString(fieldValue);
+    if (!key || !value) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 function normalizeMessageTemplateName(value: unknown): string {
   const normalized = normalizeString(value);
   return normalized || CUSTOM_MESSAGE_TEMPLATE_NAME;
@@ -185,6 +197,7 @@ function normalizeDecisionPayload(args: {
   if (args.decision === "resume_mode_head") {
     return {
       mode: normalizeString(payload.mode),
+      mode_payload: normalizeFlatStringPayload(payload.mode_payload),
       message: normalizeString(payload.message),
       message_type: normalizeSupervisorMessageType(payload.message_type),
       wait_for_boundary: normalizeBoolean(payload.wait_for_boundary),
@@ -415,6 +428,13 @@ export function validateReviewSemantic(args: {
     }
     if (!SUPERVISOR_MESSAGE_TYPES.includes(resume.message_type)) {
       return "resume_mode_head.message_type must be one of user|assistant|system|developer|supervisor";
+    }
+    const requiredFields = args.modePayloadFieldsByMode?.[resume.mode] ?? [];
+    for (const field of requiredFields) {
+      const value = normalizeString(resume.mode_payload?.[field]);
+      if (!value) {
+        return `resume_mode_head.mode_payload.${field} is required`;
+      }
     }
     return undefined;
   }

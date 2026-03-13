@@ -281,6 +281,7 @@ export async function runSuperviseReviewStep(
     const targetMode = review.payload.mode.trim() || "";
     if (targetMode && allowedNextModes.includes(targetMode)) {
       nextMode = targetMode;
+      nextModePayload = { ...(review.payload.mode_payload ?? {}) };
       nextUserMessage = review.payload.message ?? "";
       nextResumeMessageType = review.payload.message_type;
     } else {
@@ -329,10 +330,9 @@ export async function runSuperviseReviewStep(
   }));
 
   if (effectiveAction === "fork") {
-    forkDisposition =
-      review.decision === "resume_mode_head" && !nextModePayload
-        ? "resume_mode_head"
-        : "fresh_mode";
+    forkDisposition = review.decision === "resume_mode_head"
+      ? "resume_mode_head"
+      : "fresh_mode";
   } else {
     forkDisposition = undefined;
   }

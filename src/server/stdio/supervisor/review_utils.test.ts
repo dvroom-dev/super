@@ -194,4 +194,32 @@ describe("review_utils append message template semantics", () => {
     if (normalized.decision !== "resume_mode_head") return;
     expect(normalized.payload.message_type).toBe("user");
   });
+
+  it("requires resume_mode_head mode_payload fields when the target mode declares them", () => {
+    const error = validateReviewSemantic({
+      review: {
+        decision: "resume_mode_head",
+        payload: {
+          mode: "default",
+          mode_payload: {},
+          message: "resume now",
+          message_type: "user",
+          wait_for_boundary: false,
+        },
+        mode_assessment: {
+          current_mode_stop_satisfied: true,
+          candidate_modes_ranked: [{ mode: "default", confidence: "high", evidence: "resume mode head" }],
+          recommended_action: "resume_mode_head",
+        },
+        reasoning: null,
+        agent_model: null,
+      },
+      trigger: "agent_yield",
+      mode: "hard",
+      agentRules: [],
+      allowedNextModes: ["default"],
+      modePayloadFieldsByMode: { default: ["phase_ticket"] },
+    });
+    expect(error).toContain("resume_mode_head.mode_payload.phase_ticket is required");
+  });
 });

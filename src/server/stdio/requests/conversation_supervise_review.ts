@@ -27,7 +27,6 @@ import type { BudgetState } from "../supervisor/agent_turn.js";
 import type { RuntimeContext } from "./context.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
-import { shouldForceFreshForkAcrossLevelBoundary } from "./conversation_supervise_level_boundary.js";
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 type RunSupervisorReviewAndPersistArgs = {
   ctx: RuntimeContext;
@@ -419,6 +418,7 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
   let nextThreadId = args.currentThreadId;
   let nextSupervisorThreadId = reviewStep.nextSupervisorThreadId ?? args.currentSupervisorThreadId;
   let persistedMode = args.activeMode;
+  let persistedModePayload = args.activeModePayload;
   let persistedAgentRules = args.agentRules;
   let fullResyncNeeded = args.fullResyncNeeded;
   let nextParentForkId = args.activeForkId;
@@ -460,6 +460,7 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
       agentRuleViolations: nextModeRuleSet.violations,
     });
     persistedMode = nextMode;
+    persistedModePayload = nextModePayload;
     persistedAgentRules = nextModeRuleSet.requirements;
     nextThreadId = undefined;
     nextSupervisorThreadId = args.currentSupervisorThreadId;
@@ -481,21 +482,15 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
     if (!transitionAllowed) {
       throw new Error(`resume_mode_head mode '${reviewStep.nextMode}' is not an allowed transition from '${args.activeMode}'`);
     }
-    const forceFreshAcrossLevelBoundary = await shouldForceFreshForkAcrossLevelBoundary({
+    const targetModeFork = await loadLatestForkInMode({
+      ctx: args.ctx,
       workspaceRoot: args.workspaceRoot,
-      agentBaseDir: args.agentBaseDir,
+      conversationId: args.conversationId,
+      mode: reviewStep.nextMode,
     });
-    const targetModeFork = forceFreshAcrossLevelBoundary
-      ? undefined
-      : await loadLatestForkInMode({
-          ctx: args.ctx,
-          workspaceRoot: args.workspaceRoot,
-          conversationId: args.conversationId,
-          mode: reviewStep.nextMode,
-        });
+    const nextModePayload = reviewStep.nextModePayload ?? {};
     if (!targetModeFork) {
       const nextModeConfig = resolveModeConfig(effectiveRenderedRunConfig, reviewStep.nextMode);
-      const nextModePayload = reviewStep.nextModePayload ?? {};
       const seeded = applySupervisorTemplateFields(nextModeConfig?.userMessage?.text?.trim() ?? "", nextModePayload);
       if (!seeded.trim()) {
         throw new Error(`resume_mode_head fallback requires modes.${reviewStep.nextMode}.user_message to render non-empty text`);
@@ -522,6 +517,7 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
         );
       }
       persistedMode = reviewStep.nextMode;
+      persistedModePayload = nextModePayload;
       persistedAgentRules = nextModeRuleSet.requirements;
       nextThreadId = undefined;
       nextSupervisorThreadId = args.currentSupervisorThreadId;
@@ -536,9 +532,10 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
         );
       }
       persistedMode = reviewStep.nextMode;
+      persistedModePayload = nextModePayload;
       persistedAgentRules = targetModeFork.agentRules ?? [];
       nextThreadId = targetModeFork.providerThreadId;
-      nextSupervisorThreadId = targetModeFork.supervisorThreadId;
+      nextSupervisorThreadId = args.currentSupervisorThreadId;
       nextParentForkId = targetModeFork.id;
       persistedAction = "resume_mode_head";
     }
@@ -559,9 +556,7 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
     "mode",
     persistedMode,
   );
-  const nextDocWithModePayload = effectiveAction === "fork"
-    ? nextDocWithFork
-    : updateFrontmatterModePayload(nextDocWithFork, args.activeModePayload);
+  const nextDocWithModePayload = updateFrontmatterModePayload(nextDocWithFork, persistedModePayload);
 
   const actionEntry = buildSupervisorAction({
     action: persistedAction,

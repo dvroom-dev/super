@@ -81,11 +81,8 @@ describe("review_schema", () => {
       "mode",
       "mode_payload",
     ]);
-    expect(schema.properties.payload.properties.mode_payload.required).toEqual(["explore", "plan"]);
-    expect(schema.properties.payload.properties.mode_payload.properties.plan.required).toEqual([
-      "hypothesis",
-      "next_probe",
-    ]);
+    expect(schema.properties.payload.properties.mode_payload.type).toEqual(["object", "null"]);
+    expect(schema.properties.payload.properties.mode_payload.additionalProperties.anyOf).toHaveLength(3);
   });
 
   it("keeps mode_assessment required at top-level but nullable when no next modes are available", () => {
@@ -95,7 +92,7 @@ describe("review_schema", () => {
     }) as any;
     expect(schema.required).toContain("mode_assessment");
     expect(schema.properties.mode_assessment.type).toEqual(["object", "null"]);
-    expect(schema.properties.payload.properties.mode_payload.required).toEqual(["default"]);
+    expect(schema.properties.payload.properties.mode_payload.type).toEqual(["object", "null"]);
     expect(schema.properties.mode_assessment.properties.recommended_action.enum).toEqual([
       "continue",
       "fork_new_conversation",

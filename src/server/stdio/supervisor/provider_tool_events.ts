@@ -114,13 +114,14 @@ function parseSwitchModeShellArgs(commandText: string): Record<string, unknown> 
       }
       continue;
     }
-    if (token === "--wrapup-certified") {
-      modePayload.wrapup_certified = "true";
-      continue;
-    }
-    if (token === "--wrapup-level") {
+    if (token === "--mode-payload") {
       if (next) {
-        modePayload.wrapup_level = next;
+        const separator = next.indexOf("=");
+        if (separator > 0) {
+          const key = next.slice(0, separator).trim();
+          const value = next.slice(separator + 1).trim();
+          if (key && value) modePayload[key] = value;
+        }
         i += 1;
       }
       continue;

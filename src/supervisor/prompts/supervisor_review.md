@@ -31,6 +31,7 @@ Mode contract:
   - `mode_payload` with mode-specific fields
 - For `resume_mode_head`, set:
   - `mode` (allowed next mode to resume)
+  - optional `mode_payload` for transition metadata or any mode-specific required payload fields
   - optional `message` and `message_type` (`user|assistant|system|developer|supervisor`) to append before resuming
 - The first message in forked conversations comes from the target mode's configured `user_message` template after applying `mode_payload`.
 - `resume_mode_head` resumes from the latest existing fork in that mode; if none exists, the decision fails.

@@ -64,6 +64,7 @@ export type ForkNewConversationPayload = {
 };
 export type ResumeModeHeadPayload = {
   mode: string;
+  mode_payload?: Record<string, string> | null;
   message: string;
   message_type: SupervisorMessageType;
   wait_for_boundary: boolean;
@@ -206,18 +207,20 @@ function modePayloadSchema(args: {
   allowedNextModes: string[];
   modePayloadFieldsByMode?: Record<string, string[]>;
 }) {
-  const modes = sortedUnique(args.allowedNextModes);
-  const modeKeys = modes.length ? modes : ["default"];
-  const properties: Record<string, unknown> = {};
-  for (const mode of modeKeys) {
-    const fields = args.modePayloadFieldsByMode?.[mode] ?? [];
-    properties[mode] = modePayloadEntrySchema(fields);
-  }
+  const fieldNames = sortedUnique([
+    ...Object.keys(args.modePayloadFieldsByMode ?? {}),
+    ...Object.values(args.modePayloadFieldsByMode ?? {}).flat(),
+    ...args.allowedNextModes,
+  ]);
   return {
     type: ["object", "null"],
-    additionalProperties: false,
-    required: modeKeys,
-    properties,
+    additionalProperties: {
+      anyOf: [
+        { type: "string" },
+        modePayloadEntrySchema(fieldNames),
+        { type: "null" },
+      ],
+    },
   } as const;
 }
 

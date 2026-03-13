@@ -11,6 +11,7 @@ import {
   modeTransitionAllowed,
   resolveModeConfig,
   updateFrontmatterField,
+  updateFrontmatterModePayload,
 } from "../supervisor/mode_runtime.js";
 import type { BudgetState } from "../supervisor/agent_turn.js";
 import type { InlineToolCall } from "../supervisor/inline_tools.js";
@@ -18,7 +19,6 @@ import type { RuntimeContext } from "./context.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
 import { updateFrontmatterForkId } from "../supervisor/fork_utils.js";
-import { shouldForceFreshForkAcrossLevelBoundary } from "./conversation_supervise_level_boundary.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -126,21 +126,6 @@ function trimInlineText(text: string): string {
   return text.replace(/\r/g, "").trim();
 }
 
-function validateWrapupCertificationTarget(args: {
-  targetMode: string;
-  modePayload: Record<string, string>;
-}): string | null {
-  const hasWrapupFlags =
-    args.modePayload.wrapup_certified != null ||
-    args.modePayload.wrapup_level != null;
-  if (!hasWrapupFlags) return null;
-  if (args.targetMode !== "theory" && args.targetMode !== "code_model") return null;
-  return [
-    `switch_mode target_mode '${args.targetMode}' remains inside solved-level wrap-up.`,
-    "wrapup_certified/wrapup_level are reserved for the final release out of wrap-up.",
-  ].join(" ");
-}
-
 export function validateSwitchModeHandoffText(args: {
   targetMode: string;
   text: string;
@@ -219,8 +204,6 @@ export function parseSwitchModeInlineCall(args: ParseSwitchModeInlineCallArgs): 
   }
   const syntheticModePayload: Record<string, unknown> = {};
   if (args.call.args?.user_message != null) syntheticModePayload.user_message = args.call.args.user_message;
-  if (args.call.args?.wrapup_certified != null) syntheticModePayload.wrapup_certified = args.call.args.wrapup_certified;
-  if (args.call.args?.wrapup_level != null) syntheticModePayload.wrapup_level = args.call.args.wrapup_level;
   const payload = normalizeSwitchModePayload(
     args.call.args?.mode_payload != null
       ? args.call.args.mode_payload
@@ -274,19 +257,10 @@ export async function applySwitchModeRequestFork(
     modePayload: args.request.modePayload,
     requiredFields,
   });
-  const wrapupCertificationError = validateWrapupCertificationTarget({
-    targetMode,
-    modePayload: normalizedRequestedPayload,
-  });
-  if (wrapupCertificationError) return errorOutcome(wrapupCertificationError);
-  const allowedFields = new Set(requiredFields);
   for (const [rawKey, rawValue] of Object.entries(normalizedRequestedPayload)) {
     const key = String(rawKey ?? "").trim();
     const value = String(rawValue ?? "").trim();
     if (!key) continue;
-    if (!allowedFields.has(key)) {
-      return errorOutcome(`switch_mode.mode_payload.${key} is not allowed for mode '${targetMode}'`);
-    }
     if (!value) return errorOutcome(`switch_mode.mode_payload.${key} must be a non-empty string`);
     modePayload[key] = value;
   }
@@ -310,18 +284,12 @@ export async function applySwitchModeRequestFork(
     requestRequirements: args.requestAgentRuleRequirements,
     configured: targetModeConfig.agentRules ?? effectiveRenderedRunConfig?.agentRules,
   });
-  const forceFreshAcrossLevelBoundary = await shouldForceFreshForkAcrossLevelBoundary({
+  const targetModeFork = await loadLatestForkInMode({
+    ctx: args.ctx,
     workspaceRoot: args.workspaceRoot,
-    agentBaseDir: args.agentBaseDir,
+    conversationId: args.conversationId,
+    mode: targetMode,
   });
-  const targetModeFork = forceFreshAcrossLevelBoundary
-    ? undefined
-    : await loadLatestForkInMode({
-        ctx: args.ctx,
-        workspaceRoot: args.workspaceRoot,
-        conversationId: args.conversationId,
-        mode: targetMode,
-      });
   const nextForkId = newId("fork");
   if (targetModeFork) {
     const resumedDoc = appendChatMessage(
@@ -329,11 +297,11 @@ export async function applySwitchModeRequestFork(
       "user",
       seeded,
     );
-    const nextDoc = updateFrontmatterField(
+    const nextDoc = updateFrontmatterModePayload(updateFrontmatterField(
       updateFrontmatterForkId(resumedDoc, args.conversationId, nextForkId),
       "mode",
       targetMode,
-    );
+    ), modePayload);
     const nextFork = await args.ctx.store.createFork({
       workspaceRoot: args.workspaceRoot,
       conversationId: args.conversationId,
@@ -344,7 +312,7 @@ export async function applySwitchModeRequestFork(
       providerName: args.providerName,
       model: args.currentModel,
       providerThreadId: targetModeFork.providerThreadId,
-      supervisorThreadId: targetModeFork.supervisorThreadId ?? args.currentSupervisorThreadId,
+      supervisorThreadId: args.currentSupervisorThreadId,
       actionSummary: `${args.sourceLabel}:switch_mode ${args.activeMode}->${targetMode}`,
       forkSummary: `${args.sourceLabel} switch_mode: ${args.activeMode} -> ${targetMode}`,
       agentModel: args.currentModel,
@@ -365,7 +333,7 @@ export async function applySwitchModeRequestFork(
       kind: "switched",
       docText: nextDoc,
       threadId: targetModeFork.providerThreadId,
-      supervisorThreadId: targetModeFork.supervisorThreadId ?? args.currentSupervisorThreadId,
+      supervisorThreadId: args.currentSupervisorThreadId,
       fullResyncNeeded: true,
     };
   }

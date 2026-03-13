@@ -56,7 +56,7 @@ async function writeModeConfig(workspaceRoot: string, transitions = "    theory:
   );
 }
 
-async function writeWrapupModeConfig(workspaceRoot: string): Promise<void> {
+async function writeModePayloadConfig(workspaceRoot: string): Promise<void> {
   await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
   await fs.writeFile(
     path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
@@ -68,17 +68,17 @@ async function writeWrapupModeConfig(workspaceRoot: string): Promise<void> {
       "    user_message:",
       "      operation: append",
       "      parts:",
-      "        - template: \"theory wrapup {{supervisor.wrapup_certified}} level {{supervisor.wrapup_level}}\"",
+      "        - template: \"theory ticket {{supervisor.phase_ticket}} note {{supervisor.handoff_note}}\"",
       "  code_model:",
       "    user_message:",
       "      operation: append",
       "      parts:",
-      "        - template: \"code wrapup {{supervisor.wrapup_certified}} level {{supervisor.wrapup_level}}\"",
+      "        - template: \"code ticket {{supervisor.phase_ticket}} note {{supervisor.handoff_note}}\"",
       "  release:",
       "    user_message:",
       "      operation: append",
       "      parts:",
-      "        - template: \"release wrapup {{supervisor.wrapup_certified}} level {{supervisor.wrapup_level}}\"",
+      "        - template: \"release ticket {{supervisor.phase_ticket}} note {{supervisor.handoff_note}}\"",
       "mode_state_machine:",
       "  initial_mode: theory",
       "  transitions:",
@@ -309,19 +309,19 @@ describe("agent switch_mode inline tool", () => {
     ).toBeNull();
   });
 
-  it.serial("rejects runtime-captured wrapup certification flags for theory/code_model targets", async () => {
+  it.serial("allows generic runtime-captured mode_payload entries for any target mode", async () => {
     for (const targetMode of ["theory", "code_model"]) {
-      const workspaceRoot = await makeTempRoot(`conv-supervise-switch-wrapup-${targetMode}-`);
-      await writeWrapupModeConfig(workspaceRoot);
+      const workspaceRoot = await makeTempRoot(`conv-supervise-switch-payload-${targetMode}-`);
+      await writeModePayloadConfig(workspaceRoot);
       setRuntimeSwitchProviderEvents(
-        `switch_mode --target-mode ${targetMode} --reason solved_level_wrapup --wrapup-certified --wrapup-level 7`,
+        `switch_mode --target-mode ${targetMode} --reason phase_transition --mode-payload phase_ticket=alpha --mode-payload handoff_note=carry`,
       );
-      const { ctx, notifications, createForkCalls } = makeCtx(`conversation_wrapup_${targetMode}`);
+      const { ctx, notifications, createForkCalls } = makeCtx(`conversation_payload_${targetMode}`);
 
       const result = await handleConversationSupervise(ctx, {
         workspaceRoot,
         docPath: path.join(workspaceRoot, "session.md"),
-        documentText: makeDoc(`conversation_wrapup_${targetMode}`, "fork_doc"),
+        documentText: makeDoc(`conversation_payload_${targetMode}`, "fork_doc"),
         models: ["mock-model"],
         provider: "mock",
         disableSupervision: true,
@@ -333,30 +333,29 @@ describe("agent switch_mode inline tool", () => {
       });
 
       expect(result.stopReasons).toEqual(["cycle_limit"]);
-      expect(
-        createForkCalls.some((call) => call.actionSummary === `agent:switch_mode theory->${targetMode}`),
-      ).toBe(false);
+      const switchFork = createForkCalls.find((call) => call.actionSummary === `agent:switch_mode theory->${targetMode}`);
+      expect(switchFork).toBeDefined();
+      expect(String(switchFork?.documentText ?? "")).toContain(`mode: ${targetMode}`);
       const appended = notifications
         .filter((note) => note.method === "conversation.append")
         .map((note) => String(note.params?.markdown ?? ""))
         .join("\n");
-      expect(appended).toContain(`switch_mode target_mode '${targetMode}' remains inside solved-level wrap-up`);
-      expect(appended).toContain("wrapup_certified/wrapup_level are reserved for the final release out of wrap-up");
+      expect(appended).not.toContain("not allowed");
     }
   });
 
-  it.serial("allows runtime-captured wrapup certification flags on the final release transition", async () => {
-    const workspaceRoot = await makeTempRoot("conv-supervise-switch-wrapup-release-");
-    await writeWrapupModeConfig(workspaceRoot);
+  it.serial("renders required mode_payload fields from generic CLI payload entries", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-switch-payload-release-");
+    await writeModePayloadConfig(workspaceRoot);
     setRuntimeSwitchProviderEvents(
-      "switch_mode --target-mode release --reason solved_level_wrapup --wrapup-certified --wrapup-level 7",
+      "switch_mode --target-mode release --reason phase_transition --mode-payload phase_ticket=alpha --mode-payload handoff_note=carry",
     );
-    const { ctx, notifications, createForkCalls } = makeCtx("conversation_wrapup_release");
+    const { ctx, notifications, createForkCalls } = makeCtx("conversation_payload_release");
 
     const result = await handleConversationSupervise(ctx, {
       workspaceRoot,
       docPath: path.join(workspaceRoot, "session.md"),
-      documentText: makeDoc("conversation_wrapup_release", "fork_doc"),
+      documentText: makeDoc("conversation_payload_release", "fork_doc"),
       models: ["mock-model"],
       provider: "mock",
       disableSupervision: true,
@@ -371,11 +370,11 @@ describe("agent switch_mode inline tool", () => {
     const switchFork = createForkCalls.find((call) => call.actionSummary === "agent:switch_mode theory->release");
     expect(switchFork).toBeDefined();
     expect(String(switchFork?.documentText ?? "")).toContain("mode: release");
-    expect(String(switchFork?.documentText ?? "")).toContain("release wrapup true level 7");
+    expect(String(switchFork?.documentText ?? "")).toContain("release ticket alpha note carry");
     const appended = notifications
       .filter((note) => note.method === "conversation.append")
       .map((note) => String(note.params?.markdown ?? ""))
       .join("\n");
-    expect(appended).not.toContain("reserved for the final release out of wrap-up");
+    expect(appended).not.toContain("required");
   });
 });
