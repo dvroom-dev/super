@@ -917,8 +917,11 @@ describe("handleConversationSupervise", () => {
       "turns.ndjson",
     );
     const lines = (await fs.readFile(telemetryPath, "utf8")).trim().split("\n").filter(Boolean);
-    const turns = lines.map((line) => JSON.parse(line).turn);
+    const parsed = lines.map((line) => JSON.parse(line));
+    const turns = parsed.map((entry) => entry.turn);
     expect(turns).toEqual([1, 2]);
+    expect(parsed.every((entry) => typeof entry.timing?.turnElapsedMs === "number")).toBe(true);
+    expect(parsed.every((entry) => typeof entry.timing?.agentTurnMs === "number")).toBe(true);
   });
 
   it("applies cycleLimit per invocation rather than global telemetry count", async () => {

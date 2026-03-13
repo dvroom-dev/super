@@ -30,6 +30,7 @@ export async function finalizeSuperviseTurn(args: {
   turn: number;
   result: any;
   startedAt: number;
+  turnStartedAt: number;
   budget: BudgetState;
   providerName: "mock" | "codex" | "claude";
   turnAgentModel: string;
@@ -81,7 +82,12 @@ export async function finalizeSuperviseTurn(args: {
   tokenBudgetAdjusted: number;
   cadenceTimeMs: number;
   cadenceTokensAdjusted: number;
+  promptBuildMs: number;
+  agentTurnMs: number;
+  inlineToolMs: number;
+  transitionMs: number;
 }) {
+  const finalizeStartedAt = Date.now();
   const reasons = detectStopReasons({
     assistantText: args.result.assistantText,
     usage: args.result.usage,
@@ -102,31 +108,48 @@ export async function finalizeSuperviseTurn(args: {
   if (!args.disableSupervision) {
     emitSupervisorTurnDecision(args.ctx, { turn: args.turn, mode: turnDecision.supervisorMode ?? "none", reasons, streamEnded: args.result.streamEnded, cadenceHit: args.result.cadenceHit, hadError: args.result.hadError, interrupted: args.result.interrupted });
   }
-  const baseTurnTelemetry = buildTurnTelemetryBase({
-    conversationId: args.conversationId,
-    forkId: args.turnForkId,
-    turn: args.turn,
-    provider: args.providerName,
-    agentModel: args.turnAgentModel,
-    supervisorModel: args.supervisorModel,
-    promptMode: args.shouldUseFullPrompt ? "full" : "incremental",
-    promptBytes: args.promptBytes,
-    parseErrors: args.parseErrorsCount,
-    agentReasoningEffort: args.effectiveAgentModelReasoningEffort,
-    supervisorReasoningEffort: args.effectiveSupervisorModelReasoningEffort,
-    providerBuiltinTools: args.effectiveProviderBuiltinTools,
-    contextStrategy: args.managedContextStats.strategy,
-    sourceBytes: args.sourceBytes,
-    managedBytes: args.managedBytes,
-    contextStats: args.managedContextStats,
-    result: args.result,
-    stopReasons: reasons,
-    stopDetails,
-    adjustedTokensUsed: args.budget.adjustedTokensUsed,
-    elapsedMs: Date.now() - args.startedAt,
-  });
-  const writeTurnTelemetryWithSupervisor = async (supervisorTelemetry: TurnTelemetryEntry["supervisor"]) =>
-    writeTurnTelemetrySafely({ ctx: args.ctx, workspaceRoot: args.workspaceRoot, conversationId: args.conversationId, entry: { ...baseTurnTelemetry, supervisor: supervisorTelemetry }, appendTurnTelemetry });
+  const buildBaseTurnTelemetry = (supervisorReviewMs: number) =>
+    buildTurnTelemetryBase({
+      conversationId: args.conversationId,
+      forkId: args.turnForkId,
+      turn: args.turn,
+      provider: args.providerName,
+      agentModel: args.turnAgentModel,
+      supervisorModel: args.supervisorModel,
+      promptMode: args.shouldUseFullPrompt ? "full" : "incremental",
+      promptBytes: args.promptBytes,
+      parseErrors: args.parseErrorsCount,
+      agentReasoningEffort: args.effectiveAgentModelReasoningEffort,
+      supervisorReasoningEffort: args.effectiveSupervisorModelReasoningEffort,
+      providerBuiltinTools: args.effectiveProviderBuiltinTools,
+      contextStrategy: args.managedContextStats.strategy,
+      sourceBytes: args.sourceBytes,
+      managedBytes: args.managedBytes,
+      contextStats: args.managedContextStats,
+      result: args.result,
+      stopReasons: reasons,
+      stopDetails,
+      adjustedTokensUsed: args.budget.adjustedTokensUsed,
+      elapsedMs: Date.now() - args.startedAt,
+      turnElapsedMs: Date.now() - args.turnStartedAt,
+      promptBuildMs: args.promptBuildMs,
+      agentTurnMs: args.agentTurnMs,
+      inlineToolMs: args.inlineToolMs,
+      transitionMs: args.transitionMs,
+      finalizeMs: Date.now() - finalizeStartedAt,
+      supervisorReviewMs,
+    });
+  const writeTurnTelemetryWithSupervisor = async (
+    supervisorTelemetry: TurnTelemetryEntry["supervisor"],
+    supervisorReviewMs = 0,
+  ) =>
+    writeTurnTelemetrySafely({
+      ctx: args.ctx,
+      workspaceRoot: args.workspaceRoot,
+      conversationId: args.conversationId,
+      entry: { ...buildBaseTurnTelemetry(supervisorReviewMs), supervisor: supervisorTelemetry },
+      appendTurnTelemetry,
+    });
   if (!args.disableSupervision && reasons.length > 0) {
     args.ctx.sendNotification({ method: "conversation.status", params: { message: `supervisor stop: ${stopDetails.join("; ")}` } });
   }
@@ -158,6 +181,7 @@ export async function finalizeSuperviseTurn(args: {
     };
   }
   emitSupervisorRunStart(args.ctx, { turn: args.turn, mode: supervisorMode, reasons, stopDetails });
+  const supervisorReviewStartedAt = Date.now();
   const supervisorPersist = await runSupervisorReviewAndPersist({
     ctx: args.ctx,
     workspaceRoot: args.workspaceRoot,
@@ -219,6 +243,7 @@ export async function finalizeSuperviseTurn(args: {
     turn: args.turn,
     precomputedReviewStep: args.persistedCadenceReviewStep,
   });
+  const supervisorReviewMs = Date.now() - supervisorReviewStartedAt;
   await writeTurnTelemetryWithSupervisor({
     triggered: true,
     mode: supervisorMode,
@@ -230,7 +255,7 @@ export async function finalizeSuperviseTurn(args: {
     blocks: 0,
     violations: supervisorPersist.reviewFailedRulesCount,
     critique: supervisorPersist.reviewAdvice,
-  });
+  }, supervisorReviewMs);
   return {
     kind: "supervised" as const,
     reasons,

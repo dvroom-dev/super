@@ -61,6 +61,16 @@ export type TurnTelemetryEntry = {
     violations?: number;
     critique?: string;
   };
+  timing: {
+    runElapsedMs: number;
+    turnElapsedMs: number;
+    promptBuildMs: number;
+    agentTurnMs: number;
+    inlineToolMs: number;
+    transitionMs: number;
+    finalizeMs: number;
+    supervisorReviewMs: number;
+  };
   budget: {
     adjustedTokensUsed: number;
     elapsedMs: number;
@@ -90,6 +100,13 @@ type BuildTurnTelemetryBaseArgs = {
   stopDetails: string[];
   adjustedTokensUsed: number;
   elapsedMs: number;
+  turnElapsedMs: number;
+  promptBuildMs: number;
+  agentTurnMs: number;
+  inlineToolMs: number;
+  transitionMs: number;
+  finalizeMs: number;
+  supervisorReviewMs: number;
 };
 
 function toFiniteNumber(value: unknown): number | undefined {
@@ -143,6 +160,13 @@ export function buildTurnTelemetryBase(args: BuildTurnTelemetryBaseArgs): Omit<T
     stopDetails,
     adjustedTokensUsed,
     elapsedMs,
+    turnElapsedMs,
+    promptBuildMs,
+    agentTurnMs,
+    inlineToolMs,
+    transitionMs,
+    finalizeMs,
+    supervisorReviewMs,
   } = args;
 
   return {
@@ -188,6 +212,16 @@ export function buildTurnTelemetryBase(args: BuildTurnTelemetryBaseArgs): Omit<T
       details: [...stopDetails],
       cadenceHit: result.cadenceHit,
       cadenceReason: result.cadenceReason,
+    },
+    timing: {
+      runElapsedMs: elapsedMs,
+      turnElapsedMs,
+      promptBuildMs,
+      agentTurnMs,
+      inlineToolMs,
+      transitionMs,
+      finalizeMs,
+      supervisorReviewMs,
     },
     budget: {
       adjustedTokensUsed,

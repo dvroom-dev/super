@@ -74,6 +74,13 @@ describe("telemetry", () => {
       stopDetails: ["agent stopped naturally"],
       adjustedTokensUsed: 999,
       elapsedMs: 2500,
+      turnElapsedMs: 400,
+      promptBuildMs: 50,
+      agentTurnMs: 200,
+      inlineToolMs: 25,
+      transitionMs: 30,
+      finalizeMs: 40,
+      supervisorReviewMs: 55,
     });
 
     expect(base.prompt.mode).toBe("incremental");
@@ -85,6 +92,9 @@ describe("telemetry", () => {
     expect(base.agent.assistantBytes).toBeGreaterThan(0);
     expect(base.agent.toolCalls).toBe(1);
     expect(base.stop.reasons).toEqual(["agent_stop"]);
+    expect(base.timing.turnElapsedMs).toBe(400);
+    expect(base.timing.promptBuildMs).toBe(50);
+    expect(base.timing.agentTurnMs).toBe(200);
     expect(base.budget.adjustedTokensUsed).toBe(999);
   });
 
@@ -125,6 +135,13 @@ describe("telemetry", () => {
       stopDetails: ["cadence token limit reached"],
       adjustedTokensUsed: 55,
       elapsedMs: 1200,
+      turnElapsedMs: 300,
+      promptBuildMs: 20,
+      agentTurnMs: 140,
+      inlineToolMs: 0,
+      transitionMs: 10,
+      finalizeMs: 15,
+      supervisorReviewMs: 30,
     });
 
     await appendTurnTelemetry(root, "conv_2", {
@@ -149,6 +166,8 @@ describe("telemetry", () => {
     const entry = JSON.parse(lines[0]) as any;
     expect(entry.provider).toBe("claude");
     expect(entry.supervisor.triggered).toBe(true);
+    expect(entry.timing.turnElapsedMs).toBe(300);
+    expect(entry.timing.supervisorReviewMs).toBe(30);
     expect(entry.agent.usage).toEqual({
       input_tokens: 21,
       output_tokens: 34,
@@ -186,6 +205,13 @@ describe("telemetry", () => {
       stopDetails: ["agent stopped"],
       adjustedTokensUsed: 12,
       elapsedMs: 250,
+      turnElapsedMs: 90,
+      promptBuildMs: 10,
+      agentTurnMs: 40,
+      inlineToolMs: 0,
+      transitionMs: 5,
+      finalizeMs: 12,
+      supervisorReviewMs: 0,
     });
 
     await appendTurnTelemetry(root, "conv_3", {

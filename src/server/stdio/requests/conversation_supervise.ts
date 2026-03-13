@@ -343,6 +343,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       continue;
     }
     const shouldUseFullPrompt = shouldUseFullPromptForSupervise(fullResyncNeeded, currentThreadId);
+    const turnStartedAt = Date.now();
     const buildCompiledAgentPrompt = async (overrides?: {
       maxInlineBytes?: number;
       kindsToOffload?: string[];
@@ -382,9 +383,11 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       const compile = shouldUseFullPrompt
         ? compileFullPrompt(compileArgs)
         : compileIncrementalPrompt(compileArgs);
-      return { managedContext, compile };
-    };
+        return { managedContext, compile };
+      };
+    const promptBuildStartedAt = Date.now();
     const { managedContext, compile } = await buildCompiledAgentPrompt();
+    const promptBuildMs = Date.now() - promptBuildStartedAt;
     const sourceBytes = Buffer.byteLength(currentDocText, "utf8");
     const managedBytes = Buffer.byteLength(managedContext.documentText, "utf8");
     const promptBytes = promptContentByteLength(compile.prompt);
@@ -399,6 +402,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       providerBuiltinTools: effectiveProviderBuiltinTools,
       promptMode: shouldUseFullPrompt ? "full" : "incremental",
     });
+    const agentTurnStartedAt = Date.now();
     const turnResult = await runAgentTurnWithHooks({
       ctx,
       workspaceRoot,
@@ -452,6 +456,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       turn: turnIndex + 1,
       onCadenceHit: cadenceController.onCadenceHit, onToolBoundary: cadenceController.onToolBoundary, onAppendMarkdown: cadenceController.onAppendMarkdown, onAssistantText: cadenceController.onAssistantText,
     });
+    const agentTurnMs = Date.now() - agentTurnStartedAt;
     const cadenceFinalize = await cadenceController.finalize();
     if (cadenceFinalize.supervisorThreadId && cadenceFinalize.supervisorThreadId !== currentSupervisorThreadId) currentSupervisorThreadId = cadenceFinalize.supervisorThreadId;
     if (cadenceFinalize.appendedMarkdowns.length > 0) {
@@ -464,7 +469,9 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     fullResyncNeeded = turnResult.fullResyncNeeded;
     if (result.newThreadId && result.newThreadId !== currentThreadId) currentThreadId = result.newThreadId;
     if (shouldUseFullPrompt && currentThreadId) fullResyncNeeded = false;
+    let inlineToolMs = 0;
     if (result.toolCalls && result.toolCalls.length) {
+      const inlineToolStartedAt = Date.now();
       const toolOutcome = await processInlineToolCalls({
         ctx,
         workspaceRoot,
@@ -516,6 +523,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         budget,
         providerName,
       });
+      inlineToolMs = Date.now() - inlineToolStartedAt;
       if (toolOutcome.kind === "stop") {
         stopReasons = toolOutcome.stopReasons;
         stopDetails = toolOutcome.stopDetails;
@@ -532,6 +540,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       cycleTurnCount += 1;
       continue;
     }
+    const transitionStartedAt = Date.now();
     const transitionOutcome = await applyTurnTransitions({
       ctx,
       workspaceRoot,
@@ -581,6 +590,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       budget,
       providerName,
     });
+    const transitionMs = Date.now() - transitionStartedAt;
     if (transitionOutcome.kind === "stop") { stopReasons = transitionOutcome.stopReasons; stopDetails = transitionOutcome.stopDetails; currentDocText = transitionOutcome.currentDocText; lifecycle.finishRun("stopped"); return { conversationId, forkId: transitionOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) }; }
     if (transitionOutcome.kind === "continue") { currentDocText = transitionOutcome.currentDocText; currentThreadId = transitionOutcome.currentThreadId; currentSupervisorThreadId = transitionOutcome.currentSupervisorThreadId; currentTransitionPayload = { ...transitionOutcome.activeTransitionPayload }; fullResyncNeeded = transitionOutcome.fullResyncNeeded; turnIndex += 1; cycleTurnCount += 1; continue; }
     const finalizeOutcome = await finalizeSuperviseTurn({
@@ -597,6 +607,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       turn: turnIndex + 1,
       result,
       startedAt,
+      turnStartedAt,
       budget,
       providerName,
       turnAgentModel,
@@ -648,6 +659,10 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       tokenBudgetAdjusted,
       cadenceTimeMs,
       cadenceTokensAdjusted,
+      promptBuildMs,
+      agentTurnMs,
+      inlineToolMs,
+      transitionMs,
     });
     stopReasons = finalizeOutcome.reasons;
     stopDetails = finalizeOutcome.stopDetails;
