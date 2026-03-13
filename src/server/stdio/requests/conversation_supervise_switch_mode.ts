@@ -257,6 +257,17 @@ export async function applySwitchModeRequestFork(
     modePayload: args.request.modePayload,
     requiredFields,
   });
+  const legacyTransitionKeys = ["wrapup_certified", "wrapup_level"].filter((key) =>
+    Object.prototype.hasOwnProperty.call(normalizedRequestedPayload, key),
+  );
+  if (legacyTransitionKeys.length > 0) {
+    return errorOutcome(
+      [
+        `switch_mode.mode_payload.${legacyTransitionKeys[0]} is no longer supported.`,
+        "Release and other transition-scoped metadata must be set by the supervisor in transition_payload, not passed through switch_mode mode_payload.",
+      ].join(" "),
+    );
+  }
   for (const [rawKey, rawValue] of Object.entries(normalizedRequestedPayload)) {
     const key = String(rawKey ?? "").trim();
     const value = String(rawValue ?? "").trim();

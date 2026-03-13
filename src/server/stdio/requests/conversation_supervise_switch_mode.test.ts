@@ -377,4 +377,35 @@ describe("agent switch_mode inline tool", () => {
       .join("\n");
     expect(appended).not.toContain("required");
   });
+
+  it.serial("rejects legacy wrap-up fields in switch_mode mode_payload with explicit guidance", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-switch-legacy-wrapup-");
+    await writeModePayloadConfig(workspaceRoot);
+    setRuntimeSwitchProviderEvents(
+      "switch_mode --target-mode theory --reason wrapup --mode-payload wrapup_certified=true --mode-payload wrapup_level=1",
+    );
+    const { ctx, notifications } = makeCtx("conversation_legacy_wrapup");
+
+    const result = await handleConversationSupervise(ctx, {
+      workspaceRoot,
+      docPath: path.join(workspaceRoot, "session.md"),
+      documentText: makeDoc("conversation_legacy_wrapup", "fork_doc"),
+      models: ["mock-model"],
+      provider: "mock",
+      disableSupervision: true,
+      cycleLimit: 1,
+      supervisor: {
+        enabled: true,
+        stopCondition: "task complete",
+      },
+    });
+
+    expect(result.stopReasons).toEqual(["cycle_limit"]);
+    const appended = notifications
+      .filter((note) => note.method === "conversation.append")
+      .map((note) => String(note.params?.markdown ?? ""))
+      .join("\n");
+    expect(appended).toContain("switch_mode.mode_payload.wrapup_certified is no longer supported");
+    expect(appended).toContain("transition_payload");
+  });
 });
