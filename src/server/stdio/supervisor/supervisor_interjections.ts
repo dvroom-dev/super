@@ -32,6 +32,7 @@ export function interjectionTriggerForReview(
   reviewTrigger: SupervisorTriggerKind,
 ): SupervisorInterjectionTrigger {
   if (supervisorMode === "soft") return "cadence";
+  if (reviewTrigger === "run_start_bootstrap") return "run_start_bootstrap";
   if (reviewTrigger === "agent_yield") return "agent_yield";
   if (reviewTrigger === "agent_compaction") return "agent_compaction";
   if (reviewTrigger === "agent_error") return "agent_error";

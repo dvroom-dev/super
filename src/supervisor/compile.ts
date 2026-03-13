@@ -341,7 +341,10 @@ export function compileSupervisorReview(input: SupervisorReviewInputs): { prompt
     : "Hard-rule failure will trigger synthetic check_supervisor replacement automatically.";
   const nextModesText = allowedNextModes.length ? allowedNextModes.join(", ") : "(none)";
 
-  const template = loadPromptTemplate("supervisor_review.md");
+  const templateName = input.trigger === "run_start_bootstrap"
+    ? "supervisor_bootstrap.md"
+    : "supervisor_review.md";
+  const template = loadPromptTemplate(templateName);
   if (!template) {
     const promptText = [
       system,
@@ -353,8 +356,9 @@ export function compileSupervisorReview(input: SupervisorReviewInputs): { prompt
       `Allowed next modes: ${nextModesText}`,
       `Stop condition: ${stopCondition}`,
       "",
-      "Assistant response:",
-      input.assistantText.trim(),
+      ...(input.trigger === "run_start_bootstrap"
+        ? []
+        : ["Assistant response:", input.assistantText.trim()]),
     ].join("\n");
     const promptImages = dedupePromptImages([
       ...normalizeConfiguredImages(input.configuredSystemMessage?.images, input.workspaceRoot),

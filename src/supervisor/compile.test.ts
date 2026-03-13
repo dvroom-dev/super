@@ -428,6 +428,26 @@ describe("compileSupervisorReview", () => {
     expect(result.promptText).toContain("Supervisor instructions (supervisor-only):");
     expect(result.promptText).toContain("Prefer concise advice");
   });
+  it("uses the bootstrap template for run_start_bootstrap", () => {
+    const input = reviewInput({
+      trigger: "run_start_bootstrap",
+      assistantText: "",
+      stopReasons: ["run_start_bootstrap"],
+      currentMode: "(bootstrap)",
+      allowedNextModes: ["explore_and_solve"],
+      modePayloadFieldsByMode: { explore_and_solve: ["user_message"] },
+      responseSchema: buildSupervisorResponseSchema({
+        trigger: "run_start_bootstrap",
+        allowedNextModes: ["explore_and_solve"],
+        modePayloadFieldsByMode: { explore_and_solve: ["user_message"] },
+      }),
+    });
+    const result = compileSupervisorReview(input);
+    expect(result.promptText).toContain("You are the supervisor for a new agent/supervisor run before the first agent turn.");
+    expect(result.promptText).toContain("Kind: bootstrap");
+    expect(result.promptText).toContain("Allowed starting modes: explore_and_solve");
+    expect(result.promptText).not.toContain("Assistant response to review:");
+  });
   it("includes supervisor carryover section when provided", () => {
     const input = reviewInput({
       currentMode: "plan",

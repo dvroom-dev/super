@@ -1,6 +1,7 @@
 type ConfigRecord = Record<string, unknown>;
 
 export type SupervisorPromptTrigger =
+  | "run_start_bootstrap"
   | "base"
   | "agent_yield"
   | "agent_compaction"
@@ -20,6 +21,7 @@ export type SupervisorTriggers<TPrompt, TAgentMessage> = Partial<
 >;
 
 const SUPERVISOR_PROMPT_TRIGGER_ALIASES: Record<string, SupervisorPromptTrigger> = {
+  run_start_bootstrap: "run_start_bootstrap",
   base: "base",
   agent_yield: "agent_yield",
   agent_compaction: "agent_compaction",

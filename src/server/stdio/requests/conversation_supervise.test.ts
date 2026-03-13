@@ -76,6 +76,7 @@ function makeCtx(options: TestCtxBuild = {}) {
   const notifications: any[] = [];
   const createForkCalls: any[] = [];
   const loadForkCalls: any[] = [];
+  const updateForkCalls: any[] = [];
   const conversationId = options.conversationId ?? "conversation_test";
   const ctx: any = {
     state: {},
@@ -112,9 +113,15 @@ function makeCtx(options: TestCtxBuild = {}) {
         createForkCalls.push(args);
         return { id: args.forkId ?? `fork_${createForkCalls.length}` };
       },
+      async updateFork(_workspaceRoot: string, _conversationId: string, forkId: string, patch: any) {
+        updateForkCalls.push({ forkId, patch });
+        const current = options.forksById?.[forkId] ?? options.baseFork;
+        if (current) Object.assign(current, patch);
+        return { ...(current ?? {}), id: forkId, ...patch };
+      },
     },
   };
-  return { ctx, notifications, createForkCalls, loadForkCalls };
+  return { ctx, notifications, createForkCalls, loadForkCalls, updateForkCalls };
 }
 
 describe("shouldUseFullPromptForSupervise", () => {
@@ -299,6 +306,92 @@ describe("handleConversationSupervise", () => {
       delete process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE;
       delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
     }
+  });
+
+  it.serial("runs supervisor bootstrap before the first unsolved level-1 turn", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-bootstrap-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, "agent", "game_ls20", "level_current"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "agent", "game_ls20", "level_current", "meta.json"),
+      JSON.stringify({ level: 1, analysis_level_pinned: false }, null, 2),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - template: \"bootstrap {{supervisor.user_message}}\"",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory seed",
+        "mode_state_machine:",
+        "  initial_mode: explore_and_solve",
+        "  transitions:",
+        "    explore_and_solve: [theory]",
+        "    theory: [explore_and_solve]",
+      ].join("\n"),
+      "utf8",
+    );
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "Bootstrap turn executed.";
+    const reviewOverrideJson = JSON.stringify({
+      decision: "fork_new_conversation",
+      payload: strictSupervisorPayload({
+        mode: "explore_and_solve",
+        mode_payload: {
+          explore_and_solve: {
+            user_message: "take a tiny action sample and then return to theory",
+          },
+        },
+      }),
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [
+          {
+            mode: "explore_and_solve",
+            confidence: "high",
+            evidence: "configured initial mode",
+          },
+        ],
+        recommended_action: "fork_new_conversation",
+      },
+      reasoning: "bootstrap the initial mode",
+      agent_model: null,
+    });
+
+    const { ctx, createForkCalls, updateForkCalls } = makeCtx({
+      conversationId: "conversation_bootstrap",
+      docForkId: "fork_doc",
+    });
+    const result = await handleConversationSupervise(ctx, {
+      workspaceRoot,
+      agentBaseDir: path.join(workspaceRoot, "agent", "game_ls20"),
+      docPath: path.join(workspaceRoot, "session.md"),
+      documentText: makeDoc("conversation_bootstrap", "fork_doc"),
+      models: ["mock-model"],
+      provider: "mock",
+      cycleLimit: 1,
+      supervisor: { enabled: true, reviewOverrideJson },
+    });
+
+    expect(updateForkCalls.length).toBeGreaterThan(0);
+    expect(createForkCalls.some((call) => String(call.documentText ?? "").includes("mode: explore_and_solve"))).toBe(
+      true,
+    );
+    expect(
+      createForkCalls.some((call) =>
+        String(call.documentText ?? "").includes("take a tiny action sample and then return to theory"),
+      ),
+    ).toBe(true);
+    expect(result.activeMode).toBe("explore_and_solve");
   });
 
   it.serial("reuses an existing target-mode thread for runtime switch_mode requests", async () => {

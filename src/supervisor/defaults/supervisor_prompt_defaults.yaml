@@ -30,6 +30,18 @@ supervisor:
               Output contract:
               - Return strict JSON only.
               - Follow the provided JSON schema exactly.
+    run_start_bootstrap:
+      supervisor_prompt:
+        operation: append
+        parts:
+          - literal: |
+              Trigger context:
+              - Trigger: `run_start_bootstrap`.
+              - Why this review ran: this is the first supervisor pass before any agent turn in a new conversation.
+              - There is no assistant response to review yet.
+              - Use the visible workspace state and the run configuration to decide whether the configured initial mode should begin.
+              - Prefer `fork_new_conversation` into the allowed initial mode with a concise bootstrap handoff in `mode_payload`.
+              - Stop instead of guessing if the initial handoff cannot be stated safely from the visible evidence.
     agent_yield:
       supervisor_prompt:
         operation: append

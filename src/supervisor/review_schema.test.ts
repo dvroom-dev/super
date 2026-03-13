@@ -6,6 +6,10 @@ import {
 
 describe("review_schema", () => {
   it("limits allowed decisions by trigger", () => {
+    expect(allowedDecisionsForTrigger("run_start_bootstrap")).toEqual([
+      "stop_and_return",
+      "fork_new_conversation",
+    ]);
     expect(allowedDecisionsForTrigger("agent_yield")).toEqual([
       "stop_and_return",
       "rewrite_with_check_supervisor_and_continue",
@@ -128,5 +132,18 @@ describe("review_schema", () => {
       "supervisor_command",
       null,
     ]);
+  });
+
+  it("restricts bootstrap reviews to initial fork-or-stop decisions", () => {
+    const schema = buildSupervisorResponseSchema({
+      trigger: "run_start_bootstrap",
+      allowedNextModes: ["explore_and_solve"],
+      modePayloadFieldsByMode: { explore_and_solve: ["user_message"] },
+    }) as any;
+    expect(schema.properties.decision.enum).toEqual([
+      "stop_and_return",
+      "fork_new_conversation",
+    ]);
+    expect(schema.properties.payload.properties.mode.enum).toEqual(["explore_and_solve", null]);
   });
 });

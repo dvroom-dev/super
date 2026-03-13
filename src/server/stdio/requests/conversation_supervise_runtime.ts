@@ -3,6 +3,7 @@ import path from "node:path";
 import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { appendTurnTelemetry } from "../supervisor/telemetry.js";
 import type { RuntimeContext } from "./context.js";
+import { frontmatterValue, resolveInitialMode } from "../supervisor/mode_runtime.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -21,6 +22,32 @@ async function readLevelCurrentMeta(agentBaseDir: string): Promise<LevelCurrentM
   } catch {
     return undefined;
   }
+}
+
+export async function readLevelCurrentMetaForSupervise(agentBaseDir: string): Promise<LevelCurrentMeta | undefined> {
+  return readLevelCurrentMeta(agentBaseDir);
+}
+
+export async function shouldRunInitialSupervisorBootstrap(args: {
+  renderedRunConfig: RenderedRunConfig;
+  documentText: string;
+  currentThreadId?: string;
+  agentBaseDir?: string;
+}): Promise<boolean> {
+  if (!args.agentBaseDir) return false;
+  if (args.currentThreadId) return false;
+  if (frontmatterValue(args.documentText, "mode")?.trim()) return false;
+  const levelMeta = await readLevelCurrentMeta(args.agentBaseDir);
+  return Number(levelMeta?.level) === 1 && levelMeta?.analysis_level_pinned !== true;
+}
+
+export async function initialBootstrapModesFor(args: {
+  renderedRunConfig: RenderedRunConfig;
+  agentBaseDir?: string;
+}): Promise<string[]> {
+  const initialMode = resolveInitialMode(args.renderedRunConfig);
+  if (!initialMode) return [];
+  return [initialMode];
 }
 
 export async function allowedNextModesFor(args: {

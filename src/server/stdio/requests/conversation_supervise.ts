@@ -18,7 +18,7 @@ import { loadLastTurnTelemetryTurn } from "../supervisor/telemetry.js";
 import { promptContentByteLength } from "../../../utils/prompt_content.js";
 import { applySdkBuiltinToolsToProviderOptions } from "../../../providers/sdk_builtin_tools.js";
 import { resolveProviderFilesystemPolicy } from "../../../providers/filesystem_permissions.js";
-import { mergeInstructionLists, mergeAgentRuleSet, modeGuidanceByMode, modePayloadFieldsByMode, resolveActiveMode, resolveModeConfig, resolveModePayload, resolveModeReasoningEfforts } from "../supervisor/mode_runtime.js";
+import { mergeInstructionLists, mergeAgentRuleSet, modeGuidanceByMode, modePayloadFieldsByMode, resolveActiveMode, resolveInitialMode, resolveModeConfig, resolveModePayload, resolveModeReasoningEfforts } from "../supervisor/mode_runtime.js";
 import { resolveConfiguredSystemMessage } from "../supervisor/system_message_runtime.js";
 import { processInlineToolCalls, runAgentTurnWithHooks } from "./conversation_supervise_steps.js";
 import { applyTurnTransitions } from "./conversation_supervise_transition.js";
@@ -26,8 +26,10 @@ import { finalizeSuperviseTurn } from "./conversation_supervise_finalize.js";
 import { runSupervisorSchemaPreflight } from "../supervisor/schema_preflight.js";
 import { createCadenceParallelController } from "./cadence_parallel.js";
 import { mergeSdkBuiltinTools } from "../../../supervisor/run_config_sdk_builtin_tools.js";
-import { allowedNextModesFor, createRunLifecycle, shouldUseFullPromptForSupervise } from "./conversation_supervise_runtime.js";
+import { allowedNextModesFor, createRunLifecycle, initialBootstrapModesFor, shouldRunInitialSupervisorBootstrap, shouldUseFullPromptForSupervise } from "./conversation_supervise_runtime.js";
 import { buildManagedSuperviseContext, emitManagedSuperviseContextStats } from "./conversation_supervise_context.js";
+import { runSuperviseReviewStep } from "../supervisor/supervise_review.js";
+import { applySupervisorForkDecision } from "./conversation_supervise_inline_mode_helpers.js";
 export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtime.js"; export async function handleConversationSupervise(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const agentWorkspaceRoot = path.resolve(workspaceRoot, String((params as any)?.agentBaseDir ?? workspaceRoot));
@@ -133,6 +135,23 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     activeModePayload: resolveModePayload(docText),
   });
   let supervisorSchemaPreflightDone = false;
+  const bootstrapTurnResult = {
+    appended: [],
+    assistantText: "",
+    errorMessage: null,
+    assistantFinal: false,
+    hadError: false,
+    interrupted: false,
+    interruptionReason: null,
+    abortedBySupervisor: false,
+    abortError: false,
+    streamEnded: false,
+    usage: null,
+    cadenceHit: false,
+    cadenceReason: null,
+    compactionDetected: false,
+    compactionDetails: null,
+  } as const;
   try {
     while (true) {
     const turnForkId = lifecycle.currentForkId();
@@ -191,8 +210,121 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     });
     const modePayloadFields = modePayloadFieldsByMode(renderedRunConfig, allowedNextModes);
     const modeGuidance = modeGuidanceByMode(renderedRunConfig, allowedNextModes, activeMode);
+    const shouldBootstrap = !disableSupervision
+      && effectiveSupervisor.enabled !== false
+      && await shouldRunInitialSupervisorBootstrap({
+        renderedRunConfig,
+        documentText: currentDocText,
+        currentThreadId,
+        agentBaseDir: agentWorkspaceRoot,
+      });
+    const bootstrapModes = shouldBootstrap
+      ? await initialBootstrapModesFor({ renderedRunConfig, agentBaseDir: agentWorkspaceRoot })
+      : [];
+    const bootstrapPayloadFields = modePayloadFieldsByMode(renderedRunConfig, bootstrapModes);
+    const bootstrapGuidance = modeGuidanceByMode(renderedRunConfig, bootstrapModes);
     if (!disableSupervision && effectiveSupervisor.enabled !== false && !effectiveStopCondition) throw new Error("supervised runs require supervisor.stop_condition in config.yaml");
     if (!supervisorSchemaPreflightDone && !disableSupervision && effectiveSupervisor.enabled !== false) { await runSupervisorSchemaPreflight({ supervisorWorkspaceRoot, providerName: supervisorProviderName, supervisorModel, supervisorModelReasoningEffort: effectiveSupervisorModelReasoningEffort, permissionProfile, supervisorProviderOptions: effectiveSupervisorProviderOptions, allowedNextModes, modePayloadFieldsByMode: modePayloadFields, supervisorTriggers: renderedRunConfig?.supervisorTriggers, timeoutMs: effectiveSupervisor.reviewTimeoutMs }); supervisorSchemaPreflightDone = true; }
+    if (shouldBootstrap) {
+      if (bootstrapModes.length === 0) {
+        throw new Error("initial supervisor bootstrap requires at least one allowed starting mode");
+      }
+      const bootstrapMode = resolveInitialMode(renderedRunConfig);
+      const bootstrapReview = await runSuperviseReviewStep({
+        ctx,
+        workspaceRoot,
+        conversationId,
+        documentText,
+        currentDocText,
+        agentRules: effectiveAgentRequirements,
+        agentRuleViolations: effectiveAgentViolations,
+        supervisorInstructions: effectiveSupervisorInstructions,
+        result: bootstrapTurnResult as any,
+        reasons: ["run_start_bootstrap"],
+        supervisorMode: "hard",
+        providerName: supervisorProviderName,
+        supervisorProviderOptions: effectiveSupervisorProviderOptions,
+        permissionProfile,
+        supervisor: effectiveSupervisor,
+        supervisorModel,
+        currentModel,
+        agentModelReasoningEffort: effectiveAgentModelReasoningEffort,
+        supervisorModelReasoningEffort: effectiveSupervisorModelReasoningEffort,
+        agentsText,
+        workspaceListingText,
+        taggedFiles,
+        openFiles,
+        utilities,
+        skills,
+        skillsToInvoke,
+        skillInstructions,
+        configuredSystemMessage: effectiveSupervisorConfiguredSystemMessage,
+        supervisorTriggers: renderedRunConfig?.supervisorTriggers,
+        stopCondition: effectiveStopCondition,
+        currentMode: "(bootstrap)",
+        allowedNextModes: bootstrapModes,
+        modePayloadFieldsByMode: bootstrapPayloadFields,
+        modeGuidanceByMode: bootstrapGuidance,
+        supervisorWorkspaceRoot,
+        currentSupervisorThreadId,
+        triggerOverride: "run_start_bootstrap",
+      });
+      currentDocText = bootstrapReview.nextDocText;
+      currentSupervisorThreadId = bootstrapReview.nextSupervisorThreadId;
+      await ctx.store.updateFork(workspaceRoot, conversationId, lifecycle.currentForkId(), {
+        documentText: currentDocText,
+        supervisorThreadId: currentSupervisorThreadId,
+      });
+      ctx.sendNotification({
+        method: "conversation.replace",
+        params: { docPath, documentText: currentDocText, baseForkId: lifecycle.currentForkId() },
+      });
+      if (bootstrapReview.effectiveAction === "stop") {
+        stopReasons = bootstrapReview.reviewReasons;
+        stopDetails = ["initial supervisor bootstrap stopped the run"];
+        lifecycle.finishRun("stopped");
+        return { conversationId, forkId: lifecycle.currentForkId(), mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
+      }
+      if (bootstrapReview.effectiveAction !== "fork" || bootstrapReview.nextMode !== bootstrapMode) {
+        throw new Error(`initial supervisor bootstrap must fork into the configured initial mode '${bootstrapMode}'`);
+      }
+      const bootstrapFork = await applySupervisorForkDecision({
+        ctx,
+        workspaceRoot,
+        docPath,
+        conversationId,
+        activeForkId: lifecycle.currentForkId(),
+        switchActiveFork: lifecycle.switchActiveFork,
+        renderedRunConfig,
+        runConfigPath,
+        configBaseDir,
+        agentBaseDir: agentWorkspaceRoot,
+        supervisorBaseDir: supervisorWorkspaceRoot,
+        requestAgentRuleRequirements,
+        activeMode: bootstrapMode,
+        allowedNextModes: bootstrapModes,
+        review: bootstrapReview.review,
+        reasonLabel: "run_start_bootstrap",
+        detailLabel: "initial supervisor bootstrap",
+        startedAt,
+        budget,
+        providerName,
+        currentModel,
+        supervisorModel,
+        currentDocText,
+        currentThreadId,
+        currentSupervisorThreadId,
+        transitionTrigger: "run_start_bootstrap",
+      });
+      if (!bootstrapFork) {
+        throw new Error("initial supervisor bootstrap review did not produce a valid starting fork");
+      }
+      currentDocText = bootstrapFork.docText;
+      currentThreadId = bootstrapFork.threadId;
+      currentSupervisorThreadId = bootstrapFork.supervisorThreadId ?? currentSupervisorThreadId;
+      fullResyncNeeded = bootstrapFork.fullResyncNeeded;
+      continue;
+    }
     const managedContext = await buildManagedSuperviseContext({ documentText: currentDocText, workspaceRoot, conversationId, strategy: renderedRunConfig?.contextManagementStrategy });
     const shouldUseFullPrompt = shouldUseFullPromptForSupervise(fullResyncNeeded, currentThreadId);
     const compileArgs = { documentText: managedContext.documentText, workspaceRoot, provider: providerName, agentRules: effectiveAgentRequirements, currentMode: activeMode, allowedNextModes, modePayloadFieldsByMode: modePayloadFields, modeGuidanceByMode: modeGuidance, availableToolsMarkdown: toolDefinitionsMarkdown(effectiveToolConfig), agentRuleViolations: effectiveAgentViolations, model: currentModel, agentsMd: agentsText, workspaceListing: workspaceListingText, taggedFiles, openFiles, utilities, skills, skillsToInvoke, skillInstructions, configuredSystemMessage: effectiveAgentConfiguredSystemMessage, defaultSystemMessage: disableSupervision ? undefined : renderedRunConfig?.supervisor?.agentDefaultSystemMessage };

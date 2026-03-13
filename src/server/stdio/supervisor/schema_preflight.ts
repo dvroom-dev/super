@@ -9,6 +9,7 @@ function collectPreflightTemplateSpecs(args: {
   supervisorTriggers?: NonNullable<Awaited<ReturnType<typeof renderRunConfig>>>["supervisorTriggers"];
 }): Array<{ name: string; acceptsMessage: boolean }> {
   const variants: Array<{ reviewTrigger: SupervisorTriggerKind; supervisorMode: "hard" | "soft" }> = [
+    { reviewTrigger: "run_start_bootstrap", supervisorMode: "hard" },
     { reviewTrigger: "agent_yield", supervisorMode: "hard" },
     { reviewTrigger: "agent_yield", supervisorMode: "soft" },
     { reviewTrigger: "agent_error", supervisorMode: "hard" },

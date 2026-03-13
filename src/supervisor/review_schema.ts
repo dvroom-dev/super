@@ -1,4 +1,5 @@
 export type SupervisorTriggerKind =
+  | "run_start_bootstrap"
   | "agent_yield"
   | "agent_compaction"
   | "agent_error"
@@ -108,6 +109,10 @@ export const ALL_SUPERVISOR_DECISIONS: SupervisorDecisionKind[] = [
 ];
 
 const TRIGGER_DECISIONS: Record<SupervisorTriggerKind, SupervisorDecisionKind[]> = {
+  run_start_bootstrap: [
+    "stop_and_return",
+    "fork_new_conversation",
+  ],
   agent_yield: [
     "stop_and_return",
     "rewrite_with_check_supervisor_and_continue",

@@ -3,6 +3,7 @@ import { normalizeToolInterceptionConfig } from "./run_config_tool_interception.
 type ConfigRecord = Record<string, unknown>;
 
 export type SupervisorInterjectionTrigger =
+  | "run_start_bootstrap"
   | "agent_yield"
   | "agent_compaction"
   | "agent_error"
@@ -88,6 +89,7 @@ function normalizeCadenceInterruptPolicy(
 }
 
 const SUPERVISOR_INTERJECTION_TRIGGER_ALIASES: Record<string, SupervisorInterjectionTrigger> = {
+  run_start_bootstrap: "run_start_bootstrap",
   agent_yield: "agent_yield",
   agent_compaction: "agent_compaction",
   agent_error: "agent_error",
@@ -220,6 +222,7 @@ export function renderSupervisorMessageTemplatesMarkdown(
 }
 
 const TEMPLATE_GROUP_ORDER: SupervisorInterjectionTrigger[] = [
+  "run_start_bootstrap",
   "agent_yield",
   "agent_compaction",
   "agent_error",

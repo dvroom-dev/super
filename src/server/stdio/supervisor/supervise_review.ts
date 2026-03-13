@@ -63,6 +63,7 @@ export type SuperviseReviewStepArgs = {
   supervisorCarryover?: string;
   supervisorWorkspaceRoot?: string;
   currentSupervisorThreadId?: string;
+  triggerOverride?: SupervisorTriggerKind;
 };
 
 export type SuperviseReviewStepResult = {
@@ -131,7 +132,7 @@ export async function runSuperviseReviewStep(
     currentSupervisorThreadId,
   } = args;
 
-  const reviewTrigger = triggerForTurn(result);
+  const reviewTrigger = args.triggerOverride ?? triggerForTurn(result);
   const effectiveAgentRules = agentRules ?? [];
   const appendMessageTemplates = messageTemplateSpecsForReview({
     supervisorMode,
