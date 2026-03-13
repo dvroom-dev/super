@@ -5,6 +5,7 @@ export type SuperState = {
   activeForkId: string;
   activeMode?: string;
   activeModePayload?: Record<string, string>;
+  activeTransitionPayload?: Record<string, string>;
   agentProvider: string;
   agentModel: string;
   supervisorProvider: string;

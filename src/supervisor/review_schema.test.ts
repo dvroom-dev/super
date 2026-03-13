@@ -63,6 +63,7 @@ describe("review_schema", () => {
       "decision",
       "payload",
       "mode_assessment",
+      "transition_payload",
       "reasoning",
       "agent_model",
     ]);
@@ -83,6 +84,8 @@ describe("review_schema", () => {
     ]);
     expect(schema.properties.payload.properties.mode_payload.type).toEqual(["object", "null"]);
     expect(schema.properties.payload.properties.mode_payload.additionalProperties.anyOf).toHaveLength(3);
+    expect(schema.properties.transition_payload.type).toEqual(["object", "null"]);
+    expect(schema.properties.transition_payload.additionalProperties.type).toBe("string");
   });
 
   it("keeps mode_assessment required at top-level but nullable when no next modes are available", () => {

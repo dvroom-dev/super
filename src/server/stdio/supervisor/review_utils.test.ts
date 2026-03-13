@@ -180,6 +180,7 @@ describe("review_utils append message template semantics", () => {
     const normalized = normalizeReview({
       raw: {
         decision: "resume_mode_head",
+        transition_payload: { release_ticket: "alpha", empty_value: "" },
         payload: {
           mode: "default",
           message: "resume now",
@@ -193,6 +194,7 @@ describe("review_utils append message template semantics", () => {
     expect(normalized.decision).toBe("resume_mode_head");
     if (normalized.decision !== "resume_mode_head") return;
     expect(normalized.payload.message_type).toBe("user");
+    expect(normalized.transition_payload).toEqual({ release_ticket: "alpha" });
   });
 
   it("requires resume_mode_head mode_payload fields when the target mode declares them", () => {

@@ -78,6 +78,7 @@ export type SuperviseReviewStepResult = {
   nextResumeMessageType?: SupervisorMessageType;
   nextMessageTemplateName?: string;
   nextModePayload?: Record<string, string>;
+  nextTransitionPayload?: Record<string, string>;
   nextModel: string;
   nextSupervisorThreadId?: string;
   historyRewritten: boolean;
@@ -240,6 +241,7 @@ export async function runSuperviseReviewStep(
   let nextResumeMessageType: SupervisorMessageType | undefined = undefined;
   let nextMessageTemplateName: string | undefined = undefined;
   let nextModePayload: Record<string, string> | undefined = undefined;
+  const nextTransitionPayload = { ...(review.transition_payload ?? {}) };
   let shouldRewriteWithCheck = false;
   let checkRuleChecks: AgentRuleCheck[] = [];
 
@@ -473,6 +475,7 @@ export async function runSuperviseReviewStep(
     nextResumeMessageType,
     nextMessageTemplateName,
     nextModePayload,
+    nextTransitionPayload,
     nextModel,
     nextSupervisorThreadId,
     historyRewritten,

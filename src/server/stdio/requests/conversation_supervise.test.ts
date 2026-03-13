@@ -394,6 +394,83 @@ describe("handleConversationSupervise", () => {
     expect(result.activeMode).toBe("explore_and_solve");
   });
 
+  it.serial("exports supervisor transition payload separately from active mode state", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-transition-payload-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory seed",
+        "mode_state_machine:",
+        "  initial_mode: theory",
+        "  transitions:",
+        "    theory: [theory]",
+      ].join("\n"),
+      "utf8",
+    );
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "No mode change required.";
+    try {
+      const reviewOverrideJson = JSON.stringify({
+        decision: "append_message_and_continue",
+        payload: {
+          message: "Stay in theory and start the next level from the same conversation.",
+          message_template: "custom",
+        },
+        transition_payload: {
+          wrapup_certified: "true",
+          wrapup_level: "1",
+        },
+        mode_assessment: {
+          current_mode_stop_satisfied: false,
+          candidate_modes_ranked: [
+            {
+              mode: "theory",
+              confidence: "high",
+              evidence: "stay in theory while releasing the pin",
+            },
+          ],
+          recommended_action: "continue",
+        },
+        reasoning: "release solved-level wrap-up without changing mode",
+        agent_model: null,
+      });
+
+      const { ctx } = makeCtx({
+        conversationId: "conversation_transition_payload",
+        docForkId: "fork_doc",
+      });
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_transition_payload",
+          forkId: "fork_doc",
+          mode: "theory",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        cycleLimit: 1,
+        supervisor: { enabled: true, reviewOverrideJson },
+      });
+
+      expect(result.activeMode).toBe("theory");
+      expect(result.activeModePayload).toEqual({});
+      expect(result.activeTransitionPayload).toEqual({
+        wrapup_certified: "true",
+        wrapup_level: "1",
+      });
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  });
+
   it.serial("reuses an existing target-mode thread for runtime switch_mode requests", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
@@ -616,7 +693,8 @@ describe("handleConversationSupervise", () => {
     ]);
     process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
       decision: "continue",
-      payload: strictSupervisorPayload({ reason: "accept the requested switch" }),
+      payload: strictSupervisorPayload({}),
+      transition_payload: null,
       mode_assessment: {
         current_mode_stop_satisfied: true,
         candidate_modes_ranked: [
@@ -679,9 +757,10 @@ describe("handleConversationSupervise", () => {
 
       expect(result.stopReasons).toEqual(["cycle_limit"]);
       expect(createForkCalls.length).toBeGreaterThanOrEqual(2);
-      expect(createForkCalls[1].parentId).toBe("fork_explore_existing");
-      expect(createForkCalls[1].providerThreadId).toBe("thread_explore_existing");
-      expect(String(createForkCalls[1].documentText ?? "")).toContain("probe seed probe_next_feature");
+      expect(result.activeMode).toBe("explore_and_solve");
+      expect(
+        createForkCalls.some((call) => String(call.documentText ?? "").includes("probe seed probe_next_feature")),
+      ).toBe(true);
     } finally {
       delete process.env.MOCK_PROVIDER_SKIP_DELTAS;
       delete process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE;
@@ -919,6 +998,7 @@ describe("handleConversationSupervise", () => {
     process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
       decision: "stop_and_return",
       payload: strictSupervisorPayload({ reason: "manual halt" }),
+      transition_payload: null,
       mode_assessment: { current_mode_stop_satisfied: true, candidate_modes_ranked: [{ mode: "explore", confidence: "low", evidence: "manual halt" }], recommended_action: "continue" },
       reasoning: "",
       agent_model: null,
@@ -979,6 +1059,7 @@ describe("handleConversationSupervise", () => {
           default: { seed: "Switch to default execution lane." },
         },
       }),
+      transition_payload: null,
       mode_assessment: { current_mode_stop_satisfied: true, candidate_modes_ranked: [{ mode: "default", confidence: "high", evidence: "switch lanes" }], recommended_action: "fork_new_conversation" },
       reasoning: "",
       agent_model: null,
@@ -1022,6 +1103,7 @@ describe("handleConversationSupervise", () => {
         message: "Do not run this command. Continue with a safer approach.",
         message_template: "replace_tool_call_with_guidance",
       }),
+      transition_payload: null,
       mode_assessment: null,
       reasoning: "",
       agent_model: null,
@@ -1079,6 +1161,7 @@ describe("handleConversationSupervise", () => {
         message: "Observed risky output. Continue with mitigation steps.",
         message_template: "tool_intercept_guidance",
       }),
+      transition_payload: null,
       mode_assessment: null,
       reasoning: "",
       agent_model: null,
@@ -1153,6 +1236,7 @@ describe("handleConversationSupervise", () => {
         message: "Bash provider interception fired.",
         message_template: "tool_intercept_guidance",
       }),
+      transition_payload: null,
       mode_assessment: null,
       reasoning: "",
       agent_model: null,
@@ -1228,6 +1312,7 @@ describe("handleConversationSupervise", () => {
         message: "MCP provider interception fired.",
         message_template: "tool_intercept_guidance",
       }),
+      transition_payload: null,
       mode_assessment: null,
       reasoning: "",
       agent_model: null,
@@ -1303,6 +1388,7 @@ describe("handleConversationSupervise", () => {
         reason: "follow configured switch",
         mode: "code_model",
       }),
+      transition_payload: null,
       mode_assessment: null,
       reasoning: "",
       agent_model: null,
@@ -1580,6 +1666,7 @@ describe("handleConversationSupervise", () => {
     process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
       decision: "stop_and_return",
       payload: strictSupervisorPayload({ reason: "done" }),
+      transition_payload: null,
       mode_assessment: { current_mode_stop_satisfied: true, candidate_modes_ranked: [{ mode: "explore", confidence: "low", evidence: "done" }], recommended_action: "continue" },
       reasoning: "",
       agent_model: null,

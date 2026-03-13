@@ -128,6 +128,9 @@ describe("runSuperviseReviewStep", () => {
     const reviewOverrideJson = JSON.stringify({
       decision: "continue",
       continue: {},
+      transition_payload: {
+        release_ticket: "alpha",
+      },
       mode_assessment: {
         current_mode_stop_satisfied: false,
         candidate_modes_ranked: [{ mode: "explore", confidence: "medium", evidence: "Cadence checkpoint only." }],
@@ -145,6 +148,7 @@ describe("runSuperviseReviewStep", () => {
     });
 
     expect(result.review.decision).toBe("continue");
+    expect(result.nextTransitionPayload).toEqual({ release_ticket: "alpha" });
     expect(result.nextUserMessage).toBeUndefined();
     expect(result.nextDocText).not.toContain("```tool_call name=check_supervisor");
     expect(result.nextDocText).toContain("decision: continue");

@@ -94,6 +94,7 @@ type RunSupervisorReviewAndPersistResult = {
   nextForkId: string;
   nextThreadId?: string;
   nextSupervisorThreadId?: string;
+  activeTransitionPayload: Record<string, string>;
   nextModel?: string;
   review: SupervisorReviewResult;
   reviewReasons: string[];
@@ -611,6 +612,7 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
     nextForkId: nextFork.id,
     nextThreadId,
     nextSupervisorThreadId,
+    activeTransitionPayload: { ...(reviewStep.nextTransitionPayload ?? {}) },
     nextModel: reviewStep.nextModel,
     review,
     reviewReasons,

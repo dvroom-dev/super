@@ -112,6 +112,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   let currentDocText = documentText;
   let currentThreadId: string | undefined = threadIdToReuse;
   let currentSupervisorThreadId: string | undefined = supervisorThreadIdToReuse;
+  let currentTransitionPayload: Record<string, string> = {};
   let fullResyncNeeded = historyEdited;
   let currentModel = model;
   let turnIndex = await loadLastTurnTelemetryTurn(workspaceRoot, conversationId);
@@ -139,6 +140,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   const runtimeStateForDocument = (docText: string) => ({
     activeMode: resolveActiveMode(docText, renderedRunConfig),
     activeModePayload: resolveModePayload(docText),
+    activeTransitionPayload: { ...currentTransitionPayload },
   });
   let supervisorSchemaPreflightDone = false;
   const bootstrapTurnResult = {
@@ -277,6 +279,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       });
       currentDocText = bootstrapReview.nextDocText;
       currentSupervisorThreadId = bootstrapReview.nextSupervisorThreadId;
+      currentTransitionPayload = { ...(bootstrapReview.nextTransitionPayload ?? {}) };
       await ctx.store.updateFork(workspaceRoot, conversationId, lifecycle.currentForkId(), {
         documentText: currentDocText,
         supervisorThreadId: currentSupervisorThreadId,
@@ -641,6 +644,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     stopDetails = finalizeOutcome.stopDetails;
     currentDocText = finalizeOutcome.nextDocText;
     if (finalizeOutcome.kind === "done") {
+      currentTransitionPayload = {};
       lifecycle.finishRun(finalizeOutcome.status);
       return { conversationId, forkId: finalizeOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
     }
@@ -650,6 +654,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     }
     currentThreadId = finalizeOutcome.nextThreadId;
     currentSupervisorThreadId = finalizeOutcome.nextSupervisorThreadId;
+    currentTransitionPayload = { ...finalizeOutcome.supervisorPersist.activeTransitionPayload };
     fullResyncNeeded = finalizeOutcome.fullResyncNeeded;
     if (finalizeOutcome.supervisorPersist.resume) {
       if (finalizeOutcome.supervisorPersist.historyRewritten || finalizeOutcome.supervisorPersist.supervisorHookChanged || finalizeOutcome.supervisorPersist.effectiveAction === "fork") {

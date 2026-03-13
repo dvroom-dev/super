@@ -236,6 +236,7 @@ export function normalizeReview(args: {
   });
   const base = {
     mode_assessment: normalizeModeAssessment(rawRecord.mode_assessment),
+    transition_payload: normalizeFlatStringPayload(rawRecord.transition_payload),
     reasoning: typeof rawRecord.reasoning === "string" ? rawRecord.reasoning : null,
     agent_model: normalizeString(rawRecord.agent_model) || null,
   };

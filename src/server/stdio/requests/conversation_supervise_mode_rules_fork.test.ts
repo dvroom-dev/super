@@ -195,6 +195,7 @@ describe("mode fork agent-rules isolation", () => {
           explore: { seed: "from-check-supervisor" },
         },
       }),
+      transition_payload: null,
       mode_assessment: {
         current_mode_stop_satisfied: true,
         candidate_modes_ranked: [{ mode: "explore", confidence: "high", evidence: "check_supervisor requested fork" }],

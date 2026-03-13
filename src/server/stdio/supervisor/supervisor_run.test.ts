@@ -74,6 +74,7 @@ function makeValidSupervisorReview(overrides?: Record<string, unknown>): Record<
       mode: null,
       mode_payload: null,
     },
+    transition_payload: null,
     mode_assessment: {
       current_mode_stop_satisfied: false,
       candidate_modes_ranked: [

@@ -85,6 +85,7 @@ export type DecisionPayloadByDecision = {
 
 export type SupervisorReviewResultBase = {
   mode_assessment?: ModeAssessment | null;
+  transition_payload?: Record<string, string> | null;
   reasoning?: string | null;
   agent_model?: string | null;
 };
@@ -341,6 +342,10 @@ export function buildSupervisorResponseSchema(args: {
       additionalProperties: false,
       required: (modeAssessmentObject as { required: string[] }).required,
       properties: (modeAssessmentObject as { properties: Record<string, unknown> }).properties,
+    },
+    transition_payload: {
+      type: ["object", "null"],
+      additionalProperties: { type: "string" },
     },
     reasoning: { type: ["string", "null"] },
     agent_model: { type: ["string", "null"] },

@@ -124,6 +124,7 @@ describe("conversation_supervise runtime regressions", () => {
     process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
       decision: "stop_and_return",
       payload: strictSupervisorPayload({ reason: "done" }),
+      transition_payload: null,
       mode_assessment: {
         current_mode_stop_satisfied: true,
         candidate_modes_ranked: [{ mode: "explore", confidence: "low", evidence: "done" }],
@@ -204,6 +205,7 @@ describe("conversation_supervise runtime regressions", () => {
     process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
       decision: "stop_and_return",
       payload: strictSupervisorPayload({ reason: "done" }),
+      transition_payload: null,
       mode_assessment: {
         current_mode_stop_satisfied: true,
         candidate_modes_ranked: [{ mode: "default", confidence: "high", evidence: "done" }],
