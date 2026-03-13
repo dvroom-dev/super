@@ -41,6 +41,7 @@ function extractMetadata(content: string): {
   status?: string;
   exitCode?: number;
   hasBlobRef: boolean;
+  hasExplicitError: boolean;
   body: string;
   lineCount: number;
 } {
@@ -51,10 +52,12 @@ function extractMetadata(content: string): {
     status?: string;
     exitCode?: number;
     hasBlobRef: boolean;
+    hasExplicitError: boolean;
     body: string;
     lineCount: number;
   } = {
     hasBlobRef: false,
+    hasExplicitError: false,
     body: content,
     lineCount: lines.length,
   };
@@ -94,6 +97,11 @@ function extractMetadata(content: string): {
     break;
   }
   meta.body = lines.slice(bodyStart).join("\n").trim();
+  meta.hasExplicitError =
+    content.includes("(ok=false)")
+    || /\[error\]/i.test(content)
+    || /^error:/im.test(content)
+    || String(meta.status ?? "").trim().toLowerCase() === "error";
   return meta;
 }
 
@@ -150,9 +158,15 @@ export async function buildContextSkeleton(opts: SkeletonOptions): Promise<Skele
       block.kind === "tool_result"
       && previousBlock?.kind === "tool_call"
       && String(previousBlock?.name ?? "") === "reasoning_snapshot";
+    const keepInlineErrorDiagnostics =
+      block.kind === "tool_result"
+      && metadata.hasExplicitError
+      && bytes <= maxInlineBytes
+      && !metadata.hasBlobRef;
     const shouldThinInline =
       (block.kind === "tool_call" || block.kind === "tool_result")
-      && !isReasoningSnapshotResult;
+      && !isReasoningSnapshotResult
+      && !keepInlineErrorDiagnostics;
     const previewSource = block.kind === "tool_call"
       ? (metadata.command || firstMeaningfulLine(metadata.body) || metadata.summary)
       : (metadata.summary || firstMeaningfulLine(metadata.body) || metadata.status);

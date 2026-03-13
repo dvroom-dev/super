@@ -220,4 +220,37 @@ describe("prepareManagedAgentContext", () => {
     expect(managed.documentText).toContain("blob_ref: .ai-supervisor/conversations/conversation_aggressive_blob/blobs/");
     expect(managed.documentText).not.toContain("line 600: progress");
   });
+
+  it("keeps short explicit tool errors inline for agent prompts", async () => {
+    const workspace = await makeTempRoot("ctx-mgmt-");
+    const conversationId = "conversation_inline_error";
+    const doc = withFrontmatter(
+      [
+        "```chat role=user",
+        "Continue",
+        "```",
+        "",
+        toolResult(
+          [
+            "(ok=false)",
+            "",
+            "[error]",
+            "switch_mode.mode_payload.wrapup_certified is not allowed for mode 'code_model'",
+          ].join("\n"),
+        ),
+      ].join("\n"),
+      conversationId,
+    );
+
+    const managed = await prepareManagedAgentContext({
+      documentText: doc,
+      workspaceRoot: workspace,
+      conversationId,
+      strategy: "aggressive",
+    });
+
+    expect(managed.documentText).toContain("(ok=false)");
+    expect(managed.documentText).toContain("wrapup_certified is not allowed");
+    expect(managed.documentText).not.toContain("blob_ref:");
+  });
 });

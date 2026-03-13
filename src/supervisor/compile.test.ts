@@ -297,7 +297,7 @@ Actual message
     expect(result.promptText).toContain('"candidate_modes"');
     expect(result.promptText).toContain("Available tools (current mode):");
     expect(result.promptText).toContain("- read_file: { path: string }");
-    expect(result.promptText).toContain("Use `switch_mode` only when you need to move to another mode.");
+    expect(result.promptText).toContain("Use the `switch_mode` CLI only when you need to move to another mode.");
   });
 
   it("prefers a persisted leading system block from the transcript", () => {

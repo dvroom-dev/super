@@ -55,20 +55,7 @@ export async function applyTurnTransitions(args: {
   budget: BudgetState;
   providerName: "mock" | "codex" | "claude";
 }) {
-  const { providerInterception, inferredSwitch } = await handlePostTurnInterceptions(args);
-  if (inferredSwitch) {
-    if (inferredSwitch.kind === "error") {
-      args.ctx.sendNotification({ method: "conversation.append", params: { docPath: args.docPath, markdown: inferredSwitch.markdown } });
-    } else {
-      return {
-        kind: "continue" as const,
-        currentDocText: inferredSwitch.docText,
-        currentThreadId: inferredSwitch.threadId,
-        currentSupervisorThreadId: inferredSwitch.supervisorThreadId,
-        fullResyncNeeded: inferredSwitch.fullResyncNeeded,
-      };
-    }
-  }
+  const { providerInterception } = await handlePostTurnInterceptions(args);
   if (providerInterception.kind === "stop") {
     return {
       kind: "stop" as const,

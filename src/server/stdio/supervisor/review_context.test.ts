@@ -200,4 +200,29 @@ describe("buildManagedSupervisorReviewContext", () => {
     const raw = await fs.readFile(blobPath, "utf8");
     expect(raw).toContain("tool_payload_");
   });
+
+  it("keeps short explicit tool errors inline for supervisor review", async () => {
+    const workspaceRoot = await makeTempRoot("review-context-");
+    const documentText = [
+      "```tool_result",
+      "(ok=false)",
+      "",
+      "[error]",
+      "switch_mode.mode_payload.wrapup_certified is not allowed for mode 'theory'",
+      "```",
+      "",
+    ].join("\n");
+
+    const managed = await buildManagedSupervisorReviewContext({
+      documentText,
+      workspaceRoot,
+      conversationId: "conv_inline_error",
+      maxInlineBytes: 4096,
+      kindsToOffload: ["tool_result"],
+    });
+
+    expect(managed.skeletonText).toContain("(ok=false)");
+    expect(managed.skeletonText).toContain("wrapup_certified is not allowed");
+    expect(managed.skeletonText).not.toContain("blob_ref:");
+  });
 });
