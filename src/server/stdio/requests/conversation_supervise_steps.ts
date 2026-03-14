@@ -1,4 +1,5 @@
 import { createProvider } from "../../../providers/factory.js";
+import type { AgentProvider } from "../../../providers/types.js";
 import type { ProviderConfig, ProviderPermissionProfile } from "../../../providers/types.js";
 import { getProviderOverflowRecovery } from "../../../providers/provider_overflow_recovery.js";
 import type { renderRunConfig } from "../../../supervisor/run_config.js";
@@ -51,6 +52,7 @@ type RunAgentTurnWithHooksArgs = {
   onToolBoundary?: () => void;
   onAppendMarkdown?: (markdown: string) => void;
   onAssistantText?: (text: string) => void;
+  createProviderOverride?: (config: ProviderConfig) => AgentProvider;
 };
 
 type RunAgentTurnWithHooksResult = {
@@ -63,7 +65,7 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
   const providerCustomTools = Array.isArray(args.customTools) && args.customTools.length > 0
     ? [...args.customTools]
     : undefined;
-  const provider = createProvider({
+  const createProviderForAttempt = (threadId?: string): AgentProvider => (args.createProviderOverride ?? createProvider)({
     provider: args.providerName,
     model: args.currentModel,
     workingDirectory: args.agentWorkspaceRoot,
@@ -71,7 +73,7 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
     approvalPolicy: "never",
     permissionProfile: args.permissionProfile,
     skipGitRepoCheck: args.skipGitRepoCheck,
-    threadId: args.shouldUseFullPrompt ? undefined : args.currentThreadId,
+    threadId,
     modelReasoningEffort: args.agentModelReasoningEffort,
     providerOptions: args.providerOptions,
     customTools: providerCustomTools,
@@ -87,6 +89,8 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
   let overflowRetryUsed = false;
   let currentPrompt = args.compilePrompt;
   const overflowRecovery = getProviderOverflowRecovery(args.providerName);
+  let currentThreadIdForAttempt = args.shouldUseFullPrompt ? undefined : args.currentThreadId;
+  let provider = createProviderForAttempt(currentThreadIdForAttempt);
   try {
     while (true) {
       result = await runAgentTurn({
@@ -109,6 +113,13 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
         onAppendMarkdown: args.onAppendMarkdown,
         onAssistantText: args.onAssistantText,
       });
+      const shouldRetryAfterClaudeCompaction =
+        !overflowRetryUsed
+        && args.providerName === "claude"
+        && (
+          result.interruptionReason === "provider_compaction"
+          || result.compactionDetected === true
+        );
       const shouldRetryWithProviderCompaction =
         !overflowRetryUsed
         && typeof provider.compactThread === "function"
@@ -118,7 +129,7 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
         !overflowRetryUsed
         && result.hadError
         && looksLikeContextWindowError(String(result.errorMessage ?? ""));
-      if (!shouldRetryWithProviderCompaction && !shouldRetryWithLocalRebuild) {
+      if (!shouldRetryAfterClaudeCompaction && !shouldRetryWithProviderCompaction && !shouldRetryWithLocalRebuild) {
         break;
       }
       const recovery = await overflowRecovery.recoverAgentTurn({
@@ -132,13 +143,29 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
       }
       overflowRetryUsed = recovery.retryUsed;
       currentPrompt = recovery.nextPrompt ?? currentPrompt;
+      const shouldRecreateProvider =
+        args.providerName === "claude"
+        && recovery.mode === "local_prompt_rebuild";
+      currentThreadIdForAttempt = shouldRecreateProvider
+        ? undefined
+        : (recovery.threadId ?? currentThreadIdForAttempt);
       args.ctx.sendNotification({
         method: "log",
         params: {
           level: "info",
-          message: recovery.logMessage ?? "agent context overflow: retrying",
+          message: shouldRetryAfterClaudeCompaction
+            ? "agent provider compaction: rebuilt Claude prompt on a fresh session and retrying"
+            : (recovery.logMessage ?? "agent context overflow: retrying"),
         },
       });
+      if (shouldRecreateProvider) {
+        try {
+          await provider.close?.();
+        } catch {
+          // best-effort cleanup
+        }
+        provider = createProviderForAttempt(currentThreadIdForAttempt);
+      }
     }
   } finally {
     try {

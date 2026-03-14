@@ -468,6 +468,10 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     currentDocText = turnResult.nextDocText;
     fullResyncNeeded = turnResult.fullResyncNeeded;
     if (result.newThreadId && result.newThreadId !== currentThreadId) currentThreadId = result.newThreadId;
+    if (providerName === "claude" && result.interruptionReason === "provider_compaction") {
+      currentThreadId = undefined;
+      fullResyncNeeded = true;
+    }
     if (shouldUseFullPrompt && currentThreadId) fullResyncNeeded = false;
     let inlineToolMs = 0;
     if (result.toolCalls && result.toolCalls.length) {
