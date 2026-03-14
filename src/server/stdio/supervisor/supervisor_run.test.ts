@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildSupervisorReviewDocument, runSupervisorReview } from "./supervisor_run.js";
 import { buildSupervisorResponseSchema } from "../../../supervisor/review_schema.js";
+import { SupervisorStore } from "../../../store/store.js";
 
 const tempRoots: string[] = [];
 
@@ -125,6 +126,36 @@ function makeBaseInputs(workspaceRoot: string, conversationId: string) {
   };
 }
 
+function makeHistoryDoc(args: {
+  conversationId: string;
+  forkId: string;
+  mode: string;
+  user: string;
+  assistant: string;
+  toolName?: string;
+}): string {
+  return [
+    "---",
+    `conversation_id: ${args.conversationId}`,
+    `fork_id: ${args.forkId}`,
+    "---",
+    "",
+    `mode: ${args.mode}`,
+    "",
+    "```chat role=user",
+    args.user,
+    "```",
+    "",
+    "```chat role=assistant",
+    args.assistant,
+    "```",
+    "",
+    args.toolName
+      ? ["```tool_call name=" + args.toolName, "{}", "```", "", "```tool_result", "ok", "```", ""].join("\n")
+      : "",
+  ].join("\n");
+}
+
 describe("buildSupervisorReviewDocument", () => {
   it("keeps only content after the latest supervisor_action block", () => {
     const doc = makeDocumentWithSupervisorActions();
@@ -154,12 +185,86 @@ describe("buildSupervisorReviewDocument", () => {
 });
 
 describe("runSupervisorReview", () => {
+  it("prioritizes latest focus context before delta, tail, and run-wide history while keeping blob drill-down", async () => {
+    const workspaceRoot = await makeTempRoot("supervisor-run-");
+    const store = new SupervisorStore();
+    await store.createFork({
+      workspaceRoot,
+      conversationId: "conv_focus",
+      forkId: "fork_a",
+      documentText: makeHistoryDoc({
+        conversationId: "conv_focus",
+        forkId: "fork_a",
+        mode: "explore",
+        user: "probe the brightened feature",
+        assistant: "The latest real-game change is the brightened feature; test it next.",
+        toolName: "Read",
+      }),
+      agentRules: [],
+      actionSummary: "supervise:start",
+    });
+    await store.createFork({
+      workspaceRoot,
+      conversationId: "conv_focus",
+      parentId: "fork_a",
+      forkId: "fork_b",
+      documentText: makeHistoryDoc({
+        conversationId: "conv_focus",
+        forkId: "fork_b",
+        mode: "theory",
+        user: "write the next handoff",
+        assistant: "The next step should discriminate between the lit feature and the fallback theory.",
+        toolName: "Edit",
+      }),
+      agentRules: [],
+      actionSummary: "mode checkpoint",
+    });
+    await store.createFork({
+      workspaceRoot,
+      conversationId: "conv_other",
+      forkId: "fork_x",
+      documentText: makeHistoryDoc({
+        conversationId: "conv_other",
+        forkId: "fork_x",
+        mode: "recover",
+        user: "replay solved path",
+        assistant: "Recovery resumed from the known replay plan.",
+        toolName: "Bash",
+      }),
+      agentRules: [],
+      actionSummary: "resume_mode_head",
+    });
+
+    const outcome = await runSupervisorReview(makeBaseInputs(workspaceRoot, "conv_focus"));
+    const promptPath = path.join(workspaceRoot, outcome.promptLogRel);
+    const prompt = await fs.readFile(promptPath, "utf8");
+
+    expect(prompt).toContain("Latest Review Priorities");
+    expect(prompt).toContain("Incremental Changes Since Last Supervisor Review");
+    expect(prompt).toContain("Active Conversation Tail Skeleton");
+    expect(prompt).toContain("Run-Wide Supervisor View");
+    expect(prompt).toContain("probe the brightened feature");
+    expect(prompt).toContain("The latest real-game change is the brightened feature; test it next.");
+    expect(prompt).toContain("conv_other");
+    expect(prompt).toContain("blob_ref: review_blobs/");
+
+    const latestIdx = prompt.indexOf("## Latest Review Priorities");
+    const deltaIdx = prompt.indexOf("## Incremental Changes Since Last Supervisor Review");
+    const tailIdx = prompt.indexOf("## Active Conversation Tail Skeleton");
+    const runWideIdx = prompt.indexOf("## Run-Wide Supervisor View");
+    expect(latestIdx).toBeGreaterThanOrEqual(0);
+    expect(deltaIdx).toBeGreaterThan(latestIdx);
+    expect(tailIdx).toBeGreaterThan(deltaIdx);
+    expect(runWideIdx).toBeGreaterThan(tailIdx);
+  });
+
   it("builds review prompt from the sliced turn context", async () => {
     const workspaceRoot = await makeTempRoot("supervisor-run-");
     const outcome = await runSupervisorReview(makeBaseInputs(workspaceRoot, "conv_slice"));
 
     const promptPath = path.join(workspaceRoot, outcome.promptLogRel);
     const prompt = await fs.readFile(promptPath, "utf8");
+    expect(prompt).toContain("Latest Review Priorities");
     expect(prompt).toContain("Run-Wide Supervisor View");
     expect(prompt).toContain("Incremental Changes Since Last Supervisor Review");
     expect(prompt).toContain("Active Conversation Tail Skeleton");

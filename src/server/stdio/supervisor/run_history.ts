@@ -57,6 +57,7 @@ type ReviewWatermarkState = {
 
 export type SupervisorRunHistoryContext = {
   index: RunHistoryIndex;
+  priorityText: string;
   overviewText: string;
   deltaText: string;
   newForkCount: number;
@@ -282,10 +283,67 @@ async function loadOrBuildForkArtifact(args: {
   });
 }
 
+function buildPriorityText(index: RunHistoryIndex, unseenForks: RunHistoryForkSummary[], currentConversationId: string): string {
+  const currentForks = index.forks
+    .filter((fork) => fork.conversationId === currentConversationId)
+    .sort((a, b) => parseTime(b.createdAt) - parseTime(a.createdAt) || b.forkId.localeCompare(a.forkId));
+  const latestFork = currentForks[0];
+  const lines: string[] = [
+    "Apply the ranked supervisor rubric to this summary first before consulting broader history.",
+    "",
+    `Current conversation: ${currentConversationId}`,
+  ];
+
+  if (!latestFork) {
+    lines.push("- latest fork: (none)");
+  } else {
+    const latestToolMix = latestFork.toolCounts.length
+      ? latestFork.toolCounts.map((entry) => `${entry.name}×${entry.count}`).join(", ")
+      : "(none)";
+    lines.push(`- latest fork: ${latestFork.forkId} · mode=${latestFork.mode ?? "(unknown)"} · action=${latestFork.actionSummary ?? "(none)"}`);
+    lines.push(`- latest assistant summary: ${latestFork.lastAssistantPreview ?? "(none)"}`);
+    lines.push(`- latest tool mix: ${latestToolMix}`);
+    lines.push(`- latest skeleton_ref: ${latestFork.skeletonPath}`);
+  }
+
+  lines.push("", "Recent focus forks:");
+  if (!currentForks.length) {
+    lines.push("- (none)");
+  } else {
+    for (const fork of currentForks.slice(0, 3)) {
+      lines.push(
+        `- ${fork.createdAt} · fork=${fork.forkId} · mode=${fork.mode ?? "(unknown)"} · action=${fork.actionSummary ?? "(none)"} · assistant=\"${fork.lastAssistantPreview ?? "(none)"}\" · skeleton_ref=${fork.skeletonPath}`,
+      );
+    }
+  }
+
+  lines.push("", "Newest immutable updates since last supervisor review:");
+  if (!unseenForks.length) {
+    lines.push("- (none)");
+  } else {
+    const sortedUnseen = [...unseenForks].sort(
+      (a, b) => parseTime(b.createdAt) - parseTime(a.createdAt) || b.forkId.localeCompare(a.forkId),
+    );
+    for (const fork of sortedUnseen.slice(0, 3)) {
+      lines.push(
+        `- ${fork.createdAt} · fork=${fork.forkId} · mode=${fork.mode ?? "(unknown)"} · action=${fork.actionSummary ?? "(none)"} · summary=${fork.forkSummary ?? "(none)"}`,
+      );
+      lines.push(`  assistant: ${fork.lastAssistantPreview ?? "(none)"}`);
+      lines.push(`  skeleton_ref: ${fork.skeletonPath}`);
+    }
+  }
+
+  lines.push(
+    "",
+    "Use the Active Conversation Tail Skeleton for the exact latest turn details and blob_ref drill-down for full tool calls/results.",
+  );
+  return lines.join("\n").trim();
+}
+
 function buildOverviewText(index: RunHistoryIndex): string {
   const lines: string[] = [
-    "Run-wide fork index across all agent conversations for this run.",
-    "Each entry is immutable and points to a full fork skeleton file if deeper context is needed.",
+    "Run-wide conversation index across all agent conversations for this run.",
+    "Use this only when the current review depends on cross-conversation continuity; prefer the latest-priorities and tail sections first.",
     "",
     "Conversations:",
   ];
@@ -298,11 +356,14 @@ function buildOverviewText(index: RunHistoryIndex): string {
       );
     }
   }
-  lines.push("", "Fork summaries:");
-  if (!index.forks.length) {
+  lines.push("", "Most recent forks across the run:");
+  const recentForks = [...index.forks]
+    .sort((a, b) => parseTime(b.createdAt) - parseTime(a.createdAt) || b.forkId.localeCompare(a.forkId))
+    .slice(0, 5);
+  if (!recentForks.length) {
     lines.push("- (none)");
   } else {
-    for (const fork of index.forks) {
+    for (const fork of recentForks) {
       const toolMix = fork.toolCounts.length
         ? fork.toolCounts.map((entry) => `${entry.name}×${entry.count}`).join(", ")
         : "(none)";
@@ -396,6 +457,7 @@ export async function buildSupervisorRunHistoryContext(args: {
 
   return {
     index,
+    priorityText: buildPriorityText(index, unseenForks, args.currentConversationId),
     overviewText: buildOverviewText(index),
     deltaText: buildDeltaText(unseenForks),
     newForkCount: unseenForks.length,

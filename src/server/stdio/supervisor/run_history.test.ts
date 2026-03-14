@@ -100,8 +100,10 @@ describe("buildSupervisorRunHistoryContext", () => {
 
     expect(first.index.forks).toHaveLength(2);
     expect(first.newForkCount).toBe(2);
-    expect(first.overviewText).toContain("probe the new mechanic");
-    expect(first.overviewText).toContain("The compare mismatch points at step 3.");
+    expect(first.priorityText).toContain("Current conversation: conv_hist");
+    expect(first.priorityText).toContain("probe the new mechanic");
+    expect(first.priorityText).toContain("The compare mismatch points at step 3.");
+    expect(first.overviewText).toContain("Run-wide conversation index across all agent conversations for this run.");
 
     const skeletonPath = path.join(workspaceRoot, first.index.forks[0].skeletonPath);
     const skeletonText = await fs.readFile(skeletonPath, "utf8");
