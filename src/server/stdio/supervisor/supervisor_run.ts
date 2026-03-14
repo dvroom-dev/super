@@ -167,14 +167,14 @@ export async function runSupervisorReview(input: SupervisorReviewInputs): Promis
       currentSupervisorThreadId: input.threadId,
     });
     const reviewContextText = [
+      "## Active Conversation Tail Skeleton",
+      managedContext.skeletonText,
+      "",
       "## Latest Review Priorities",
       runHistory.priorityText,
       "",
       "## Incremental Changes Since Last Supervisor Review",
       runHistory.deltaText,
-      "",
-      "## Active Conversation Tail Skeleton",
-      managedContext.skeletonText,
       "",
       "## Run-Wide Supervisor View",
       runHistory.overviewText,

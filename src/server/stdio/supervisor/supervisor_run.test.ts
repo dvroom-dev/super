@@ -185,7 +185,7 @@ describe("buildSupervisorReviewDocument", () => {
 });
 
 describe("runSupervisorReview", () => {
-  it("prioritizes latest focus context before delta, tail, and run-wide history while keeping blob drill-down", async () => {
+  it("keeps the live tail ahead of persisted summaries while preserving focused review context and blob drill-down", async () => {
     const workspaceRoot = await makeTempRoot("supervisor-run-");
     const store = new SupervisorStore();
     await store.createFork({
@@ -248,13 +248,14 @@ describe("runSupervisorReview", () => {
     expect(prompt).toContain("conv_other");
     expect(prompt).toContain("blob_ref: review_blobs/");
 
+    const tailIdx = prompt.indexOf("## Active Conversation Tail Skeleton");
     const latestIdx = prompt.indexOf("## Latest Review Priorities");
     const deltaIdx = prompt.indexOf("## Incremental Changes Since Last Supervisor Review");
-    const tailIdx = prompt.indexOf("## Active Conversation Tail Skeleton");
     const runWideIdx = prompt.indexOf("## Run-Wide Supervisor View");
+    expect(tailIdx).toBeGreaterThanOrEqual(0);
+    expect(latestIdx).toBeGreaterThan(tailIdx);
     expect(latestIdx).toBeGreaterThanOrEqual(0);
     expect(deltaIdx).toBeGreaterThan(latestIdx);
-    expect(tailIdx).toBeGreaterThan(deltaIdx);
     expect(runWideIdx).toBeGreaterThan(tailIdx);
   });
 
