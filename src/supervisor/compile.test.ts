@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect } from "bun:test";
 import {
   CONFIG_SYSTEM_APPEND_BEGIN,
@@ -298,6 +301,100 @@ Actual message
     expect(result.promptText).toContain("Available tools (current mode):");
     expect(result.promptText).toContain("- read_file: { path: string }");
     expect(result.promptText).toContain("Use the `switch_mode` CLI only when you need to move to another mode.");
+  });
+
+  it("surfaces the latest mode handoff ahead of older transcript context in full prompts", () => {
+    const payload = Buffer.from(JSON.stringify({ user_message: "Execute exactly one ACTION1 and stop." }), "utf8").toString("base64url");
+    const documentText = [
+      "---",
+      "conversation_id: test",
+      "fork_id: fork_1",
+      "mode: explore_and_solve",
+      `mode_payload_b64: ${payload}`,
+      "---",
+      "",
+      "```chat role=user",
+      "Old route: ACTION4 ACTION4 ACTION1 ACTION1",
+      "```",
+      "",
+      "```chat role=supervisor",
+      "Execute exactly one ACTION1 from the current state, then stop immediately.",
+      "```",
+    ].join("\n");
+    const input: CompileInputs = {
+      documentText,
+      agentRules: [],
+      currentMode: "explore_and_solve",
+      allowedNextModes: ["theory"],
+      modePayloadFieldsByMode: { theory: [], explore_and_solve: ["user_message"] },
+      modeGuidanceByMode: {
+        explore_and_solve: { description: "Run the current bounded probe.", startWhen: [], stopWhen: [] },
+        theory: { description: "Synthesize next step.", startWhen: [], stopWhen: [] },
+      },
+    };
+    const result = compileFullPrompt(input);
+    const activeIdx = result.promptText.indexOf("Active Mode Contract (latest authoritative handoff):");
+    const transcriptIdx = result.promptText.indexOf("Authoritative transcript (Markdown). Continue from the last user message:");
+    expect(activeIdx).toBeGreaterThan(-1);
+    expect(transcriptIdx).toBeGreaterThan(activeIdx);
+    expect(result.promptText).toContain('"user_message": "Execute exactly one ACTION1 and stop."');
+    expect(result.promptText).toContain("Latest supervisor handoff:");
+    expect(result.promptText).toContain("Execute exactly one ACTION1 from the current state, then stop immediately.");
+    expect(result.promptText).toContain("Latest user-mode handoff:");
+    expect(result.promptText).toContain("Old route: ACTION4 ACTION4 ACTION1 ACTION1");
+    expect(result.promptText).toContain("If older transcript content conflicts with this section, treat this section as the current contract for the next turn.");
+  });
+
+  it("hydrates offloaded latest handoff blobs into the active mode contract", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "compile-full-prompt-"));
+    const blobDir = path.join(workspaceRoot, ".ai-supervisor", "conversations", "conversation_test", "blobs");
+    await fs.mkdir(blobDir, { recursive: true });
+    const supervisorBlobRel = ".ai-supervisor/conversations/conversation_test/blobs/supervisor.txt";
+    const userBlobRel = ".ai-supervisor/conversations/conversation_test/blobs/user.txt";
+    await fs.writeFile(path.join(workspaceRoot, supervisorBlobRel), "Execute exactly one ACTION1 from the current state, then stop immediately.\n");
+    await fs.writeFile(path.join(workspaceRoot, userBlobRel), "Do not switch yet; update theory and then hand off one bounded target.\n");
+    const payload = Buffer.from(JSON.stringify({ user_message: "Execute exactly one ACTION1 and stop." }), "utf8").toString(
+      "base64url",
+    );
+    const documentText = [
+      "---",
+      "conversation_id: conversation_test",
+      "fork_id: fork_1",
+      "mode: explore_and_solve",
+      `mode_payload_b64: ${payload}`,
+      "---",
+      "",
+      "```chat role=user",
+      "summary: (see blob)",
+      `blob_ref: ${userBlobRel}`,
+      "blob_bytes: 67",
+      "```",
+      "",
+      "```chat role=supervisor",
+      "summary: (see blob)",
+      `blob_ref: ${supervisorBlobRel}`,
+      "blob_bytes: 72",
+      "```",
+    ].join("\n");
+    const result = compileFullPrompt({
+      documentText,
+      workspaceRoot,
+      currentMode: "explore_and_solve",
+      allowedNextModes: ["theory"],
+      modePayloadFieldsByMode: { theory: [], explore_and_solve: ["user_message"] },
+      modeGuidanceByMode: {
+        explore_and_solve: { description: "Run the current bounded probe.", startWhen: [], stopWhen: [] },
+        theory: { description: "Synthesize next step.", startWhen: [], stopWhen: [] },
+      },
+    });
+    const activeSection = result.promptText.slice(
+      result.promptText.indexOf("Active Mode Contract (latest authoritative handoff):"),
+      result.promptText.indexOf("Authoritative transcript (Markdown). Continue from the last user message:"),
+    );
+    expect(result.promptText).toContain("Execute exactly one ACTION1 from the current state, then stop immediately.");
+    expect(result.promptText).toContain("Do not switch yet; update theory and then hand off one bounded target.");
+    expect(activeSection).not.toContain(`blob_ref: ${supervisorBlobRel}`);
+    expect(activeSection).not.toContain(`blob_ref: ${userBlobRel}`);
   });
 
   it("prefers a persisted leading system block from the transcript", () => {

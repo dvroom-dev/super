@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { parseChatMarkdown } from "../markdown/parse.js";
 import { systemMessageForModel } from "./system_message.js";
 import type { SkillInstruction, SkillMetadata } from "../skills/types.js";
@@ -148,6 +150,9 @@ export type GraceAssessmentInputs = {
   contextManagementStrategy?: ContextManagementStrategy;
 };
 
+const MODE_PAYLOAD_FRONTMATTER_KEY = "mode_payload_b64";
+const ACTIVE_MODE_CONTRACT_PREVIEW_LIMIT = 4000;
+
 function formatRules(title: string, rules: string[]): string {
   if (!rules.length) return `${title}: (none)`;
   return [title + ":", ...rules.map((r) => `- ${r}`)].join("\n");
@@ -185,6 +190,101 @@ export function resolveSupervisorInstructions(instructions?: string[]): string[]
 function stripSupervisorBlocks(text: string): string {
   // supervisor_* blocks are UI/audit metadata and must never be sent back to the agent model.
   return text.replace(/```supervisor_[\s\S]*?```\n?/g, "").trim();
+}
+
+function frontmatterValue(documentText: string, key: string): string | undefined {
+  const lines = String(documentText ?? "").split(/\r?\n/);
+  if (lines[0] !== "---") return undefined;
+  for (let i = 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line === "---") break;
+    const match = line.match(new RegExp(`^\\s*${key}\\s*:\\s*(.+)\\s*$`));
+    if (!match) continue;
+    return match[1].trim().replace(/^["']|["']$/g, "");
+  }
+  return undefined;
+}
+
+function resolveModePayloadFromDocument(documentText: string): Record<string, string> {
+  const encoded = String(frontmatterValue(documentText, MODE_PAYLOAD_FRONTMATTER_KEY) ?? "").trim();
+  if (!encoded) return {};
+  try {
+    const raw = Buffer.from(encoded, "base64url").toString("utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const normalizedKey = String(key ?? "").trim();
+      const normalizedValue = String(value ?? "").trim();
+      if (!normalizedKey || !normalizedValue) continue;
+      out[normalizedKey] = normalizedValue;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function truncateContractText(text: string | undefined, maxChars = ACTIVE_MODE_CONTRACT_PREVIEW_LIMIT): string | undefined {
+  const normalized = String(text ?? "").trim();
+  if (!normalized) return undefined;
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 14)).trimEnd()}\n[truncated]`;
+}
+
+function hydrateBlobRefContent(text: string | undefined, workspaceRoot?: string): string | undefined {
+  const normalized = String(text ?? "").trim();
+  if (!normalized) return undefined;
+  const blobRefMatch = normalized.match(/^summary:\s*\(see blob\)\s*\nblob_ref:\s*(.+)\s*(?:\nblob_bytes:\s*\d+)?$/m);
+  if (!blobRefMatch) return normalized;
+  const blobRef = String(blobRefMatch[1] ?? "").trim();
+  if (!blobRef || !workspaceRoot) return normalized;
+  const blobPath = path.resolve(workspaceRoot, blobRef);
+  try {
+    const blobText = fs.readFileSync(blobPath, "utf8").trim();
+    return blobText || normalized;
+  } catch {
+    return normalized;
+  }
+}
+
+function latestChatContentByRole(
+  parsed: ReturnType<typeof parseChatMarkdown>,
+  role: string,
+  workspaceRoot?: string,
+): string | undefined {
+  for (let i = parsed.blocks.length - 1; i >= 0; i -= 1) {
+    const block = parsed.blocks[i] as any;
+    if (block?.kind !== "chat") continue;
+    if (String(block.role ?? "").trim() !== role) continue;
+    return hydrateBlobRefContent(String(block.content ?? "").trim(), workspaceRoot);
+  }
+  return undefined;
+}
+
+function appendActiveModeContract(promptParts: string[], input: CompileInputs, parsed: ReturnType<typeof parseChatMarkdown>): void {
+  const currentMode = String(input.currentMode ?? frontmatterValue(input.documentText, "mode") ?? "").trim();
+  const modePayload = resolveModePayloadFromDocument(input.documentText);
+  const lastUserMessage = truncateContractText(latestChatContentByRole(parsed, "user", input.workspaceRoot));
+  const lastSupervisorMessage = truncateContractText(latestChatContentByRole(parsed, "supervisor", input.workspaceRoot));
+  const hasModePayload = Object.keys(modePayload).length > 0;
+  if (!currentMode && !hasModePayload && !lastUserMessage && !lastSupervisorMessage) return;
+
+  promptParts.push("Active Mode Contract (latest authoritative handoff):", "");
+  if (currentMode) promptParts.push(`Current mode: ${currentMode}`);
+  if (hasModePayload) {
+    promptParts.push("Mode payload:", "```json", JSON.stringify(modePayload, null, 2), "```");
+  }
+  if (lastSupervisorMessage) {
+    promptParts.push("Latest supervisor handoff:", "```text", lastSupervisorMessage, "```");
+  }
+  if (lastUserMessage) {
+    promptParts.push("Latest user-mode handoff:", "```text", lastUserMessage, "```");
+  }
+  promptParts.push(
+    "If older transcript content conflicts with this section, treat this section as the current contract for the next turn.",
+    "",
+  );
 }
 
 function normalizeConfiguredImages(images: string[] | undefined, workspaceRoot?: string): PromptImagePart[] {
@@ -230,6 +330,7 @@ export function compileFullPrompt(input: CompileInputs): { prompt: PromptContent
   if (skillsSection) {
     promptParts.push(skillsSection, "");
   }
+  appendActiveModeContract(promptParts, input, parsed);
   appendAgentModeContext(promptParts, input);
   appendSharedPromptContext(promptParts, input);
 
