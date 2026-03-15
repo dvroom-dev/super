@@ -82,9 +82,14 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
     providerFilesystemPolicy: args.providerFilesystemPolicy,
   } as ProviderConfig);
 
-  const controller = new AbortController();
-  args.activeRuns[args.docPath] = controller;
-  args.activeRunsByForkId[args.activeForkId] = controller;
+  const createControllerForAttempt = (): AbortController => {
+    const next = new AbortController();
+    args.activeRuns[args.docPath] = next;
+    args.activeRunsByForkId[args.activeForkId] = next;
+    return next;
+  };
+
+  let controller = createControllerForAttempt();
 
   let result: AgentTurnResult;
   let overflowRetryUsed = false;
@@ -159,6 +164,9 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
             : (recovery.logMessage ?? "agent context overflow: retrying"),
         },
       });
+      if (controller.signal.aborted) {
+        controller = createControllerForAttempt();
+      }
       if (shouldRecreateProvider) {
         try {
           await provider.close?.();

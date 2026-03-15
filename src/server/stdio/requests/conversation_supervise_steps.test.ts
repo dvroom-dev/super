@@ -106,8 +106,14 @@ describe("runAgentTurnWithHooks", () => {
     const closed: string[] = [];
     let createCount = 0;
 
-    const makeProvider = (name: string, events: ProviderEvent[], failure?: Error): AgentProvider => ({
-      async *runStreamed() {
+    const makeProvider = (
+      name: string,
+      events: ProviderEvent[],
+      failure?: Error,
+      optionsCheck?: (options: { signal?: AbortSignal } | undefined) => void,
+    ): AgentProvider => ({
+      async *runStreamed(_prompt, options) {
+        optionsCheck?.(options);
         for (const event of events) {
           yield event;
         }
@@ -140,10 +146,17 @@ describe("runAgentTurnWithHooks", () => {
       ],
       new Error("Claude Code process aborted by user"),
     );
-    const providerTwo = makeProvider("second", [
-      { type: "assistant_message", text: "Recovered after fresh Claude retry." },
-      { type: "done", threadId: "claude_fresh_session" },
-    ]);
+    const providerTwo = makeProvider(
+      "second",
+      [
+        { type: "assistant_message", text: "Recovered after fresh Claude retry." },
+        { type: "done", threadId: "claude_fresh_session" },
+      ],
+      undefined,
+      (options) => {
+        expect(options?.signal?.aborted).toBe(false);
+      },
+    );
 
     const notifications: Array<{ method: string; params?: any }> = [];
     const result = await runAgentTurnWithHooks({
@@ -225,8 +238,13 @@ describe("runAgentTurnWithHooks", () => {
     const createdConfigs: ProviderConfig[] = [];
     let createCount = 0;
 
-    const makeProvider = (events: ProviderEvent[], failure?: Error): AgentProvider => ({
-      async *runStreamed() {
+    const makeProvider = (
+      events: ProviderEvent[],
+      failure?: Error,
+      optionsCheck?: (options: { signal?: AbortSignal } | undefined) => void,
+    ): AgentProvider => ({
+      async *runStreamed(_prompt, options) {
+        optionsCheck?.(options);
         for (const event of events) {
           yield event;
         }
@@ -256,7 +274,13 @@ describe("runAgentTurnWithHooks", () => {
       ],
       new Error("Claude Code process aborted by user"),
     );
-    const providerTwo = makeProvider([], new Error("Operation aborted"));
+    const providerTwo = makeProvider(
+      [],
+      new Error("Operation aborted"),
+      (options) => {
+        expect(options?.signal?.aborted).toBe(false);
+      },
+    );
 
     const result = await runAgentTurnWithHooks({
       ctx: {
