@@ -558,6 +558,13 @@ describe("compileRecoveryPrompt", () => {
           "The only live question is the changed marker overlap state.",
           "Ignore older route text.",
         ],
+        current_execution_state: [
+          "Current mode is explore_only.",
+          "The bounded route is already in progress.",
+          "No absorption-like overlap event has been observed yet.",
+        ],
+        do_this_next:
+          "Execute the next route action toward the marker and stop immediately on the first absorption-like event.",
         focus: "Continue the active probe for the changed marker overlap state only.",
         avoid: ["Do not reconstruct older routes or transcript history."],
         stop_condition: "Stop after the first absorption-like event or when the bounded probe ends.",
@@ -573,6 +580,10 @@ describe("compileRecoveryPrompt", () => {
     expect(result.promptText).toContain("Compaction Recovery Packet (authoritative):");
     expect(result.promptText).toContain("Current rendered user-mode instruction:");
     expect(result.promptText).toContain("test the changed marker overlap state");
+    expect(result.promptText).toContain("Current execution state:");
+    expect(result.promptText).toContain("The bounded route is already in progress.");
+    expect(result.promptText).toContain("Do this next:");
+    expect(result.promptText).toContain("Execute the next route action toward the marker");
     expect(result.promptText).toContain("Supervisor focus for this resumed turn:");
     expect(result.promptText).toContain("Continue the active probe for the changed marker overlap state only.");
     expect(result.promptText).toContain("Supervisor-authored relevant facts:");

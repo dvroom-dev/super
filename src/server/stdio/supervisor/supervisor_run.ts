@@ -151,12 +151,17 @@ type ReviewPromptBundle = {
 const SUPERVISOR_RECOVERY_PACKET_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["relevant_facts", "focus", "avoid", "stop_condition"],
+  required: ["relevant_facts", "current_execution_state", "do_this_next", "focus", "avoid", "stop_condition"],
   properties: {
     relevant_facts: {
       type: "array",
       items: { type: "string" },
     },
+    current_execution_state: {
+      type: "array",
+      items: { type: "string" },
+    },
+    do_this_next: { type: "string" },
     focus: { type: "string" },
     avoid: {
       type: "array",

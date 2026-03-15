@@ -63,6 +63,8 @@ export type PromptMessageOverride = {
 
 export type SupervisorRecoveryPacket = {
   relevant_facts: string[];
+  current_execution_state: string[];
+  do_this_next: string;
   focus: string;
   avoid: string[];
   stop_condition?: string | null;
@@ -82,6 +84,7 @@ export const INCREMENTAL_PROMPT_POSTLUDE = ["User message:", "{last_user_message
 
 export const RECOVERY_PROMPT_POSTLUDE = [
   "Resume directly from the current instruction, supervisor focus, and relevant facts above.",
+  "Treat the execution state and 'Do this next' sections as the authoritative resume cursor for this turn.",
   "Do not inspect transcript blob/offload paths or try to reconstruct older context unless the current mode contract explicitly requires it.",
   "",
   "Return ONLY the next assistant message. If tool use is needed, use tools and then continue.",
@@ -507,6 +510,18 @@ export function compileRecoveryPrompt(
     promptParts.push("Current rendered user-mode instruction:", "```text", userInstruction, "```", "");
   }
 
+  if (Array.isArray(recoveryPacket?.current_execution_state) && recoveryPacket.current_execution_state.length > 0) {
+    promptParts.push(
+      "Current execution state:",
+      ...recoveryPacket.current_execution_state.map((entry) => `- ${String(entry ?? "").trim()}`),
+      "",
+    );
+  }
+
+  if (String(recoveryPacket?.do_this_next ?? "").trim()) {
+    promptParts.push("Do this next:", "```text", String(recoveryPacket?.do_this_next).trim(), "```", "");
+  }
+
   if (String(recoveryPacket?.focus ?? "").trim()) {
     promptParts.push("Supervisor focus for this resumed turn:", "```text", String(recoveryPacket?.focus).trim(), "```", "");
   }
@@ -718,6 +733,9 @@ export function compileSupervisorRecoverySummary(
     "Write only the currently relevant facts and focus needed to resume the current task correctly.",
     "Do not quote or copy literal transcript blocks, tool calls, tool outputs, blob refs, or stale prior handoffs.",
     "Paraphrase only the durable outcomes that matter now.",
+    "Your packet must let the agent pick up where it left off without rediscovering the recent execution state.",
+    "Include a concrete execution cursor: the latest confirmed state, what was already completed, what remains unresolved, and the exact next step to take now.",
+    "If the mode is execution-oriented, make 'do_this_next' action-ready. If the mode is analysis-oriented, make it the exact next read/edit/handoff needed.",
     "",
     `Current mode: ${currentMode}`,
     "Current rendered user-mode instruction:",

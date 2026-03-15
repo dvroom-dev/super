@@ -193,6 +193,11 @@ describe("runSupervisorReview", () => {
     const workspaceRoot = await makeTempRoot("supervisor-recovery-");
     process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
       relevant_facts: ["Only the changed overlap state remains unresolved."],
+      current_execution_state: [
+        "Theory already narrowed the task to one bounded overlap probe.",
+        "No decisive overlap observation has been captured yet.",
+      ],
+      do_this_next: "Update the current theory delta and hand off exactly one bounded overlap probe.",
       focus: "Continue the current bounded probe only.",
       avoid: ["Do not reconstruct older transcript history."],
       stop_condition: "Stop after the bounded probe resolves or a novel event appears.",
@@ -213,8 +218,11 @@ describe("runSupervisorReview", () => {
       const prompt = await fs.readFile(promptPath, "utf8");
       expect(prompt).toContain("You are writing a fresh compaction recovery packet for the agent.");
       expect(prompt).toContain("The agent will NOT receive prior transcript history, tool calls, or tool results.");
+      expect(prompt).toContain("Include a concrete execution cursor");
       expect(prompt).toContain("Current rendered user-mode instruction:");
       expect(prompt).toContain("Test the changed overlap state and stop.");
+      expect(outcome.packet.current_execution_state[0]).toContain("Theory already narrowed");
+      expect(outcome.packet.do_this_next).toContain("bounded overlap probe");
     } finally {
       delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
     }
