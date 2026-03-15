@@ -133,15 +133,20 @@ export function validateSwitchModeHandoffText(args: {
   if (args.targetMode !== "explore_and_solve") return null;
   const text = trimInlineText(args.text);
   if (!text) return null;
-  const directionalSteps = text.match(/\b(?:up|down|left|right)\s*x\d+\b/gi) ?? [];
+  const directionalSteps = text.match(/\b(?:up|down|left|right)\s*(?:x|×)\s*\d+\b/gi) ?? [];
   const boundedRouteSignals = [
-    /\bstop condition\b/i,
+    /\bstop conditions?\b/i,
+    /\bstop immediately\b/i,
+    /\bhalt route\b/i,
     /\bwatch for\b/i,
     /\bnovel event\b/i,
     /\broute exhausted\b/i,
+    /\broute (?:is )?exhausted\b/i,
     /\buntil (?:completion|a novel event|route exhausted|blocked)\b/i,
     /\bcompletion trigger\b/i,
     /\blevel transition\b/i,
+    /\bstuck\b/i,
+    /\bblocked\b/i,
   ];
   const mixedAgendaSignals = [
     /\bif confirmed\b/i,

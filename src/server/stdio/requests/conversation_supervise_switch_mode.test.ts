@@ -309,6 +309,19 @@ describe("agent switch_mode inline tool", () => {
     ).toBeNull();
   });
 
+  it("accepts plural stop conditions and unicode route multipliers in bounded explore handoffs", () => {
+    expect(
+      validateSwitchModeHandoffText({
+        targetMode: "explore_and_solve",
+        text: [
+          "Target: reach the visible feature through one bounded route.",
+          "Route: UP ×4, LEFT ×5, DOWN ×2.",
+          "Stop conditions: halt route immediately on completion, a novel event, route exhausted, stuck, or blocked.",
+        ].join(" "),
+      }),
+    ).toBeNull();
+  });
+
   it.serial("allows generic runtime-captured mode_payload entries for any target mode", async () => {
     for (const targetMode of ["theory", "code_model"]) {
       const workspaceRoot = await makeTempRoot(`conv-supervise-switch-payload-${targetMode}-`);
