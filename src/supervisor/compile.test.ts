@@ -7,6 +7,7 @@ import {
   CONFIG_SYSTEM_APPEND_END,
   compileFullPrompt,
   compileIncrementalPrompt,
+  compileRecoveryPrompt,
   compileSupervisorReview,
   compileGraceAssessment,
   resolveSystemMessage,
@@ -512,6 +513,64 @@ Last message
     expect(result.promptText).toContain('"user_message": "Execute exactly one ACTION1 and stop."');
     expect(result.promptText).toContain("Execute exactly one ACTION1 from the current state, then stop immediately.");
     expect(result.promptText).toContain("Old route: ACTION4 ACTION4 ACTION1 ACTION1");
+  });
+});
+
+describe("compileRecoveryPrompt", () => {
+  it("builds an authoritative recovery packet without transcript skeleton or blob refs", () => {
+    const payload = Buffer.from(
+      JSON.stringify({
+        user_message: "Resume `explore_only` with one target only: test the changed marker overlap state and stop on first absorption-like event.",
+      }),
+      "utf8",
+    ).toString("base64url");
+    const documentText = [
+      "---",
+      "conversation_id: test",
+      "fork_id: fork_1",
+      "mode: explore_only",
+      `mode_payload_b64: ${payload}`,
+      "---",
+      "",
+      "```chat role=user",
+      "Old route: ACTION2 ACTION2 ACTION4 ACTION4",
+      "```",
+      "",
+      "```chat role=supervisor",
+      "Focus only on the changed marker overlap state. Ignore older route text.",
+      "```",
+      "",
+      "```tool_result",
+      "summary: (see blob)",
+      "blob_ref: .ai-supervisor/conversations/test/blobs/recent_tool.txt",
+      "blob_bytes: 49",
+      "```",
+      "",
+      "```chat role=assistant",
+      "The last probe showed the direct rightward move was blocked by a wall.",
+      "```",
+    ].join("\n");
+    const result = compileRecoveryPrompt({
+      documentText,
+      workspaceRoot: "/tmp/workspace",
+      currentMode: "explore_only",
+      allowedNextModes: ["theory"],
+      modePayloadFieldsByMode: { explore_only: ["user_message"], theory: ["user_message"] },
+      modeGuidanceByMode: {
+        explore_only: { description: "Probe one target.", startWhen: [], stopWhen: [] },
+        theory: { description: "Synthesize next step.", startWhen: [], stopWhen: [] },
+      },
+    });
+    expect(result.promptText).toContain("Compaction Recovery Packet (authoritative):");
+    expect(result.promptText).toContain("Current rendered user-mode instruction:");
+    expect(result.promptText).toContain("test the changed marker overlap state");
+    expect(result.promptText).toContain("Latest supervisor focus:");
+    expect(result.promptText).toContain("Ignore older route text");
+    expect(result.promptText).toContain("Relevant recent facts:");
+    expect(result.promptText).toContain("assistant: The last probe showed the direct rightward move was blocked by a wall.");
+    expect(result.promptText).not.toContain("Authoritative transcript (Markdown)");
+    expect(result.promptText).not.toContain("User message:\nOld route");
+    expect(result.promptText).not.toContain("blob_ref:");
   });
 });
 

@@ -73,6 +73,13 @@ export const INCREMENTAL_PROMPT_PREFIX = "Continue the existing conversation thr
 
 export const INCREMENTAL_PROMPT_POSTLUDE = ["User message:", "{last_user_message}"].join("\n");
 
+export const RECOVERY_PROMPT_POSTLUDE = [
+  "Resume directly from the current instruction, supervisor focus, and relevant facts above.",
+  "Do not inspect transcript blob/offload paths or try to reconstruct older context unless the current mode contract explicitly requires it.",
+  "",
+  "Return ONLY the next assistant message. If tool use is needed, use tools and then continue.",
+].join("\n");
+
 export type CompileInputs = {
   documentText: string;
   workspaceRoot?: string;
@@ -154,6 +161,8 @@ export type GraceAssessmentInputs = {
 
 const MODE_PAYLOAD_FRONTMATTER_KEY = "mode_payload_b64";
 const ACTIVE_MODE_CONTRACT_PREVIEW_LIMIT = 4000;
+const RECOVERY_FACT_LIMIT = 8;
+const RECOVERY_FACT_PREVIEW_LIMIT = 360;
 
 function formatRules(title: string, rules: string[]): string {
   if (!rules.length) return `${title}: (none)`;
@@ -234,6 +243,51 @@ function truncateContractText(text: string | undefined, maxChars = ACTIVE_MODE_C
   return `${normalized.slice(0, Math.max(0, maxChars - 14)).trimEnd()}\n[truncated]`;
 }
 
+function sanitizeRecoveryText(text: string | undefined): string | undefined {
+  const normalized = String(text ?? "").trim();
+  if (!normalized) return undefined;
+  const cleanedLines = normalized
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^blob_ref:\s*/i.test(line) && !/^blob_bytes:\s*/i.test(line))
+    .filter((line) => !/^summary:\s*\(see blob\)\s*$/i.test(line));
+  const compact = cleanedLines.join(" ").replace(/\s+/g, " ").trim();
+  if (!compact) return undefined;
+  if (compact.length <= RECOVERY_FACT_PREVIEW_LIMIT) return compact;
+  return `${compact.slice(0, Math.max(0, RECOVERY_FACT_PREVIEW_LIMIT - 14)).trimEnd()} [truncated]`;
+}
+
+function extractSupervisorFocusText(text: string | undefined): string | undefined {
+  const normalized = String(text ?? "").trim();
+  if (!normalized) return undefined;
+  const guidanceMatch = normalized.match(/<supervisor-guidance>\s*([\s\S]*?)\s*<\/supervisor-guidance>/i);
+  if (guidanceMatch) {
+    return sanitizeRecoveryText(guidanceMatch[1]);
+  }
+  const commandMatch = normalized.match(/<supervisor-command[^>]*>\s*([\s\S]*?)\s*<\/supervisor-command>/i);
+  if (commandMatch) {
+    return sanitizeRecoveryText(commandMatch[1]);
+  }
+  return sanitizeRecoveryText(normalized.replace(/<\/?[^>]+>/g, " "));
+}
+
+function isRecoveryNoise(text: string | undefined): boolean {
+  const normalized = String(text ?? "").trim().toLowerCase();
+  if (!normalized) return true;
+  return (
+    normalized.includes("blob_ref:")
+    || normalized.includes("summary: (see blob)")
+    || normalized.includes("blob isn't available")
+    || normalized.includes("blob file")
+    || normalized.includes("reasoning_snapshot")
+    || normalized.includes("shell invocation blocked")
+    || normalized.includes("outside workspace")
+    || normalized.includes("no files found")
+    || normalized.includes(".ai-supervisor")
+  );
+}
+
 function hydrateBlobRefContentForConversation(
   text: string | undefined,
   workspaceRoot: string | undefined,
@@ -275,6 +329,63 @@ function latestChatContentByRole(
     return hydrateBlobRefContentForConversation(String(block.content ?? "").trim(), workspaceRoot, conversationId);
   }
   return undefined;
+}
+
+function summarizeBlockForRecovery(
+  block: any,
+  documentText: string,
+  workspaceRoot?: string,
+): string | undefined {
+  const conversationId = String(frontmatterValue(documentText, "conversation_id") ?? "").trim();
+  const content = sanitizeRecoveryText(
+    hydrateBlobRefContentForConversation(String(block?.content ?? "").trim(), workspaceRoot, conversationId),
+  );
+  if (!content || isRecoveryNoise(content)) return undefined;
+  if (block?.kind === "chat") {
+    const role = String(block?.role ?? "").trim();
+    if (!role || role === "user" || role === "supervisor") return undefined;
+    return `${role}: ${content}`;
+  }
+  if (block?.kind === "tool_call") {
+    return undefined;
+  }
+  if (block?.kind === "tool_result") {
+    return `tool_result: ${content}`;
+  }
+  return undefined;
+}
+
+function recoveryFactsFromTranscript(
+  parsed: ReturnType<typeof parseChatMarkdown>,
+  documentText: string,
+  workspaceRoot?: string,
+): string[] {
+  const boundaryIndex = (() => {
+    for (let i = parsed.blocks.length - 1; i >= 0; i -= 1) {
+      const block = parsed.blocks[i] as any;
+      if (block?.kind !== "chat") continue;
+      const role = String(block.role ?? "").trim();
+      if (role === "user" || role === "supervisor") return i;
+    }
+    return -1;
+  })();
+
+  const summarizeRange = (startIndex: number): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (let i = Math.max(0, startIndex); i < parsed.blocks.length; i += 1) {
+      const summary = summarizeBlockForRecovery(parsed.blocks[i], documentText, workspaceRoot);
+      if (!summary || seen.has(summary)) continue;
+      seen.add(summary);
+      out.push(summary);
+    }
+    if (out.length <= RECOVERY_FACT_LIMIT) return out;
+    return out.slice(out.length - RECOVERY_FACT_LIMIT);
+  };
+
+  const boundaryFacts = summarizeRange(boundaryIndex + 1);
+  if (boundaryFacts.length > 0) return boundaryFacts;
+  return summarizeRange(Math.max(0, parsed.blocks.length - 12));
 }
 
 function appendActiveModeContract(promptParts: string[], input: CompileInputs, parsed: ReturnType<typeof parseChatMarkdown>): void {
@@ -400,6 +511,82 @@ export function compileIncrementalPrompt(input: CompileInputs): { prompt: Prompt
   const configuredImages = normalizeConfiguredImages(input.configuredSystemMessage?.images, input.workspaceRoot);
   const prompt = buildPromptContent(promptText, [...configuredImages, ...userImages]);
 
+  return { prompt, promptText, parseErrors: errs };
+}
+
+export function compileRecoveryPrompt(
+  input: CompileInputs,
+): { prompt: PromptContent; promptText: string; parseErrors: string[] } {
+  const cleaned = stripSupervisorBlocks(input.documentText);
+  const parsed = parseChatMarkdown(cleaned);
+  const errs = parsed.errors.map((e) => `L${e.line}: ${e.message}`);
+  const agents = input.agentsMd?.trim();
+  const extracted = extractLeadingSystemPromptFromTranscript({ documentText: cleaned, workspaceRoot: input.workspaceRoot });
+  const system = extracted.systemText || buildDurableAgentSystemPrompt({
+    provider: input.provider,
+    model: input.model,
+    defaultSystemMessage: input.defaultSystemMessage,
+    configuredSystemMessage: input.configuredSystemMessage,
+    agentRules: resolveAgentRules(input),
+  });
+  const modePayload = resolveModePayloadFromDocument(cleaned);
+  const latestUserMessage = sanitizeRecoveryText(
+    truncateContractText(latestChatContentByRole(parsed, cleaned, "user", input.workspaceRoot)),
+  );
+  const latestSupervisorMessage = extractSupervisorFocusText(
+    truncateContractText(latestChatContentByRole(parsed, cleaned, "supervisor", input.workspaceRoot)),
+  );
+  const recoveryFacts = recoveryFactsFromTranscript(parsed, cleaned, input.workspaceRoot);
+  const currentMode = String(input.currentMode ?? frontmatterValue(cleaned, "mode") ?? "").trim();
+  const promptParts = [system, ""];
+
+  if (agents) {
+    promptParts.push(agents, "");
+  }
+
+  const skillsSection = renderSkillsSection(input.skills ?? []);
+  if (skillsSection) {
+    promptParts.push(skillsSection, "");
+  }
+
+  appendAgentModeContext(promptParts, input);
+  appendSharedPromptContext(promptParts, input);
+
+  promptParts.push(
+    "Compaction Recovery Packet (authoritative):",
+    "",
+    "You are resuming after provider compaction. The prior transcript has been intentionally replaced by the current contract and the most relevant recent facts.",
+    "If any older route, transcript fragment, or remembered blob content conflicts with this packet, ignore the older material and follow this packet.",
+    "",
+  );
+
+  if (currentMode) {
+    promptParts.push(`Current mode: ${currentMode}`, "");
+  }
+
+  const userInstruction = String(modePayload.user_message ?? "").trim() || latestUserMessage;
+  if (userInstruction) {
+    promptParts.push("Current rendered user-mode instruction:", "```text", userInstruction, "```", "");
+  }
+
+  if (latestSupervisorMessage) {
+    promptParts.push("Latest supervisor focus:", "```text", latestSupervisorMessage, "```", "");
+  }
+
+  if (recoveryFacts.length > 0) {
+    promptParts.push("Relevant recent facts:", ...recoveryFacts.map((fact) => `- ${fact}`), "");
+  }
+
+  promptParts.push(RECOVERY_PROMPT_POSTLUDE);
+
+  const promptText = promptParts.join("\n");
+  const recoveryImages = dedupePromptImages([
+    ...extracted.systemImages,
+    ...normalizeConfiguredImages(input.configuredSystemMessage?.images, input.workspaceRoot),
+    ...extractPromptImagePartsFromMarkdown(userInstruction ?? "", input.workspaceRoot),
+    ...extractPromptImagePartsFromMarkdown(latestSupervisorMessage ?? "", input.workspaceRoot),
+  ]);
+  const prompt = buildPromptContent(promptText, recoveryImages);
   return { prompt, promptText, parseErrors: errs };
 }
 

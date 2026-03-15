@@ -47,7 +47,7 @@ type RunAgentTurnWithHooksArgs = {
   fullResyncNeeded: boolean;
   hooks: any[];
   turn: number;
-  rebuildPromptForOverflow?: () => Promise<PromptContent>;
+  rebuildPromptForOverflow?: (documentText: string) => Promise<PromptContent>;
   onCadenceHit?: (event: CadenceHitEvent) => void | Promise<void>;
   onToolBoundary?: () => void;
   onAppendMarkdown?: (markdown: string) => void;
@@ -141,7 +141,15 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
       const recovery = await overflowRecovery.recoverAgentTurn({
         retryUsed: overflowRetryUsed,
         compactThread: provider.compactThread?.bind(provider),
-        rebuildPrompt: args.rebuildPromptForOverflow,
+        rebuildPrompt: async () => {
+          if (typeof args.rebuildPromptForOverflow !== "function") {
+            return currentPrompt;
+          }
+          const retryDocumentText = result.appended.length > 0
+            ? combineTranscript(args.currentDocText, result.appended)
+            : args.currentDocText;
+          return args.rebuildPromptForOverflow(retryDocumentText);
+        },
       });
       if (!recovery.retry) {
         overflowRetryUsed = recovery.retryUsed;

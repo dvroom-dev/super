@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { ProviderPermissionProfile } from "../../../providers/types.js";
 import { toolDefinitionsMarkdown } from "../../../tools/definitions.js";
-import { compileFullPrompt, compileIncrementalPrompt } from "../../../supervisor/compile.js";
+import { compileFullPrompt, compileIncrementalPrompt, compileRecoveryPrompt } from "../../../supervisor/compile.js";
 import { combineTranscript, normalizeRules, normalizeFileContexts } from "../helpers.js";
 import { loadAgentsInstructions, workspaceListing, taggedFileContexts } from "../workspace.js";
 import { getUtilities } from "../utilities.js";
@@ -344,21 +344,30 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     }
     const shouldUseFullPrompt = shouldUseFullPromptForSupervise(fullResyncNeeded, currentThreadId);
     const turnStartedAt = Date.now();
-    const buildCompiledAgentPrompt = async (overrides?: {
+    const buildCompiledAgentPrompt = async (args?: {
+      mode?: "normal" | "recovery";
+      documentText?: string;
       maxInlineBytes?: number;
       kindsToOffload?: string[];
       keepRecentReasoningSnapshots?: number;
       maxEventBlocks?: number;
     }) => {
+      const compileMode = args?.mode ?? "normal";
+      const sourceDocumentText = args?.documentText ?? currentDocText;
       const managedContext = await buildManagedSuperviseContext({
-        documentText: currentDocText,
+        documentText: sourceDocumentText,
         workspaceRoot,
         conversationId,
         strategy: renderedRunConfig?.contextManagementStrategy,
-        overrides,
+        overrides: args == null ? undefined : {
+          maxInlineBytes: args.maxInlineBytes,
+          kindsToOffload: args.kindsToOffload,
+          keepRecentReasoningSnapshots: args.keepRecentReasoningSnapshots,
+          maxEventBlocks: args.maxEventBlocks,
+        },
       });
       const compileArgs = {
-        documentText: managedContext.documentText,
+        documentText: compileMode === "recovery" ? sourceDocumentText : managedContext.documentText,
         workspaceRoot,
         provider: providerName,
         agentRules: effectiveAgentRequirements,
@@ -381,9 +390,11 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         configuredSystemMessage: effectiveAgentConfiguredSystemMessage,
         defaultSystemMessage: disableSupervision ? undefined : renderedRunConfig?.supervisor?.agentDefaultSystemMessage,
       };
-      const compile = shouldUseFullPrompt
-        ? compileFullPrompt(compileArgs)
-        : compileIncrementalPrompt(compileArgs);
+      const compile = compileMode === "recovery"
+        ? compileRecoveryPrompt(compileArgs)
+        : shouldUseFullPrompt
+          ? compileFullPrompt(compileArgs)
+          : compileIncrementalPrompt(compileArgs);
         return { managedContext, compile };
       };
     const promptBuildStartedAt = Date.now();
@@ -423,8 +434,12 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       providerFilesystemPolicy: effectiveAgentFilesystemPolicy,
       customTools: effectiveToolConfig?.customTools,
       compilePrompt: compile.prompt,
-      rebuildPromptForOverflow: async () => {
-        const overflowBuild = await buildCompiledAgentPrompt({ ...CLAUDE_AGENT_CONTEXT_RETRY_OPTIONS });
+      rebuildPromptForOverflow: async (recoveryDocumentText) => {
+        const overflowBuild = await buildCompiledAgentPrompt({
+          mode: "recovery",
+          documentText: recoveryDocumentText,
+          ...CLAUDE_AGENT_CONTEXT_RETRY_OPTIONS,
+        });
         emitManagedSuperviseContextStats({
           ctx,
           docPath,

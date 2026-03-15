@@ -230,6 +230,100 @@ describe("runAgentTurnWithHooks", () => {
     ).toBe(true);
   });
 
+  it("rebuilds Claude compaction retries from the transcript plus partial current-turn output", async () => {
+    const workspaceRoot = await makeTempRoot("agent-turn-claude-recovery-doc-");
+    const agentWorkspaceRoot = path.join(workspaceRoot, "agent");
+    await fs.mkdir(agentWorkspaceRoot, { recursive: true });
+
+    let createCount = 0;
+    let rebuiltDocumentText = "";
+
+    const providerOne: AgentProvider = {
+      async *runStreamed() {
+        yield { type: "assistant_message", text: "Partial progress before compaction." };
+        yield {
+          type: "provider_item",
+          item: { provider: "claude", kind: "system", summary: "compacting" },
+          raw: { type: "system", subtype: "status", status: "compacting" },
+        } as ProviderEvent;
+        throw new Error("Claude Code process aborted by user");
+      },
+      async runOnce() {
+        return { text: "", threadId: undefined, items: [] };
+      },
+      async close() {},
+    };
+    const providerTwo: AgentProvider = {
+      async *runStreamed() {
+        yield { type: "assistant_message", text: "Recovered after retry." };
+        yield { type: "done", threadId: "claude_retry_doc" };
+      },
+      async runOnce() {
+        return { text: "", threadId: undefined, items: [] };
+      },
+      async close() {},
+    };
+
+    const result = await runAgentTurnWithHooks({
+      ctx: {
+        store: {} as any,
+        state: {} as any,
+        sendNotification: () => {},
+        requireWorkspaceRoot: () => workspaceRoot,
+      },
+      workspaceRoot,
+      agentWorkspaceRoot,
+      docPath: path.join(agentWorkspaceRoot, "session.md"),
+      conversationId: "conv_claude_recovery_doc",
+      providerName: "claude",
+      currentModel: "claude-opus-4-6",
+      sandboxMode: "workspace-write",
+      permissionProfile: "workspace_no_network",
+      skipGitRepoCheck: true,
+      shouldUseFullPrompt: false,
+      currentThreadId: "claude_stale_session",
+      customTools: undefined,
+      compilePrompt: promptContentFromText("continue"),
+      outputSchema: undefined,
+      effectiveSupervisor: {} as any,
+      budget: {
+        startedAt: Date.now(),
+        timeBudgetMs: 60_000,
+        tokenBudgetAdjusted: 0,
+        cadenceTimeMs: 0,
+        cadenceTokensAdjusted: 0,
+        adjustedTokensUsed: 0,
+        budgetMultiplier: 1,
+        cadenceAnchorAt: Date.now(),
+        cadenceTokensAnchor: 0,
+        timeBudgetHit: false,
+        tokenBudgetHit: false,
+      },
+      pricing: undefined,
+      sendBudgetUpdate: () => {},
+      toolOutput: undefined,
+      activeRuns: {},
+      activeRunsByForkId: {},
+      activeForkId: "fork_claude_recovery_doc",
+      currentDocText: "```chat role=user\nContinue current probe.\n```",
+      fullResyncNeeded: false,
+      hooks: [],
+      turn: 1,
+      rebuildPromptForOverflow: async (documentText) => {
+        rebuiltDocumentText = documentText;
+        return promptContentFromText("rebuilt prompt");
+      },
+      createProviderOverride: () => {
+        createCount += 1;
+        return createCount === 1 ? providerOne : providerTwo;
+      },
+    });
+
+    expect(result.result.hadError).toBe(false);
+    expect(rebuiltDocumentText).toContain("Continue current probe.");
+    expect(rebuiltDocumentText).toContain("Partial progress before compaction.");
+  });
+
   it("discards the stale Claude session when a fresh-session compaction retry still fails", async () => {
     const workspaceRoot = await makeTempRoot("agent-turn-claude-compaction-fail-");
     const agentWorkspaceRoot = path.join(workspaceRoot, "agent");
