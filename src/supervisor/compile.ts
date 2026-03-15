@@ -83,6 +83,7 @@ export const RECOVERY_PROMPT_POSTLUDE = [
 export type CompileInputs = {
   documentText: string;
   workspaceRoot?: string;
+  supervisorCarryover?: string;
   provider?: ProviderName;
   agentRules?: string[];
   currentMode?: string;
@@ -161,7 +162,6 @@ export type GraceAssessmentInputs = {
 
 const MODE_PAYLOAD_FRONTMATTER_KEY = "mode_payload_b64";
 const ACTIVE_MODE_CONTRACT_PREVIEW_LIMIT = 4000;
-const RECOVERY_FACT_LIMIT = 8;
 const RECOVERY_FACT_PREVIEW_LIMIT = 360;
 
 function formatRules(title: string, rules: string[]): string {
@@ -258,6 +258,25 @@ function sanitizeRecoveryText(text: string | undefined): string | undefined {
   return `${compact.slice(0, Math.max(0, RECOVERY_FACT_PREVIEW_LIMIT - 14)).trimEnd()} [truncated]`;
 }
 
+function selectRecoveryCarryoverText(supervisorCarryover: string | undefined, currentMode: string): string | undefined {
+  const normalized = String(supervisorCarryover ?? "").trim();
+  if (!normalized) return undefined;
+  const blocks = normalized
+    .split(/\n\s*\n(?=-\s+at:)/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  if (blocks.length === 0) return undefined;
+  const currentModeNeedle = `mode: ${currentMode}`.trim();
+  const selected = [...blocks].reverse().find((block) => block.includes(currentModeNeedle)) ?? blocks[blocks.length - 1];
+  const filteredLines = selected
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*next_user_message\s*:/i.test(line))
+    .filter((line) => !/^\s*reasoning\s*:\s*\(none\)\s*$/i.test(line))
+    .filter((line) => !/^\s*advice\s*:\s*\(none\)\s*$/i.test(line));
+  const compact = filteredLines.join("\n").trim();
+  return compact || undefined;
+}
+
 function extractSupervisorFocusText(text: string | undefined): string | undefined {
   const normalized = String(text ?? "").trim();
   if (!normalized) return undefined;
@@ -270,22 +289,6 @@ function extractSupervisorFocusText(text: string | undefined): string | undefine
     return sanitizeRecoveryText(commandMatch[1]);
   }
   return sanitizeRecoveryText(normalized.replace(/<\/?[^>]+>/g, " "));
-}
-
-function isRecoveryNoise(text: string | undefined): boolean {
-  const normalized = String(text ?? "").trim().toLowerCase();
-  if (!normalized) return true;
-  return (
-    normalized.includes("blob_ref:")
-    || normalized.includes("summary: (see blob)")
-    || normalized.includes("blob isn't available")
-    || normalized.includes("blob file")
-    || normalized.includes("reasoning_snapshot")
-    || normalized.includes("shell invocation blocked")
-    || normalized.includes("outside workspace")
-    || normalized.includes("no files found")
-    || normalized.includes(".ai-supervisor")
-  );
 }
 
 function hydrateBlobRefContentForConversation(
@@ -329,63 +332,6 @@ function latestChatContentByRole(
     return hydrateBlobRefContentForConversation(String(block.content ?? "").trim(), workspaceRoot, conversationId);
   }
   return undefined;
-}
-
-function summarizeBlockForRecovery(
-  block: any,
-  documentText: string,
-  workspaceRoot?: string,
-): string | undefined {
-  const conversationId = String(frontmatterValue(documentText, "conversation_id") ?? "").trim();
-  const content = sanitizeRecoveryText(
-    hydrateBlobRefContentForConversation(String(block?.content ?? "").trim(), workspaceRoot, conversationId),
-  );
-  if (!content || isRecoveryNoise(content)) return undefined;
-  if (block?.kind === "chat") {
-    const role = String(block?.role ?? "").trim();
-    if (!role || role === "user" || role === "supervisor") return undefined;
-    return `${role}: ${content}`;
-  }
-  if (block?.kind === "tool_call") {
-    return undefined;
-  }
-  if (block?.kind === "tool_result") {
-    return `tool_result: ${content}`;
-  }
-  return undefined;
-}
-
-function recoveryFactsFromTranscript(
-  parsed: ReturnType<typeof parseChatMarkdown>,
-  documentText: string,
-  workspaceRoot?: string,
-): string[] {
-  const boundaryIndex = (() => {
-    for (let i = parsed.blocks.length - 1; i >= 0; i -= 1) {
-      const block = parsed.blocks[i] as any;
-      if (block?.kind !== "chat") continue;
-      const role = String(block.role ?? "").trim();
-      if (role === "user" || role === "supervisor") return i;
-    }
-    return -1;
-  })();
-
-  const summarizeRange = (startIndex: number): string[] => {
-    const out: string[] = [];
-    const seen = new Set<string>();
-    for (let i = Math.max(0, startIndex); i < parsed.blocks.length; i += 1) {
-      const summary = summarizeBlockForRecovery(parsed.blocks[i], documentText, workspaceRoot);
-      if (!summary || seen.has(summary)) continue;
-      seen.add(summary);
-      out.push(summary);
-    }
-    if (out.length <= RECOVERY_FACT_LIMIT) return out;
-    return out.slice(out.length - RECOVERY_FACT_LIMIT);
-  };
-
-  const boundaryFacts = summarizeRange(boundaryIndex + 1);
-  if (boundaryFacts.length > 0) return boundaryFacts;
-  return summarizeRange(Math.max(0, parsed.blocks.length - 12));
 }
 
 function appendActiveModeContract(promptParts: string[], input: CompileInputs, parsed: ReturnType<typeof parseChatMarkdown>): void {
@@ -536,8 +482,8 @@ export function compileRecoveryPrompt(
   const latestSupervisorMessage = extractSupervisorFocusText(
     truncateContractText(latestChatContentByRole(parsed, cleaned, "supervisor", input.workspaceRoot)),
   );
-  const recoveryFacts = recoveryFactsFromTranscript(parsed, cleaned, input.workspaceRoot);
   const currentMode = String(input.currentMode ?? frontmatterValue(cleaned, "mode") ?? "").trim();
+  const supervisorCarryover = selectRecoveryCarryoverText(input.supervisorCarryover, currentMode);
   const promptParts = [system, ""];
 
   if (agents) {
@@ -573,8 +519,8 @@ export function compileRecoveryPrompt(
     promptParts.push("Latest supervisor focus:", "```text", latestSupervisorMessage, "```", "");
   }
 
-  if (recoveryFacts.length > 0) {
-    promptParts.push("Relevant recent facts:", ...recoveryFacts.map((fact) => `- ${fact}`), "");
+  if (supervisorCarryover) {
+    promptParts.push("Supervisor-authored relevant facts:", supervisorCarryover, "");
   }
 
   promptParts.push(RECOVERY_PROMPT_POSTLUDE);

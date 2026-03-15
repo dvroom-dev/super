@@ -553,6 +553,13 @@ describe("compileRecoveryPrompt", () => {
     const result = compileRecoveryPrompt({
       documentText,
       workspaceRoot: "/tmp/workspace",
+      supervisorCarryover: [
+        "- at: 2026-03-15T10:00:00Z",
+        "  mode: explore_only",
+        "  action: resume_mode_head",
+        "  advice: Continue the active probe. The only live question is the changed marker overlap state.",
+        "  next_mode: explore_only",
+      ].join("\n"),
       currentMode: "explore_only",
       allowedNextModes: ["theory"],
       modePayloadFieldsByMode: { explore_only: ["user_message"], theory: ["user_message"] },
@@ -566,11 +573,13 @@ describe("compileRecoveryPrompt", () => {
     expect(result.promptText).toContain("test the changed marker overlap state");
     expect(result.promptText).toContain("Latest supervisor focus:");
     expect(result.promptText).toContain("Ignore older route text");
-    expect(result.promptText).toContain("Relevant recent facts:");
-    expect(result.promptText).toContain("assistant: The last probe showed the direct rightward move was blocked by a wall.");
+    expect(result.promptText).toContain("Supervisor-authored relevant facts:");
+    expect(result.promptText).toContain("Continue the active probe. The only live question is the changed marker overlap state.");
     expect(result.promptText).not.toContain("Authoritative transcript (Markdown)");
     expect(result.promptText).not.toContain("User message:\nOld route");
     expect(result.promptText).not.toContain("blob_ref:");
+    expect(result.promptText).not.toContain("assistant: The last probe showed the direct rightward move was blocked by a wall.");
+    expect(result.promptText).not.toContain("tool_result:");
   });
 });
 
