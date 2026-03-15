@@ -4,7 +4,11 @@ import { createProvider } from "../../../providers/factory.js";
 import { getProviderOverflowRecovery } from "../../../providers/provider_overflow_recovery.js";
 import type { SupervisorOverflowRecoveryResult } from "../../../providers/provider_overflow_recovery_helpers.js";
 import type { ProviderConfig, ProviderName, ProviderPermissionProfile } from "../../../providers/types.js";
-import { compileSupervisorReview } from "../../../supervisor/compile.js";
+import {
+  compileSupervisorReview,
+  compileSupervisorRecoverySummary,
+  type SupervisorRecoveryPacket,
+} from "../../../supervisor/compile.js";
 import type { SkillInstruction, SkillMetadata } from "../../../skills/types.js";
 import type { PromptMessageOverride, TaggedFileContext, UtilityStatus } from "../../../supervisor/compile.js";
 import type { RenderedRunConfigSupervisorTriggers } from "../../../supervisor/run_config.js";
@@ -102,6 +106,33 @@ export type SupervisorReviewOutcome = {
   };
 };
 
+export type SupervisorRecoverySummaryInputs = {
+  workspaceRoot: string;
+  conversationId: string;
+  documentText: string;
+  providerName: string;
+  model: string;
+  supervisorModel?: string;
+  supervisorModelReasoningEffort?: string;
+  providerOptions?: Record<string, unknown>;
+  permissionProfile?: ProviderPermissionProfile;
+  agentsText?: string;
+  workspaceListingText?: string;
+  taggedFiles?: TaggedFileContext[];
+  openFiles?: TaggedFileContext[];
+  utilities?: UtilityStatus[];
+  skills?: SkillMetadata[];
+  skillsToInvoke?: SkillMetadata[];
+  skillInstructions?: SkillInstruction[];
+  configuredSystemMessage?: PromptMessageOverride;
+  supervisorInstructions?: string[];
+  currentMode?: string;
+  currentInstruction?: string;
+  stopCondition?: string;
+  supervisorWorkspaceRoot?: string;
+  timeoutMs?: number;
+};
+
 const PRECOMPACT_SKELETON_BYTES = 128 * 1024;
 const CLAUDE_CONTEXT_RETRY_OPTIONS = {
   maxSourceBytes: 192 * 1024,
@@ -116,6 +147,153 @@ type ReviewPromptBundle = {
   runHistory: Awaited<ReturnType<typeof buildSupervisorRunHistoryContext>>;
   reviewContextText: string;
 };
+
+const SUPERVISOR_RECOVERY_PACKET_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["relevant_facts", "focus", "avoid", "stop_condition"],
+  properties: {
+    relevant_facts: {
+      type: "array",
+      items: { type: "string" },
+    },
+    focus: { type: "string" },
+    avoid: {
+      type: "array",
+      items: { type: "string" },
+    },
+    stop_condition: {
+      type: ["string", "null"],
+    },
+  },
+} as const;
+
+export async function runSupervisorRecoverySummary(
+  input: SupervisorRecoverySummaryInputs,
+): Promise<{
+  packet: SupervisorRecoveryPacket;
+  raw: string;
+  promptLogRel: string;
+  responseLogRel: string;
+  traceLogRel: string;
+}> {
+  const supervisorWorkspaceRoot =
+    input.supervisorWorkspaceRoot ??
+    path.join(input.workspaceRoot, ".ai-supervisor", "supervisor", input.conversationId);
+  await fs.mkdir(supervisorWorkspaceRoot, { recursive: true });
+  const managedContext = await buildManagedSupervisorReviewContext({
+    documentText: input.documentText,
+    workspaceRoot: input.workspaceRoot,
+    conversationId: input.conversationId,
+    blobDir: path.join(supervisorWorkspaceRoot, "review_blobs"),
+    blobPathBase: "review_blobs",
+  });
+  const runHistory = await buildSupervisorRunHistoryContext({
+    workspaceRoot: input.workspaceRoot,
+    currentConversationId: input.conversationId,
+    currentSupervisorThreadId: undefined,
+  });
+  const recoveryContextText = [
+    "## Active Conversation Tail Skeleton",
+    managedContext.skeletonText,
+    "",
+    "## Latest Review Priorities",
+    runHistory.priorityText,
+    "",
+    "## Incremental Changes Since Last Supervisor Review",
+    runHistory.deltaText,
+    "",
+    "## Run-Wide Supervisor View",
+    runHistory.overviewText,
+  ].join("\n").trim();
+  const prompt = compileSupervisorRecoverySummary({
+    documentText: recoveryContextText,
+    workspaceRoot: input.workspaceRoot,
+    provider: input.providerName as ProviderName,
+    supervisorInstructions: input.supervisorInstructions,
+    model: input.supervisorModel ?? input.model,
+    agentsMd: input.agentsText,
+    workspaceListing: input.workspaceListingText,
+    taggedFiles: input.taggedFiles,
+    openFiles: input.openFiles,
+    utilities: input.utilities,
+    skills: input.skills,
+    skillsToInvoke: input.skillsToInvoke,
+    skillInstructions: input.skillInstructions,
+    configuredSystemMessage: input.configuredSystemMessage,
+    currentMode: input.currentMode,
+    currentInstruction: input.currentInstruction,
+    stopCondition: input.stopCondition,
+    responseSchema: SUPERVISOR_RECOVERY_PACKET_SCHEMA,
+  });
+
+  const logId = newId("recovery");
+  const logDirName = "recovery_packets";
+  const baseDir = path.join(input.workspaceRoot, ".ai-supervisor", "conversations", input.conversationId, logDirName);
+  const promptLogRel = path.join(".ai-supervisor", "conversations", input.conversationId, logDirName, `${logId}_prompt.txt`);
+  const responseLogRel = path.join(".ai-supervisor", "conversations", input.conversationId, logDirName, `${logId}_response.txt`);
+  const traceLogRel = path.join(".ai-supervisor", "conversations", input.conversationId, logDirName, `${logId}_trace.log`);
+  const traceAbs = path.join(input.workspaceRoot, traceLogRel);
+  const trace = async (line: string) => {
+    try {
+      await fs.appendFile(traceAbs, `${new Date().toISOString()} ${line}\n`, "utf8");
+    } catch {
+      // ignore trace failures
+    }
+  };
+
+  await fs.mkdir(baseDir, { recursive: true });
+  await fs.writeFile(path.join(input.workspaceRoot, promptLogRel), prompt.promptText, "utf8");
+  await trace(`start current_mode=${input.currentMode ?? "(unknown)"} model=${input.supervisorModel ?? input.model}`);
+  await trace(`prompt_bytes=${Buffer.byteLength(prompt.promptText, "utf8")} prompt_log=${promptLogRel}`);
+
+  const reviewer = createProvider({
+    provider: input.providerName as any,
+    model: input.supervisorModel ?? input.model,
+    workingDirectory: supervisorWorkspaceRoot,
+    sandboxMode: "workspace-write",
+    approvalPolicy: "never",
+    permissionProfile: input.permissionProfile ?? "workspace_no_network",
+    skipGitRepoCheck: true,
+    modelReasoningEffort: input.supervisorModelReasoningEffort,
+    providerOptions: input.providerOptions,
+  } as ProviderConfig);
+
+  try {
+    const controller = new AbortController();
+    const timeoutMs = input.timeoutMs ?? 120000;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Supervisor recovery summary timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+    });
+    await trace(`run_once timeout_ms=${timeoutMs}`);
+    const review = await Promise.race([
+      reviewer.runOnce(prompt.prompt, { outputSchema: SUPERVISOR_RECOVERY_PACKET_SCHEMA, signal: controller.signal }),
+      timeoutPromise,
+    ]) as { text?: string };
+    const raw = String(review?.text ?? "");
+    await fs.writeFile(path.join(input.workspaceRoot, responseLogRel), raw, "utf8");
+    const parsed = parseJsonSafe(raw);
+    if (!parsed.ok) {
+      throw new Error("Supervisor recovery summary is not valid JSON");
+    }
+    const schemaError = validateSchemaValue(parsed.value, SUPERVISOR_RECOVERY_PACKET_SCHEMA as unknown as JsonSchemaNode);
+    if (schemaError) {
+      throw new Error(`Supervisor recovery summary failed schema validation: ${schemaError}`);
+    }
+    const packet = parsed.value as SupervisorRecoveryPacket;
+    return { packet, raw, promptLogRel, responseLogRel, traceLogRel };
+  } finally {
+    try {
+      await reviewer.close?.();
+    } catch {
+      // best-effort cleanup
+    }
+  }
+}
 
 export async function runSupervisorReview(input: SupervisorReviewInputs): Promise<SupervisorReviewOutcome> {
   const stopReasons = input.stopReasons && input.stopReasons.length ? input.stopReasons : ["manual"];

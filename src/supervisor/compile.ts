@@ -61,6 +61,13 @@ export type PromptMessageOverride = {
   images?: string[];
 };
 
+export type SupervisorRecoveryPacket = {
+  relevant_facts: string[];
+  focus: string;
+  avoid: string[];
+  stop_condition?: string | null;
+};
+
 export const FULL_PROMPT_POSTLUDE = [
   "Authoritative transcript (Markdown). Continue from the last user message:",
   "",
@@ -83,7 +90,7 @@ export const RECOVERY_PROMPT_POSTLUDE = [
 export type CompileInputs = {
   documentText: string;
   workspaceRoot?: string;
-  supervisorCarryover?: string;
+  supervisorRecoveryPacket?: SupervisorRecoveryPacket | null;
   provider?: ProviderName;
   agentRules?: string[];
   currentMode?: string;
@@ -136,6 +143,27 @@ export type SupervisorReviewInputs = {
   modeGuidanceByMode?: Record<string, SupervisorModeGuidance>;
   responseSchema: unknown;
   supervisorCarryover?: string;
+};
+
+export type SupervisorRecoverySummaryInputs = {
+  documentText: string;
+  workspaceRoot?: string;
+  provider?: ProviderName;
+  supervisorInstructions?: string[];
+  model?: string;
+  agentsMd?: string;
+  workspaceListing?: string;
+  taggedFiles?: TaggedFileContext[];
+  openFiles?: TaggedFileContext[];
+  utilities?: UtilityStatus[];
+  skills?: SkillMetadata[];
+  skillsToInvoke?: SkillMetadata[];
+  skillInstructions?: SkillInstruction[];
+  configuredSystemMessage?: PromptMessageOverride;
+  currentMode?: string;
+  currentInstruction?: string;
+  stopCondition?: string;
+  responseSchema: unknown;
 };
 
 export type GraceAssessmentInputs = {
@@ -256,39 +284,6 @@ function sanitizeRecoveryText(text: string | undefined): string | undefined {
   if (!compact) return undefined;
   if (compact.length <= RECOVERY_FACT_PREVIEW_LIMIT) return compact;
   return `${compact.slice(0, Math.max(0, RECOVERY_FACT_PREVIEW_LIMIT - 14)).trimEnd()} [truncated]`;
-}
-
-function selectRecoveryCarryoverText(supervisorCarryover: string | undefined, currentMode: string): string | undefined {
-  const normalized = String(supervisorCarryover ?? "").trim();
-  if (!normalized) return undefined;
-  const blocks = normalized
-    .split(/\n\s*\n(?=-\s+at:)/)
-    .map((block) => block.trim())
-    .filter(Boolean);
-  if (blocks.length === 0) return undefined;
-  const currentModeNeedle = `mode: ${currentMode}`.trim();
-  const selected = [...blocks].reverse().find((block) => block.includes(currentModeNeedle)) ?? blocks[blocks.length - 1];
-  const filteredLines = selected
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*next_user_message\s*:/i.test(line))
-    .filter((line) => !/^\s*reasoning\s*:\s*\(none\)\s*$/i.test(line))
-    .filter((line) => !/^\s*advice\s*:\s*\(none\)\s*$/i.test(line));
-  const compact = filteredLines.join("\n").trim();
-  return compact || undefined;
-}
-
-function extractSupervisorFocusText(text: string | undefined): string | undefined {
-  const normalized = String(text ?? "").trim();
-  if (!normalized) return undefined;
-  const guidanceMatch = normalized.match(/<supervisor-guidance>\s*([\s\S]*?)\s*<\/supervisor-guidance>/i);
-  if (guidanceMatch) {
-    return sanitizeRecoveryText(guidanceMatch[1]);
-  }
-  const commandMatch = normalized.match(/<supervisor-command[^>]*>\s*([\s\S]*?)\s*<\/supervisor-command>/i);
-  if (commandMatch) {
-    return sanitizeRecoveryText(commandMatch[1]);
-  }
-  return sanitizeRecoveryText(normalized.replace(/<\/?[^>]+>/g, " "));
 }
 
 function hydrateBlobRefContentForConversation(
@@ -479,11 +474,8 @@ export function compileRecoveryPrompt(
   const latestUserMessage = sanitizeRecoveryText(
     truncateContractText(latestChatContentByRole(parsed, cleaned, "user", input.workspaceRoot)),
   );
-  const latestSupervisorMessage = extractSupervisorFocusText(
-    truncateContractText(latestChatContentByRole(parsed, cleaned, "supervisor", input.workspaceRoot)),
-  );
   const currentMode = String(input.currentMode ?? frontmatterValue(cleaned, "mode") ?? "").trim();
-  const supervisorCarryover = selectRecoveryCarryoverText(input.supervisorCarryover, currentMode);
+  const recoveryPacket = input.supervisorRecoveryPacket ?? null;
   const promptParts = [system, ""];
 
   if (agents) {
@@ -515,12 +507,34 @@ export function compileRecoveryPrompt(
     promptParts.push("Current rendered user-mode instruction:", "```text", userInstruction, "```", "");
   }
 
-  if (latestSupervisorMessage) {
-    promptParts.push("Latest supervisor focus:", "```text", latestSupervisorMessage, "```", "");
+  if (String(recoveryPacket?.focus ?? "").trim()) {
+    promptParts.push("Supervisor focus for this resumed turn:", "```text", String(recoveryPacket?.focus).trim(), "```", "");
   }
 
-  if (supervisorCarryover) {
-    promptParts.push("Supervisor-authored relevant facts:", supervisorCarryover, "");
+  if (Array.isArray(recoveryPacket?.relevant_facts) && recoveryPacket.relevant_facts.length > 0) {
+    promptParts.push(
+      "Supervisor-authored relevant facts:",
+      ...recoveryPacket.relevant_facts.map((fact) => `- ${String(fact ?? "").trim()}`),
+      "",
+    );
+  }
+
+  if (Array.isArray(recoveryPacket?.avoid) && recoveryPacket.avoid.length > 0) {
+    promptParts.push(
+      "Ignore / do not spend time on:",
+      ...recoveryPacket.avoid.map((entry) => `- ${String(entry ?? "").trim()}`),
+      "",
+    );
+  }
+
+  if (String(recoveryPacket?.stop_condition ?? "").trim()) {
+    promptParts.push(
+      "Stop condition for this resumed turn:",
+      "```text",
+      String(recoveryPacket?.stop_condition).trim(),
+      "```",
+      "",
+    );
   }
 
   promptParts.push(RECOVERY_PROMPT_POSTLUDE);
@@ -530,7 +544,6 @@ export function compileRecoveryPrompt(
     ...extracted.systemImages,
     ...normalizeConfiguredImages(input.configuredSystemMessage?.images, input.workspaceRoot),
     ...extractPromptImagePartsFromMarkdown(userInstruction ?? "", input.workspaceRoot),
-    ...extractPromptImagePartsFromMarkdown(latestSupervisorMessage ?? "", input.workspaceRoot),
   ]);
   const prompt = buildPromptContent(promptText, recoveryImages);
   return { prompt, promptText, parseErrors: errs };
@@ -662,6 +675,75 @@ export function compileSupervisorReview(input: SupervisorReviewInputs): { prompt
   ]);
   const prompt = buildPromptContent(promptText, promptImages);
   return { prompt, promptText };
+}
+
+export function compileSupervisorRecoverySummary(
+  input: SupervisorRecoverySummaryInputs,
+): { prompt: PromptContent; promptText: string } {
+  const cleaned = stripSupervisorBlocks(input.documentText);
+  const agents = input.agentsMd?.trim();
+  const system = resolveSystemMessage(systemMessageForProvider(input.provider, input.model).message, input.configuredSystemMessage);
+  const currentMode = String(input.currentMode ?? "").trim() || "(unknown)";
+  const currentInstruction = String(input.currentInstruction ?? "").trim() || "(none)";
+  const stopCondition = String(input.stopCondition ?? "").trim() || "(none)";
+  const schemaJson = JSON.stringify(input.responseSchema, null, 2);
+  const supervisorInstructions = resolveSupervisorInstructions(input.supervisorInstructions);
+  const supervisorInstructionsSection = supervisorInstructions.length
+    ? ["Supervisor instructions (supervisor-only):", ...supervisorInstructions.map((entry) => `- ${entry}`), ""].join("\n")
+    : "";
+  const skillsSection = renderSkillsSection(input.skills ?? []);
+  const workspaceListingSection = input.workspaceListing?.trim()
+    ? `Workspace listing (top-level):\n${input.workspaceListing.trim()}\n\n`
+    : "";
+  const utilSection = formatUtilities(input.utilities).join("\n");
+  const taggedSection = formatFileContexts("Tagged files (from @path mentions)", input.taggedFiles, "@").join("\n");
+  const openSection = formatFileContexts("Open buffers", input.openFiles).join("\n");
+  const invokeSection = formatSkillsToInvoke(input.skillsToInvoke).join("\n");
+  const instructionSection = formatSkillInstructions(input.skillInstructions).join("\n");
+
+  const promptText = [
+    system,
+    "",
+    agents ? `${agents}\n` : "",
+    skillsSection ? `${skillsSection}\n` : "",
+    workspaceListingSection,
+    utilSection ? `${utilSection}\n\n` : "",
+    taggedSection ? `${taggedSection}\n\n` : "",
+    openSection ? `${openSection}\n\n` : "",
+    invokeSection ? `${invokeSection}\n\n` : "",
+    instructionSection ? `${instructionSection}\n\n` : "",
+    supervisorInstructionsSection,
+    "You are writing a fresh compaction recovery packet for the agent.",
+    "The agent will NOT receive prior transcript history, tool calls, or tool results.",
+    "Write only the currently relevant facts and focus needed to resume the current task correctly.",
+    "Do not quote or copy literal transcript blocks, tool calls, tool outputs, blob refs, or stale prior handoffs.",
+    "Paraphrase only the durable outcomes that matter now.",
+    "",
+    `Current mode: ${currentMode}`,
+    "Current rendered user-mode instruction:",
+    "```text",
+    currentInstruction,
+    "```",
+    `Run stop condition: ${stopCondition}`,
+    "",
+    "Recovery context available to supervisor:",
+    cleaned.trim(),
+    "",
+    "Return ONLY JSON matching this schema:",
+    "```json",
+    schemaJson,
+    "```",
+  ].join("\n");
+
+  const promptImages = dedupePromptImages([
+    ...normalizeConfiguredImages(input.configuredSystemMessage?.images, input.workspaceRoot),
+    ...extractPromptImagePartsFromMarkdown(cleaned, input.workspaceRoot),
+    ...extractPromptImagePartsFromMarkdown(currentInstruction, input.workspaceRoot),
+  ]);
+  return {
+    prompt: buildPromptContent(promptText, promptImages),
+    promptText,
+  };
 }
 
 export function compileGraceAssessment(input: GraceAssessmentInputs): { prompt: PromptContent; promptText: string } {

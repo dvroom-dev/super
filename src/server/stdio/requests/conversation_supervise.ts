@@ -30,7 +30,7 @@ import { allowedNextModesFor, createRunLifecycle, initialBootstrapModesFor, shou
 import { buildManagedSuperviseContext, emitManagedSuperviseContextStats } from "./conversation_supervise_context.js";
 import { runSuperviseReviewStep } from "../supervisor/supervise_review.js";
 import { applySupervisorForkDecision } from "./conversation_supervise_inline_mode_helpers.js";
-import { loadSupervisorCarryover } from "../supervisor/supervisor_memory.js";
+import { runSupervisorRecoverySummary } from "../supervisor/supervisor_run.js";
 export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtime.js"; export async function handleConversationSupervise(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const agentWorkspaceRoot = path.resolve(workspaceRoot, String((params as any)?.agentBaseDir ?? workspaceRoot));
@@ -355,13 +355,34 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     }) => {
       const compileMode = args?.mode ?? "normal";
       const sourceDocumentText = args?.documentText ?? currentDocText;
-      const supervisorCarryover = compileMode === "recovery"
-        ? (await loadSupervisorCarryover({
+      const supervisorRecoveryPacket = compileMode === "recovery"
+        ? (await runSupervisorRecoverySummary({
             workspaceRoot,
             conversationId,
-            limitBytes: effectiveSupervisor.contextCarryoverLimitBytes,
-          })).text
-        : "";
+            documentText: sourceDocumentText,
+            providerName: supervisorProviderName,
+            model: supervisorModel,
+            supervisorModel,
+            supervisorModelReasoningEffort: effectiveSupervisorModelReasoningEffort,
+            providerOptions: effectiveSupervisorProviderOptions,
+            permissionProfile,
+            agentsText,
+            workspaceListingText,
+            taggedFiles,
+            openFiles,
+            utilities,
+            skills,
+            skillsToInvoke,
+            skillInstructions,
+            configuredSystemMessage: effectiveSupervisorConfiguredSystemMessage,
+            supervisorInstructions: effectiveSupervisorInstructions,
+            currentMode: activeMode,
+            currentInstruction: String(resolveModePayload(sourceDocumentText).user_message ?? ""),
+            stopCondition: effectiveStopCondition,
+            supervisorWorkspaceRoot,
+            timeoutMs: effectiveSupervisor.reviewTimeoutMs,
+          })).packet
+        : null;
       const managedContext = await buildManagedSuperviseContext({
         documentText: sourceDocumentText,
         workspaceRoot,
@@ -377,7 +398,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       const compileArgs = {
         documentText: compileMode === "recovery" ? sourceDocumentText : managedContext.documentText,
         workspaceRoot,
-        supervisorCarryover,
+        supervisorRecoveryPacket,
         provider: providerName,
         agentRules: effectiveAgentRequirements,
         currentMode: activeMode,

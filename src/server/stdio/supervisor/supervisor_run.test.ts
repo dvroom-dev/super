@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { buildSupervisorReviewDocument, runSupervisorReview } from "./supervisor_run.js";
+import {
+  buildSupervisorReviewDocument,
+  runSupervisorRecoverySummary,
+  runSupervisorReview,
+} from "./supervisor_run.js";
 import { buildSupervisorResponseSchema } from "../../../supervisor/review_schema.js";
 import { SupervisorStore } from "../../../store/store.js";
 
@@ -185,6 +189,37 @@ describe("buildSupervisorReviewDocument", () => {
 });
 
 describe("runSupervisorReview", () => {
+  it("builds a fresh recovery packet without carryover history or transcript copying", async () => {
+    const workspaceRoot = await makeTempRoot("supervisor-recovery-");
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      relevant_facts: ["Only the changed overlap state remains unresolved."],
+      focus: "Continue the current bounded probe only.",
+      avoid: ["Do not reconstruct older transcript history."],
+      stop_condition: "Stop after the bounded probe resolves or a novel event appears.",
+    });
+    try {
+      const outcome = await runSupervisorRecoverySummary({
+        workspaceRoot,
+        conversationId: "conv_recovery",
+        documentText: makeDocumentWithSupervisorActions(),
+        providerName: "mock",
+        model: "mock-model",
+        supervisorModel: "mock-model",
+        currentMode: "explore_only",
+        currentInstruction: "Test the changed overlap state and stop.",
+      });
+      expect(outcome.packet.focus).toContain("bounded probe");
+      const promptPath = path.join(workspaceRoot, outcome.promptLogRel);
+      const prompt = await fs.readFile(promptPath, "utf8");
+      expect(prompt).toContain("You are writing a fresh compaction recovery packet for the agent.");
+      expect(prompt).toContain("The agent will NOT receive prior transcript history, tool calls, or tool results.");
+      expect(prompt).toContain("Current rendered user-mode instruction:");
+      expect(prompt).toContain("Test the changed overlap state and stop.");
+    } finally {
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+    }
+  });
+
   it("keeps the live tail ahead of persisted summaries while preserving focused review context and blob drill-down", async () => {
     const workspaceRoot = await makeTempRoot("supervisor-run-");
     const store = new SupervisorStore();

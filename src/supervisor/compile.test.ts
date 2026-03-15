@@ -553,13 +553,15 @@ describe("compileRecoveryPrompt", () => {
     const result = compileRecoveryPrompt({
       documentText,
       workspaceRoot: "/tmp/workspace",
-      supervisorCarryover: [
-        "- at: 2026-03-15T10:00:00Z",
-        "  mode: explore_only",
-        "  action: resume_mode_head",
-        "  advice: Continue the active probe. The only live question is the changed marker overlap state.",
-        "  next_mode: explore_only",
-      ].join("\n"),
+      supervisorRecoveryPacket: {
+        relevant_facts: [
+          "The only live question is the changed marker overlap state.",
+          "Ignore older route text.",
+        ],
+        focus: "Continue the active probe for the changed marker overlap state only.",
+        avoid: ["Do not reconstruct older routes or transcript history."],
+        stop_condition: "Stop after the first absorption-like event or when the bounded probe ends.",
+      },
       currentMode: "explore_only",
       allowedNextModes: ["theory"],
       modePayloadFieldsByMode: { explore_only: ["user_message"], theory: ["user_message"] },
@@ -571,15 +573,19 @@ describe("compileRecoveryPrompt", () => {
     expect(result.promptText).toContain("Compaction Recovery Packet (authoritative):");
     expect(result.promptText).toContain("Current rendered user-mode instruction:");
     expect(result.promptText).toContain("test the changed marker overlap state");
-    expect(result.promptText).toContain("Latest supervisor focus:");
-    expect(result.promptText).toContain("Ignore older route text");
+    expect(result.promptText).toContain("Supervisor focus for this resumed turn:");
+    expect(result.promptText).toContain("Continue the active probe for the changed marker overlap state only.");
     expect(result.promptText).toContain("Supervisor-authored relevant facts:");
-    expect(result.promptText).toContain("Continue the active probe. The only live question is the changed marker overlap state.");
+    expect(result.promptText).toContain("The only live question is the changed marker overlap state.");
+    expect(result.promptText).toContain("Ignore / do not spend time on:");
+    expect(result.promptText).toContain("Do not reconstruct older routes or transcript history.");
+    expect(result.promptText).toContain("Stop condition for this resumed turn:");
     expect(result.promptText).not.toContain("Authoritative transcript (Markdown)");
     expect(result.promptText).not.toContain("User message:\nOld route");
     expect(result.promptText).not.toContain("blob_ref:");
     expect(result.promptText).not.toContain("assistant: The last probe showed the direct rightward move was blocked by a wall.");
     expect(result.promptText).not.toContain("tool_result:");
+    expect(result.promptText).not.toContain("Latest supervisor focus:");
   });
 });
 
