@@ -59,6 +59,7 @@ type RunAgentTurnWithHooksResult = {
   result: AgentTurnResult;
   nextDocText: string;
   fullResyncNeeded: boolean;
+  discardCurrentThreadId: boolean;
 };
 
 export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Promise<RunAgentTurnWithHooksResult> {
@@ -204,6 +205,12 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
     result,
     nextDocText: hookApply.nextDocText,
     fullResyncNeeded: args.fullResyncNeeded || hookApply.changed,
+    discardCurrentThreadId:
+      args.providerName === "claude"
+      && (
+        result.interruptionReason === "provider_compaction"
+        || (overflowRetryUsed && result.hadError)
+      ),
   };
 }
 

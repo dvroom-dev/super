@@ -468,7 +468,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     currentDocText = turnResult.nextDocText;
     fullResyncNeeded = turnResult.fullResyncNeeded;
     if (result.newThreadId && result.newThreadId !== currentThreadId) currentThreadId = result.newThreadId;
-    if (providerName === "claude" && result.interruptionReason === "provider_compaction") {
+    if (providerName === "claude" && turnResult.discardCurrentThreadId) {
       currentThreadId = undefined;
       fullResyncNeeded = true;
     }
