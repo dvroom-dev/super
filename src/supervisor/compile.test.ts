@@ -293,9 +293,18 @@ Actual message
         plan: { description: "Build a concrete plan.", startWhen: ["Evidence is sufficient."], stopWhen: [] },
       },
       availableToolsMarkdown: "- read_file: { path: string }",
+      provider: "claude",
+      providerFilesystemPolicy: {
+        write: { allow: ["theory.md", "components.py"] },
+        allowNewFiles: false,
+      },
     };
     const result = compileFullPrompt(input);
     expect(result.promptText).toContain("Mode Contract (agent-visible):");
+    expect(result.promptText).toContain("Mode Permissions (agent-visible):");
+    expect(result.promptText).toContain("Provider filesystem policy (claude, enforced at runtime):");
+    expect(result.promptText).toContain("`theory.md`, `components.py`");
+    expect(result.promptText).toContain("New file creation: blocked.");
     expect(result.promptText).toContain('"current_mode": "explore"');
     expect(result.promptText).toContain('"candidate_modes"');
     expect(result.promptText).toContain("Available tools (current mode):");

@@ -367,6 +367,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         modePayloadFieldsByMode: modePayloadFields,
         modeGuidanceByMode: modeGuidance,
         availableToolsMarkdown: toolDefinitionsMarkdown(effectiveToolConfig),
+        providerFilesystemPolicy: effectiveAgentFilesystemPolicy,
         agentRuleViolations: effectiveAgentViolations,
         model: currentModel,
         agentsMd: agentsText,

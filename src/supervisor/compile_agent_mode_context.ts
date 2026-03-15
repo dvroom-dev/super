@@ -1,3 +1,5 @@
+import type { ProviderName } from "../providers/types.js";
+import type { ProviderFilesystemPolicy } from "../providers/filesystem_permissions.js";
 import { buildModeContractJson, type SupervisorModeGuidance } from "./compile_mode_contract.js";
 
 export type AgentModeContextInput = {
@@ -6,7 +8,57 @@ export type AgentModeContextInput = {
   modePayloadFieldsByMode?: Record<string, string[]>;
   modeGuidanceByMode?: Record<string, SupervisorModeGuidance>;
   availableToolsMarkdown?: string;
+  provider?: ProviderName;
+  providerFilesystemPolicy?: ProviderFilesystemPolicy;
 };
+
+function backtickedList(values: string[]): string {
+  return values.map((value) => `\`${value}\``).join(", ");
+}
+
+function appendModePermissions(promptParts: string[], input: AgentModeContextInput): void {
+  const provider = String(input.provider ?? "").trim();
+  const policy = input.providerFilesystemPolicy;
+  if (!provider || !policy) return;
+
+  const lines: string[] = [];
+  const readAllow = policy.read?.allow ?? [];
+  const writeAllow = policy.write?.allow ?? [];
+  const createAllow = policy.create?.allow ?? [];
+  const readDeny = policy.read?.deny ?? [];
+  const writeDeny = policy.write?.deny ?? [];
+  const createDeny = policy.create?.deny ?? [];
+
+  lines.push(`Provider filesystem policy (${provider}, enforced at runtime):`);
+  if (readAllow.length) {
+    lines.push(`- Readable paths: ${backtickedList(readAllow)}`);
+  } else {
+    lines.push("- Readable paths: workspace-relative paths allowed unless otherwise blocked.");
+  }
+  if (readDeny.length) {
+    lines.push(`- Read denied for: ${backtickedList(readDeny)}`);
+  }
+  if (writeAllow.length) {
+    lines.push(`- Writable existing paths: ${backtickedList(writeAllow)}`);
+  } else {
+    lines.push("- Writable existing paths: none explicitly allowed by mode policy.");
+  }
+  if (writeDeny.length) {
+    lines.push(`- Write denied for: ${backtickedList(writeDeny)}`);
+  }
+  if (policy.allowNewFiles === false) {
+    lines.push("- New file creation: blocked.");
+  } else if (createAllow.length) {
+    lines.push(`- Creatable paths: ${backtickedList(createAllow)}`);
+  } else {
+    lines.push("- New file creation: allowed subject to workspace boundaries and tool policy.");
+  }
+  if (createDeny.length) {
+    lines.push(`- Create denied for: ${backtickedList(createDeny)}`);
+  }
+  lines.push("- If a file/path is absent from the allowed write/create lists, do not attempt to modify it.");
+  promptParts.push("Mode Permissions (agent-visible):", "", ...lines, "");
+}
 
 export function appendAgentModeContext(promptParts: string[], input: AgentModeContextInput): void {
   const currentMode = String(input.currentMode ?? "").trim();
@@ -27,6 +79,7 @@ export function appendAgentModeContext(promptParts: string[], input: AgentModeCo
       "",
     );
   }
+  appendModePermissions(promptParts, input);
   const availableTools = input.availableToolsMarkdown == null
     ? ""
     : String(input.availableToolsMarkdown).trim();
