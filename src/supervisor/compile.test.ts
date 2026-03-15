@@ -474,6 +474,110 @@ Last message
     expect(result.promptText).toContain("# AGENTS.md instructions for /tmp");
     expect(result.promptText).toContain("Guidelines");
   });
+
+  it("includes the active mode contract in incremental prompts so fresh-session retries keep the latest handoff", () => {
+    const payload = Buffer.from(JSON.stringify({ user_message: "Execute exactly one ACTION1 and stop." }), "utf8").toString(
+      "base64url",
+    );
+    const documentText = [
+      "---",
+      "conversation_id: test",
+      "fork_id: fork_1",
+      "mode: explore_and_solve",
+      `mode_payload_b64: ${payload}`,
+      "---",
+      "",
+      "```chat role=user",
+      "Old route: ACTION4 ACTION4 ACTION1 ACTION1",
+      "```",
+      "",
+      "```chat role=supervisor",
+      "Execute exactly one ACTION1 from the current state, then stop immediately.",
+      "```",
+    ].join("\n");
+    const result = compileIncrementalPrompt({
+      documentText,
+      currentMode: "explore_and_solve",
+      allowedNextModes: ["theory"],
+      modePayloadFieldsByMode: { theory: [], explore_and_solve: ["user_message"] },
+      modeGuidanceByMode: {
+        explore_and_solve: { description: "Run the current bounded probe.", startWhen: [], stopWhen: [] },
+        theory: { description: "Synthesize next step.", startWhen: [], stopWhen: [] },
+      },
+    });
+    const activeIdx = result.promptText.indexOf("Active Mode Contract (latest authoritative handoff):");
+    const userIdx = result.promptText.indexOf("User message:");
+    expect(activeIdx).toBeGreaterThan(-1);
+    expect(userIdx).toBeGreaterThan(activeIdx);
+    expect(result.promptText).toContain('"user_message": "Execute exactly one ACTION1 and stop."');
+    expect(result.promptText).toContain("Execute exactly one ACTION1 from the current state, then stop immediately.");
+    expect(result.promptText).toContain("Old route: ACTION4 ACTION4 ACTION1 ACTION1");
+  });
+});
+
+describe("blob handoff confinement", () => {
+  it("does not hydrate blob refs outside the conversation blob directory", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "compile-blob-confine-"));
+    const outsidePath = path.join(workspaceRoot, "outside-secret.txt");
+    await fs.writeFile(outsidePath, "TOP SECRET\n");
+    const documentText = [
+      "---",
+      "conversation_id: conversation_test",
+      "fork_id: fork_1",
+      "mode: explore_and_solve",
+      "---",
+      "",
+      "```chat role=supervisor",
+      "summary: (see blob)",
+      "blob_ref: ../outside-secret.txt",
+      "blob_bytes: 11",
+      "```",
+      "",
+      "```chat role=user",
+      "Continue.",
+      "```",
+    ].join("\n");
+    const result = compileFullPrompt({
+      documentText,
+      workspaceRoot,
+      currentMode: "explore_and_solve",
+      allowedNextModes: ["theory"],
+    });
+    expect(result.promptText).not.toContain("TOP SECRET");
+    expect(result.promptText).toContain("summary: (see blob)");
+    expect(result.promptText).toContain("blob_ref: ../outside-secret.txt");
+  });
+
+  it("does not hydrate absolute blob refs even if they point at a real file", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "compile-blob-absolute-"));
+    const secretPath = path.join(workspaceRoot, "secret.txt");
+    await fs.writeFile(secretPath, "TOP SECRET\n");
+    const documentText = [
+      "---",
+      "conversation_id: conversation_test",
+      "fork_id: fork_1",
+      "mode: explore_and_solve",
+      "---",
+      "",
+      "```chat role=supervisor",
+      "summary: (see blob)",
+      `blob_ref: ${secretPath}`,
+      "blob_bytes: 11",
+      "```",
+      "",
+      "```chat role=user",
+      "Continue.",
+      "```",
+    ].join("\n");
+    const result = compileFullPrompt({
+      documentText,
+      workspaceRoot,
+      currentMode: "explore_and_solve",
+      allowedNextModes: ["theory"],
+    });
+    expect(result.promptText).not.toContain("TOP SECRET");
+    expect(result.promptText).toContain(`blob_ref: ${secretPath}`);
+  });
 });
 
 describe("compileSupervisorReview", () => {

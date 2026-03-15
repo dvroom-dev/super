@@ -234,14 +234,25 @@ function truncateContractText(text: string | undefined, maxChars = ACTIVE_MODE_C
   return `${normalized.slice(0, Math.max(0, maxChars - 14)).trimEnd()}\n[truncated]`;
 }
 
-function hydrateBlobRefContent(text: string | undefined, workspaceRoot?: string): string | undefined {
+function hydrateBlobRefContentForConversation(
+  text: string | undefined,
+  workspaceRoot: string | undefined,
+  conversationId: string | undefined,
+): string | undefined {
   const normalized = String(text ?? "").trim();
   if (!normalized) return undefined;
   const blobRefMatch = normalized.match(/^summary:\s*\(see blob\)\s*\nblob_ref:\s*(.+)\s*(?:\nblob_bytes:\s*\d+)?$/m);
   if (!blobRefMatch) return normalized;
   const blobRef = String(blobRefMatch[1] ?? "").trim();
-  if (!blobRef || !workspaceRoot) return normalized;
+  const normalizedConversationId = String(conversationId ?? "").trim();
+  if (!blobRef || !workspaceRoot || !normalizedConversationId) return normalized;
+  if (path.isAbsolute(blobRef)) return normalized;
+  const blobRoot = path.resolve(workspaceRoot, ".ai-supervisor", "conversations", normalizedConversationId, "blobs");
   const blobPath = path.resolve(workspaceRoot, blobRef);
+  const relativeToBlobRoot = path.relative(blobRoot, blobPath);
+  if (!relativeToBlobRoot || relativeToBlobRoot.startsWith("..") || path.isAbsolute(relativeToBlobRoot)) {
+    return normalized;
+  }
   try {
     const blobText = fs.readFileSync(blobPath, "utf8").trim();
     return blobText || normalized;
@@ -252,14 +263,16 @@ function hydrateBlobRefContent(text: string | undefined, workspaceRoot?: string)
 
 function latestChatContentByRole(
   parsed: ReturnType<typeof parseChatMarkdown>,
+  documentText: string,
   role: string,
   workspaceRoot?: string,
 ): string | undefined {
+  const conversationId = String(frontmatterValue(documentText, "conversation_id") ?? "").trim();
   for (let i = parsed.blocks.length - 1; i >= 0; i -= 1) {
     const block = parsed.blocks[i] as any;
     if (block?.kind !== "chat") continue;
     if (String(block.role ?? "").trim() !== role) continue;
-    return hydrateBlobRefContent(String(block.content ?? "").trim(), workspaceRoot);
+    return hydrateBlobRefContentForConversation(String(block.content ?? "").trim(), workspaceRoot, conversationId);
   }
   return undefined;
 }
@@ -267,8 +280,10 @@ function latestChatContentByRole(
 function appendActiveModeContract(promptParts: string[], input: CompileInputs, parsed: ReturnType<typeof parseChatMarkdown>): void {
   const currentMode = String(input.currentMode ?? frontmatterValue(input.documentText, "mode") ?? "").trim();
   const modePayload = resolveModePayloadFromDocument(input.documentText);
-  const lastUserMessage = truncateContractText(latestChatContentByRole(parsed, "user", input.workspaceRoot));
-  const lastSupervisorMessage = truncateContractText(latestChatContentByRole(parsed, "supervisor", input.workspaceRoot));
+  const lastUserMessage = truncateContractText(latestChatContentByRole(parsed, input.documentText, "user", input.workspaceRoot));
+  const lastSupervisorMessage = truncateContractText(
+    latestChatContentByRole(parsed, input.documentText, "supervisor", input.workspaceRoot),
+  );
   const hasModePayload = Object.keys(modePayload).length > 0;
   if (!currentMode && !hasModePayload && !lastUserMessage && !lastSupervisorMessage) return;
 
@@ -375,6 +390,7 @@ export function compileIncrementalPrompt(input: CompileInputs): { prompt: Prompt
   if (skillsSection) {
     promptParts.push(skillsSection, "");
   }
+  appendActiveModeContract(promptParts, input, parsed);
   appendAgentModeContext(promptParts, input);
   appendSharedPromptContext(promptParts, input);
 
