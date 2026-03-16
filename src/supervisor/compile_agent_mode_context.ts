@@ -1,5 +1,6 @@
 import type { ProviderName } from "../providers/types.js";
 import type { ProviderFilesystemPolicy } from "../providers/filesystem_permissions.js";
+import type { ShellInvocationPolicy } from "../tools/shell_invocation_policy.js";
 import { buildModeContractJson, type SupervisorModeGuidance } from "./compile_mode_contract.js";
 
 export type AgentModeContextInput = {
@@ -10,6 +11,7 @@ export type AgentModeContextInput = {
   availableToolsMarkdown?: string;
   provider?: ProviderName;
   providerFilesystemPolicy?: ProviderFilesystemPolicy;
+  shellInvocationPolicy?: ShellInvocationPolicy;
 };
 
 function backtickedList(values: string[]): string {
@@ -60,6 +62,32 @@ function appendModePermissions(promptParts: string[], input: AgentModeContextInp
   promptParts.push("Mode Permissions (agent-visible):", "", ...lines, "");
 }
 
+function summarizeShellRule(rule: { matchType: string; pattern: string; caseSensitive?: boolean }): string {
+  const sensitivity = rule.caseSensitive === false ? " (case-insensitive)" : "";
+  return `- ${rule.matchType}: \`${rule.pattern}\`${sensitivity}`;
+}
+
+function appendShellPolicy(promptParts: string[], input: AgentModeContextInput): void {
+  const policy = input.shellInvocationPolicy;
+  if (!policy) return;
+  const allow = policy.allow ?? [];
+  const disallow = policy.disallow ?? [];
+  if (!allow.length && !disallow.length) return;
+  const lines: string[] = [];
+  lines.push("Shell command policy (enforced at runtime):");
+  if (allow.length) {
+    lines.push("- Allowed shell command shapes:");
+    for (const rule of allow) lines.push(summarizeShellRule(rule));
+  } else {
+    lines.push("- Allowed shell command shapes: none explicitly allowlisted.");
+  }
+  if (disallow.length) {
+    lines.push("- Explicitly blocked shell patterns:");
+    for (const rule of disallow) lines.push(summarizeShellRule(rule));
+  }
+  promptParts.push("Shell Policy (agent-visible):", "", ...lines, "");
+}
+
 export function appendAgentModeContext(promptParts: string[], input: AgentModeContextInput): void {
   const currentMode = String(input.currentMode ?? "").trim();
   const allowedNextModes = (input.allowedNextModes ?? []).map((entry) => String(entry ?? "").trim()).filter(Boolean);
@@ -80,6 +108,7 @@ export function appendAgentModeContext(promptParts: string[], input: AgentModeCo
     );
   }
   appendModePermissions(promptParts, input);
+  appendShellPolicy(promptParts, input);
   const availableTools = input.availableToolsMarkdown == null
     ? ""
     : String(input.availableToolsMarkdown).trim();

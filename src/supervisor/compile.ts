@@ -10,6 +10,7 @@ import type { ContextManagementStrategy } from "./context_management.js";
 import { buildModeContractJson, type SupervisorModeGuidance } from "./compile_mode_contract.js";
 import { appendAgentModeContext } from "./compile_agent_mode_context.js";
 import type { ProviderFilesystemPolicy } from "../providers/filesystem_permissions.js";
+import type { ShellInvocationPolicy } from "../tools/shell_invocation_policy.js";
 import {
   appendSharedPromptContext,
   formatFileContexts,
@@ -102,6 +103,7 @@ export type CompileInputs = {
   modeGuidanceByMode?: Record<string, SupervisorModeGuidance>;
   availableToolsMarkdown?: string;
   providerFilesystemPolicy?: ProviderFilesystemPolicy;
+  shellInvocationPolicy?: ShellInvocationPolicy;
   model?: string;
   agentsMd?: string;
   workspaceListing?: string;

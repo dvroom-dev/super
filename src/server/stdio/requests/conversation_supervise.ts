@@ -407,6 +407,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         modeGuidanceByMode: modeGuidance,
         availableToolsMarkdown: toolDefinitionsMarkdown(effectiveToolConfig),
         providerFilesystemPolicy: effectiveAgentFilesystemPolicy,
+        shellInvocationPolicy: effectiveToolConfig?.shellInvocationPolicy,
         agentRuleViolations: effectiveAgentViolations,
         model: currentModel,
         agentsMd: agentsText,

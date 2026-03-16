@@ -299,11 +299,19 @@ Actual message
         write: { allow: ["theory.md", "components.py"] },
         allowNewFiles: false,
       },
+      shellInvocationPolicy: {
+        allow: [{ matchType: "regex", pattern: "^switch_mode(\\s|$)", caseSensitive: true }],
+        disallow: [{ matchType: "regex", pattern: "(^|[^<])(?:\\d+)?>>?", caseSensitive: true }],
+      },
     };
     const result = compileFullPrompt(input);
     expect(result.promptText).toContain("Mode Contract (agent-visible):");
     expect(result.promptText).toContain("Mode Permissions (agent-visible):");
     expect(result.promptText).toContain("Provider filesystem policy (claude, enforced at runtime):");
+    expect(result.promptText).toContain("Shell Policy (agent-visible):");
+    expect(result.promptText).toContain("Allowed shell command shapes:");
+    expect(result.promptText).toContain("`^switch_mode(\\s|$)`");
+    expect(result.promptText).toContain("Explicitly blocked shell patterns:");
     expect(result.promptText).toContain("`theory.md`, `components.py`");
     expect(result.promptText).toContain("New file creation: blocked.");
     expect(result.promptText).toContain('"current_mode": "explore"');
