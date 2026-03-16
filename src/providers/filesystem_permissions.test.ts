@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { firstOutsideWorkspacePath } from "./filesystem_permissions.js";
+import { firstFilesystemPolicyViolation, firstOutsideWorkspacePath } from "./filesystem_permissions.js";
 
 const tempDirs: string[] = [];
 
@@ -71,5 +71,38 @@ describe("firstOutsideWorkspacePath", () => {
     });
 
     expect(outside).toBe(path.join(outsideDir, "secret.txt"));
+  });
+});
+
+describe("firstFilesystemPolicyViolation", () => {
+  it("does not treat stderr redirection as file creation on unrelated command paths", async () => {
+    const workspaceRoot = await makeTempDir("super-fs-policy-");
+    const playPath = path.join(workspaceRoot, "play.py");
+    await fs.writeFile(playPath, "print('ok')\n", "utf8");
+
+    const violation = firstFilesystemPolicyViolation({
+      provider: "claude",
+      workspaceRoot,
+      toolName: "Bash",
+      input: { command: "python3 model.py exec_file --game-id ls20 ./play.py 2>/dev/null" },
+      policy: { allowNewFiles: false },
+    });
+
+    expect(violation).toBeUndefined();
+  });
+
+  it("still treats shell redirection targets as create operations", async () => {
+    const workspaceRoot = await makeTempDir("super-fs-policy-");
+
+    const violation = firstFilesystemPolicyViolation({
+      provider: "claude",
+      workspaceRoot,
+      toolName: "Bash",
+      input: { command: "echo hi > ./scratch.txt" },
+      policy: { allowNewFiles: false },
+    });
+
+    expect(violation).toContain("filesystem create access blocked");
+    expect(violation).toContain(path.join(workspaceRoot, "scratch.txt"));
   });
 });

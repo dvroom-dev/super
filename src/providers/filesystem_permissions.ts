@@ -96,12 +96,41 @@ function extractShellCommandText(toolName: string, input: Record<string, unknown
   return "";
 }
 
-function detectShellMutation(commandText: string): "read" | "write" | "create" {
+function resolveShellPath(workspaceRoot: string, candidate: string): string {
+  const absoluteCandidatePath = path.isAbsolute(candidate)
+    ? path.resolve(candidate)
+    : path.resolve(workspaceRoot, candidate);
+  try {
+    return resolveRealpathLikeSync(absoluteCandidatePath, { allowMissing: true });
+  } catch {
+    return absoluteCandidatePath;
+  }
+}
+
+function extractShellRedirectionTargets(commandText: string, workspaceRoot: string): Set<string> {
+  const targets = new Set<string>();
+  const regex = /(^|[^<])(?:\d+)?>>?\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|[^\s"'`|&;]+)/g;
+  for (const match of commandText.matchAll(regex)) {
+    const rawTarget = normalizePathToken(match[2] ?? "");
+    if (!rawTarget) continue;
+    if (rawTarget.startsWith("&")) continue;
+    targets.add(resolveShellPath(workspaceRoot, rawTarget));
+  }
+  return targets;
+}
+
+function detectShellMutation(args: {
+  commandText: string;
+  workspaceRoot: string;
+  candidatePath: string;
+}): "read" | "write" | "create" {
+  const { commandText, workspaceRoot, candidatePath } = args;
   const normalized = commandText.toLowerCase();
+  const redirectionTargets = extractShellRedirectionTargets(commandText, workspaceRoot);
   if (
     /\b(mkdir|touch|install)\b/.test(normalized)
-    || />{1,2}/.test(commandText)
     || /\btee\b/.test(normalized)
+    || redirectionTargets.has(candidatePath)
   ) {
     return "create";
   }
@@ -187,7 +216,11 @@ function classifyToolOperation(args: {
   }
   if (lowerName === "bash") {
     const commandText = extractShellCommandText(args.toolName, args.input);
-    return detectShellMutation(commandText);
+    return detectShellMutation({
+      commandText,
+      workspaceRoot: args.workspaceRoot,
+      candidatePath: args.candidatePath,
+    });
   }
   return undefined;
 }
