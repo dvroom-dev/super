@@ -38,6 +38,7 @@ export function interjectionTriggerForReview(
   if (reviewTrigger === "agent_error") return "agent_error";
   if (reviewTrigger === "agent_tool_intercept") return "agent_tool_intercept";
   if (reviewTrigger === "agent_switch_mode_request") return "agent_switch_mode_request";
+  if (reviewTrigger === "agent_wrapup_certification_request") return "agent_wrapup_certification_request";
   return "agent_check_supervisor";
 }
 

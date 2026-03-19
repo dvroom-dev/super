@@ -150,6 +150,23 @@ supervisor:
           text: |
             Supervisor guidance:
             {{message}}
+    agent_wrapup_certification_request:
+      supervisor_prompt:
+        operation: append
+        parts:
+          - literal: |
+              Trigger context:
+              - Trigger: `agent_wrapup_certification_request`.
+              - Why this review ran: the agent requested solved-level wrap-up certification without a mode transition.
+              - Decide whether wrap-up should be certified now, rejected with guidance, redirected into another mode, or stopped.
+          - builtin: message_templates
+      message_templates:
+        - name: replace_wrapup_certification_with_guidance
+          description: "Replace the wrap-up certification request with direct guidance."
+          message_type: user
+          text: |
+            Supervisor guidance:
+            {{message}}
     cadence:
       supervisor_prompt:
         operation: append

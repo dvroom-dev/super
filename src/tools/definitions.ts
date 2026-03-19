@@ -8,6 +8,7 @@ export type BuiltinToolName =
   | "apply_patch"
   | "paginate_tool_response"
   | "check_supervisor"
+  | "certify_wrapup"
   | "switch_mode";
 
 export type ToolPolicyMode = "allow" | "deny";
@@ -37,6 +38,7 @@ const BUILTIN_DEFINITIONS: Record<BuiltinToolName, string> = {
   apply_patch: "{ command: string[] }",
   paginate_tool_response: "{ id: string, page?: number }",
   check_supervisor: "{ mode?: \"hard\" | \"soft\" }",
+  certify_wrapup: "{ wrapup_level: number, reason: string, user_message?: string }",
   switch_mode: "{ target_mode: string, reason: string, mode_payload?: object, terminal?: boolean }",
 };
 
@@ -48,6 +50,7 @@ const BUILTIN_TOOL_ORDER: BuiltinToolName[] = [
   "apply_patch",
   "paginate_tool_response",
   "check_supervisor",
+  "certify_wrapup",
   "switch_mode",
 ];
 

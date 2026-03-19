@@ -9,7 +9,7 @@ export type ProviderToolInterceptionEvent = {
   outputText?: string;
 };
 
-const RUNTIME_INLINE_PROVIDER_TOOLS = new Set(["switch_mode", "check_supervisor", "check_rules"]);
+const RUNTIME_INLINE_PROVIDER_TOOLS = new Set(["switch_mode", "check_supervisor", "check_rules", "certify_wrapup"]);
 const SWITCH_MODE_BASH_TOOL_NAMES = new Set(["bash", "shell"]);
 
 function normalizeRuntimeInlineToolName(name: string): string {

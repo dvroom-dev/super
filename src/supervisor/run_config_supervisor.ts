@@ -8,6 +8,7 @@ export type SupervisorInterjectionTrigger =
   | "agent_compaction"
   | "agent_error"
   | "agent_check_supervisor"
+  | "agent_wrapup_certification_request"
   | "agent_tool_intercept"
   | "agent_switch_mode_request"
   | "cadence";
@@ -95,6 +96,7 @@ const SUPERVISOR_INTERJECTION_TRIGGER_ALIASES: Record<string, SupervisorInterjec
   agent_compaction: "agent_compaction",
   agent_error: "agent_error",
   agent_check_supervisor: "agent_check_supervisor",
+  agent_wrapup_certification_request: "agent_wrapup_certification_request",
   agent_tool_intercept: "agent_tool_intercept",
   agent_switch_mode_request: "agent_switch_mode_request",
   cadence: "cadence",
@@ -228,6 +230,7 @@ const TEMPLATE_GROUP_ORDER: SupervisorInterjectionTrigger[] = [
   "agent_compaction",
   "agent_error",
   "agent_check_supervisor",
+  "agent_wrapup_certification_request",
   "agent_tool_intercept",
   "agent_switch_mode_request",
   "cadence",

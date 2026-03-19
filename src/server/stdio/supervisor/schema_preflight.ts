@@ -14,6 +14,7 @@ function collectPreflightTemplateSpecs(args: {
     { reviewTrigger: "agent_yield", supervisorMode: "soft" },
     { reviewTrigger: "agent_error", supervisorMode: "hard" },
     { reviewTrigger: "agent_check_supervisor", supervisorMode: "hard" },
+    { reviewTrigger: "agent_wrapup_certification_request", supervisorMode: "hard" },
     { reviewTrigger: "agent_tool_intercept", supervisorMode: "hard" },
     { reviewTrigger: "agent_switch_mode_request", supervisorMode: "hard" },
   ];
