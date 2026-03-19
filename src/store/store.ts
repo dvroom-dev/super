@@ -260,6 +260,7 @@ export class SupervisorStore {
     actions?: SupervisorAction[];
     actionSummary?: string;
     agentModel?: string;
+    supervisorProviderName?: string;
     supervisorModel?: string;
   }): Promise<ForkMeta> {
     const forkId = params.forkId ?? newId("fork");
@@ -296,6 +297,7 @@ export class SupervisorStore {
       providerThreadId: params.providerThreadId,
       supervisorThreadId: params.supervisorThreadId,
       providerName: params.providerName,
+      supervisorProviderName: params.supervisorProviderName,
       model: params.model,
       agentModel: params.agentModel,
       supervisorModel: params.supervisorModel,
@@ -358,6 +360,7 @@ export class SupervisorStore {
       providerThreadId: fork.providerThreadId,
       supervisorThreadId: fork.supervisorThreadId,
       providerName: fork.providerName,
+      supervisorProviderName: fork.supervisorProviderName,
       model: fork.model,
       agentModel: fork.agentModel,
       supervisorModel: fork.supervisorModel,

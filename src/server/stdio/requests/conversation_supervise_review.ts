@@ -591,6 +591,7 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
     documentText: nextDocWithModePayload,
     agentRules: persistedAgentRules,
     providerName: args.providerName,
+    supervisorProviderName: args.supervisorProviderName,
     model: persistedModel,
     providerThreadId: nextThreadId,
     supervisorThreadId: nextSupervisorThreadId,

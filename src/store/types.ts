@@ -40,6 +40,7 @@ export type ForkMeta = {
   // Supervisor provider thread/session id used for continuation (optional)
   supervisorThreadId?: string;
   providerName?: string;
+  supervisorProviderName?: string;
   model?: string;
   agentModel?: string;
   supervisorModel?: string;
@@ -60,6 +61,7 @@ export type ForkSummary = {
   providerThreadId?: string;
   supervisorThreadId?: string;
   providerName?: string;
+  supervisorProviderName?: string;
   model?: string;
   agentModel?: string;
   supervisorModel?: string;

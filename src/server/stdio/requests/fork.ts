@@ -94,6 +94,7 @@ export async function handleForkTree(ctx: RuntimeContext, params: any) {
       actions: f.actions,
       model: f.model,
       providerName: f.providerName,
+      supervisorProviderName: f.supervisorProviderName,
       agentModel: f.agentModel,
       supervisorModel: f.supervisorModel,
     })),

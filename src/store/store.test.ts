@@ -216,7 +216,9 @@ Only assistant
         documentText: "```chat role=user\nTest message\n```",
         agentRules: ["rule1", "check1"],
         providerName: "codex",
+        supervisorProviderName: "claude",
         model: "gpt-4",
+        supervisorModel: "gpt-5.3-codex",
       });
 
       expect(fork.id).toMatch(/^fork_/);
@@ -225,7 +227,9 @@ Only assistant
       expect(fork.storage).toBe("snapshot");
       expect(fork.agentRules).toEqual(["rule1", "check1"]);
       expect(fork.providerName).toBe("codex");
+      expect(fork.supervisorProviderName).toBe("claude");
       expect(fork.model).toBe("gpt-4");
+      expect(fork.supervisorModel).toBe("gpt-5.3-codex");
       expect(fork.createdAt).toBeDefined();
     });
 

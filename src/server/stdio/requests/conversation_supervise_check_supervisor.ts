@@ -29,6 +29,10 @@ type InlineCheckSupervisorOutcome =
 
 export async function applyInlineCheckSupervisorOutcome(args: {
   review: SupervisorReviewResult | undefined;
+  reviewTrigger?: "agent_check_supervisor" | "agent_wrapup_certification_request";
+  stopReason?: string;
+  reasonLabel?: string;
+  detailLabel?: string;
   state: InlineState;
   ctx: RuntimeContext;
   workspaceRoot: string;
@@ -47,13 +51,18 @@ export async function applyInlineCheckSupervisorOutcome(args: {
   startedAt: number;
   budget: BudgetState;
   providerName: "mock" | "codex" | "claude";
+  supervisorProviderName: "mock" | "codex" | "claude";
   currentModel: string;
   supervisorModel: string;
   effectiveAgentRequirements: string[];
 }): Promise<InlineCheckSupervisorOutcome> {
   if (!args.review) return { kind: "continue" };
+  const reviewTrigger = args.reviewTrigger ?? "agent_check_supervisor";
+  const stopReason = args.stopReason ?? "check_supervisor";
+  const reasonLabel = args.reasonLabel ?? "check_supervisor";
+  const detailLabel = args.detailLabel ?? "check_supervisor requested fork";
   if (args.review.decision === "stop_and_return") {
-    const reason = args.review.payload.reason || "check_supervisor requested stop";
+    const reason = args.review.payload.reason || `${stopReason} requested stop`;
     const persisted = await persistAgentTurnWithoutSupervisor({
       ctx: args.ctx,
       workspaceRoot: args.workspaceRoot,
@@ -73,11 +82,15 @@ export async function applyInlineCheckSupervisorOutcome(args: {
       kind: "stop",
       currentDocText: persisted.nextDocText,
       nextForkId: persisted.nextForkId,
-      stopReasons: ["check_supervisor"],
+      stopReasons: [stopReason],
       stopDetails: [reason],
     };
   }
   if (args.review.decision !== "fork_new_conversation" && args.review.decision !== "resume_mode_head") {
+    if (args.review.decision === "continue" && args.review.transition_payload) {
+      args.state.activeTransitionPayload = { ...args.review.transition_payload };
+      args.state.fullResyncNeeded = true;
+    }
     return { kind: "continue" };
   }
   const switchFork = await applySupervisorForkDecision({
@@ -96,11 +109,12 @@ export async function applyInlineCheckSupervisorOutcome(args: {
     activeMode: args.activeMode,
     allowedNextModes: args.allowedNextModes,
     review: args.review,
-    reasonLabel: "check_supervisor",
-    detailLabel: "check_supervisor requested fork",
+    reasonLabel,
+    detailLabel,
     startedAt: args.startedAt,
     budget: args.budget,
     providerName: args.providerName,
+    supervisorProviderName: args.supervisorProviderName,
     currentModel: args.currentModel,
     supervisorModel: args.supervisorModel,
     currentDocText: args.state.currentDocText,

@@ -152,6 +152,7 @@ export async function applySupervisorForkDecision(args: {
   startedAt: number;
   budget: BudgetState;
   providerName: "mock" | "codex" | "claude";
+  supervisorProviderName?: "mock" | "codex" | "claude";
   currentModel: string;
   supervisorModel: string;
   currentDocText?: string;
@@ -237,6 +238,7 @@ export async function applySupervisorForkDecision(args: {
       documentText: checkpointDoc,
       agentRules: currentFork.agentRules ?? [],
       providerName: args.providerName,
+      supervisorProviderName: args.supervisorProviderName,
       model: args.currentModel,
       providerThreadId: currentThreadId,
       supervisorThreadId: currentSupervisorThreadId,
@@ -306,6 +308,7 @@ export async function applySupervisorForkDecision(args: {
         documentText: freshDoc,
         agentRules: nextModeRuleSet.requirements,
         providerName: args.providerName,
+        supervisorProviderName: args.supervisorProviderName,
         model: args.currentModel,
         providerThreadId: undefined,
         supervisorThreadId: args.currentSupervisorThreadId,
@@ -370,6 +373,7 @@ export async function applySupervisorForkDecision(args: {
       documentText: nextDoc,
       agentRules: targetModeFork.agentRules ?? [],
       providerName: args.providerName,
+      supervisorProviderName: args.supervisorProviderName,
       model: args.currentModel,
       providerThreadId: targetModeFork.providerThreadId,
       supervisorThreadId: args.currentSupervisorThreadId,
@@ -448,6 +452,7 @@ export async function applySupervisorForkDecision(args: {
     documentText: nextDoc,
     agentRules: nextModeRuleSet.requirements,
     providerName: args.providerName,
+    supervisorProviderName: args.supervisorProviderName,
     model: args.currentModel,
     providerThreadId: undefined,
     supervisorThreadId: args.currentSupervisorThreadId,

@@ -52,6 +52,7 @@ type ApplySwitchModeRequestForkArgs = {
   supervisorBaseDir: string;
   budget: BudgetState;
   providerName: "mock" | "codex" | "claude";
+  supervisorProviderName?: "mock" | "codex" | "claude";
   currentModel: string;
   supervisorModel: string;
   currentSupervisorThreadId?: string;
@@ -326,6 +327,7 @@ export async function applySwitchModeRequestFork(
       documentText: nextDoc,
       agentRules: targetModeFork.agentRules ?? nextModeRuleSet.requirements,
       providerName: args.providerName,
+      supervisorProviderName: args.supervisorProviderName,
       model: args.currentModel,
       providerThreadId: targetModeFork.providerThreadId,
       supervisorThreadId: args.currentSupervisorThreadId,
@@ -378,6 +380,7 @@ export async function applySwitchModeRequestFork(
     documentText: forkDoc,
     agentRules: nextModeRuleSet.requirements,
     providerName: args.providerName,
+    supervisorProviderName: args.supervisorProviderName,
     model: args.currentModel,
     providerThreadId: undefined,
     supervisorThreadId: args.currentSupervisorThreadId,

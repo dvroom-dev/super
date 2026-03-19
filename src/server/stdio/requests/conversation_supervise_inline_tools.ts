@@ -138,6 +138,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
   };
 
   let checkSupervisorReview: SupervisorReviewResult | undefined;
+  let wrapupCertificationReview: SupervisorReviewResult | undefined;
   for (let i = 0; i < toolCalls.length; i += 1) {
     const call = toolCalls[i];
     const toolName = normalizeInlineToolName(call.name);
@@ -175,6 +176,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
           modePayloadFieldsByMode: args.modePayloadFieldsByMode,
           budget: args.budget,
           providerName: args.providerName,
+          supervisorProviderName: args.supervisorProviderName,
           currentModel: args.currentModel,
           supervisorModel: args.supervisorModel,
           currentSupervisorThreadId: args.currentSupervisorThreadId,
@@ -289,6 +291,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
         startedAt: args.startedAt,
         budget: args.budget,
         providerName: args.providerName,
+        supervisorProviderName: args.supervisorProviderName,
         currentModel: args.currentModel,
         supervisorModel: args.supervisorModel,
         currentDocText: nextDocText,
@@ -365,6 +368,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
           supervisorBaseDir: args.supervisorBaseDir,
           budget: args.budget,
           providerName: args.providerName,
+          supervisorProviderName: args.supervisorProviderName,
           currentModel: args.currentModel,
           supervisorModel: args.supervisorModel,
           currentSupervisorThreadId: nextSupervisorThreadId,
@@ -444,7 +448,10 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
     });
     appendInlineMarkdown(execution.markdown);
     if (execution.supervisorThreadId) nextSupervisorThreadId = execution.supervisorThreadId;
-    if (execution.supervisorReview) checkSupervisorReview = execution.supervisorReview;
+    if (execution.supervisorReview) {
+      if (toolName === "certify_wrapup") wrapupCertificationReview = execution.supervisorReview;
+      else checkSupervisorReview = execution.supervisorReview;
+    }
     const responseOutputText = [String(execution.output ?? "").trim(), execution.error ? `[error]\n${execution.error}` : ""].filter(Boolean).join("\n\n").trim();
     const responseMatch = toolInterceptionEnabled ? matchInlineToolInterceptionResponse({ context: interceptContext, rules: toolInterceptionRules, outputText: responseOutputText }) : undefined;
     if (responseMatch) {
@@ -497,6 +504,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
     startedAt: args.startedAt,
     budget: args.budget,
     providerName: args.providerName,
+    supervisorProviderName: args.supervisorProviderName,
     currentModel: args.currentModel,
     supervisorModel: args.supervisorModel,
     effectiveAgentRequirements: args.effectiveAgentRequirements,
@@ -507,6 +515,49 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
   nextTransitionPayload = checkSupervisorState.activeTransitionPayload;
   nextResync = checkSupervisorState.fullResyncNeeded;
   if (checkSupervisorOutcome.kind === "stop") return checkSupervisorOutcome;
+
+  const wrapupCertificationState = {
+    currentDocText: nextDocText,
+    currentThreadId: nextThreadId,
+    currentSupervisorThreadId: nextSupervisorThreadId,
+    activeTransitionPayload: nextTransitionPayload,
+    fullResyncNeeded: nextResync,
+  };
+  const wrapupCertificationOutcome = await applyInlineCheckSupervisorOutcome({
+    review: wrapupCertificationReview,
+    reviewTrigger: "agent_wrapup_certification_request",
+    stopReason: "certify_wrapup",
+    reasonLabel: "agent_wrapup_certification_request",
+    detailLabel: "certify_wrapup requested fork",
+    state: wrapupCertificationState,
+    ctx: args.ctx,
+    workspaceRoot: args.workspaceRoot,
+    docPath: args.docPath,
+    conversationId: args.conversationId,
+    activeForkId: args.activeForkId,
+    switchActiveFork: args.switchActiveFork,
+    renderedRunConfig: args.renderedRunConfig,
+    runConfigPath: args.runConfigPath,
+    configBaseDir: args.configBaseDir,
+    agentBaseDir: args.agentBaseDir,
+    supervisorBaseDir: args.supervisorBaseDir,
+    requestAgentRuleRequirements: args.requestAgentRuleRequirements,
+    activeMode: args.activeMode,
+    allowedNextModes: args.allowedNextModes,
+    startedAt: args.startedAt,
+    budget: args.budget,
+    providerName: args.providerName,
+    supervisorProviderName: args.supervisorProviderName,
+    currentModel: args.currentModel,
+    supervisorModel: args.supervisorModel,
+    effectiveAgentRequirements: args.effectiveAgentRequirements,
+  });
+  nextDocText = wrapupCertificationState.currentDocText;
+  nextThreadId = wrapupCertificationState.currentThreadId;
+  nextSupervisorThreadId = wrapupCertificationState.currentSupervisorThreadId;
+  nextTransitionPayload = wrapupCertificationState.activeTransitionPayload;
+  nextResync = wrapupCertificationState.fullResyncNeeded;
+  if (wrapupCertificationOutcome.kind === "stop") return wrapupCertificationOutcome;
 
   args.budget.cadenceAnchorAt = Date.now();
   args.budget.cadenceTokensAnchor = args.budget.adjustedTokensUsed;
