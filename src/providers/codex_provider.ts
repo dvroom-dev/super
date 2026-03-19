@@ -36,6 +36,13 @@ type CodexProviderDeps = { appServerFactory?: (options: CodexAppServerClientOpti
 const SUPER_CUSTOM_TOOL_MCP_SERVER = "super_custom_tools";
 const CUSTOM_TOOLS_MCP_SERVER_SCRIPT = fileURLToPath(new URL("../bin/custom_tools_mcp_server.ts", import.meta.url));
 const COMPACTION_TIMEOUT_MS = 120000;
+const DEFAULT_CODEX_DISALLOWED_TOOLS = [
+  "mcpToolCall",
+  "read_mcp_resource",
+  "list_mcp_resources",
+  "resources/read",
+  "resources/list",
+];
 const RELEVANT_TURN_NOTIFICATION_METHODS = new Set([
   "turn/started",
   "turn/completed",
@@ -143,6 +150,14 @@ export class CodexProvider implements AgentProvider {
     let mergedConfig = customToolConfig
       ? mergeRecords(mergeRecords(defaultProviderOptions, providerOptions), customToolConfig)
       : mergeRecords(defaultProviderOptions, providerOptions);
+    const configuredDisallowedTools = Array.isArray(mergedConfig.disallowedTools)
+      ? mergedConfig.disallowedTools
+          .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+          .filter(Boolean)
+      : [];
+    mergedConfig = mergeRecords(mergedConfig, {
+      disallowedTools: Array.from(new Set([...configuredDisallowedTools, ...DEFAULT_CODEX_DISALLOWED_TOOLS])),
+    });
     if (this.config.modelReasoningEffort) {
       mergedConfig = mergeRecords(mergedConfig, {
         model_reasoning_effort: this.config.modelReasoningEffort,

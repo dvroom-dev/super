@@ -80,17 +80,69 @@ describe("applySdkBuiltinToolsToProviderOptions", () => {
       })).toThrow("sdk_builtin_tools.claude.allow conflicts with provider_options.claude.tools");
   });
 
-  it("rejects unsupported codex sdk tool policy", () => {
+  it("applies codex allow policy as allowedTools", () => {
+    const options = applySdkBuiltinToolsToProviderOptions({
+      provider: "codex",
+      providerOptions: { debug: true },
+      sdkBuiltinTools: {
+        codex: {
+          mode: "allow",
+          names: ["Bash", "Read"],
+        },
+      },
+    });
+    expect(options).toEqual({
+      debug: true,
+      allowedTools: ["commandExecution"],
+    });
+  });
+
+  it("maps codex file-editing allow policy to fileChange", () => {
+    const options = applySdkBuiltinToolsToProviderOptions({
+      provider: "codex",
+      providerOptions: { debug: true },
+      sdkBuiltinTools: {
+        codex: {
+          mode: "allow",
+          names: ["Read", "Edit", "MultiEdit", "Write"],
+        },
+      },
+    });
+    expect(options).toEqual({
+      debug: true,
+      allowedTools: ["commandExecution", "fileChange"],
+    });
+  });
+
+  it("applies codex deny policy as disallowedTools", () => {
+    const options = applySdkBuiltinToolsToProviderOptions({
+      provider: "codex",
+      providerOptions: { debug: true },
+      sdkBuiltinTools: {
+        codex: {
+          mode: "deny",
+          names: ["Task", "WebSearch"],
+        },
+      },
+    });
+    expect(options).toEqual({
+      debug: true,
+      disallowedTools: ["Task", "WebSearch"],
+    });
+  });
+
+  it("rejects conflicting codex allow/deny values across provider options and sdk policy", () => {
     expect(() =>
       applySdkBuiltinToolsToProviderOptions({
         provider: "codex",
+        providerOptions: { disallowedTools: ["Task"] },
         sdkBuiltinTools: {
           codex: {
             mode: "allow",
-            names: ["shell"],
+            names: ["Read"],
           },
         },
-      })).toThrow("sdk_builtin_tools.codex is not supported");
+      })).toThrow("sdk_builtin_tools.codex.allow conflicts with provider_options.codex.disallowedTools");
   });
 
   it("rejects missing active provider policy when another provider is configured", () => {

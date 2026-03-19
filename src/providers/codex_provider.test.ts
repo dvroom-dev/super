@@ -371,6 +371,13 @@ describe("CodexProvider", () => {
       show_raw_agent_reasoning: false,
       hide_hard_reasoning: false,
       model_reasoning_summary: "none",
+      disallowedTools: [
+        "mcpToolCall",
+        "read_mcp_resource",
+        "list_mcp_resources",
+        "resources/read",
+        "resources/list",
+      ],
     });
   });
 
@@ -396,6 +403,13 @@ describe("CodexProvider", () => {
       show_raw_agent_reasoning: true,
       hide_hard_reasoning: false,
       model_reasoning_summary: "detailed",
+      disallowedTools: [
+        "mcpToolCall",
+        "read_mcp_resource",
+        "list_mcp_resources",
+        "resources/read",
+        "resources/list",
+      ],
     });
   });
 
@@ -420,6 +434,13 @@ describe("CodexProvider", () => {
       show_raw_agent_reasoning: true,
       hide_hard_reasoning: false,
       model_reasoning_summary: "detailed",
+      disallowedTools: [
+        "mcpToolCall",
+        "read_mcp_resource",
+        "list_mcp_resources",
+        "resources/read",
+        "resources/list",
+      ],
     });
   });
 
@@ -508,6 +529,74 @@ describe("CodexProvider", () => {
     const config = (factoryCalls[0]?.configOverrides ?? {}) as Record<string, any>;
     expect(config.mcp_servers?.existing_server?.command).toBe("/bin/echo");
     expect(config.mcp_servers?.super_custom_tools).toBeTruthy();
+  });
+
+  it("passes codex allowedTools provider options through to app-server config overrides", async () => {
+    const fakeClient = new FakeAppServerClient();
+    fakeClient.setHandler("thread/start", () => ({ thread: { id: "thread_allowed_tools" } }));
+    fakeClient.setHandler("turn/start", () => {
+      queueMicrotask(() => {
+        fakeClient.emit("turn/completed", {
+          threadId: "thread_allowed_tools",
+          turn: { id: "turn_allowed_tools", status: "completed" },
+        });
+      });
+      return { turn: { id: "turn_allowed_tools" } };
+    });
+    const factoryCalls: CodexAppServerClientOptions[] = [];
+    const provider = createProvider(
+      {
+        ...baseConfig,
+        providerOptions: {
+          allowedTools: ["Bash", "Read", "Edit"],
+        },
+      },
+      factoryCalls,
+      fakeClient,
+    );
+
+    await provider.runOnce(promptContentFromText("allowed tools"));
+
+    const config = (factoryCalls[0]?.configOverrides ?? {}) as Record<string, any>;
+    expect(config.allowedTools).toEqual(["Bash", "Read", "Edit"]);
+    expect(config.disallowedTools).toEqual(
+      expect.arrayContaining([
+        "mcpToolCall",
+        "read_mcp_resource",
+        "list_mcp_resources",
+        "resources/read",
+        "resources/list",
+      ]),
+    );
+  });
+
+  it("disables codex MCP resource tools by default when no allowlist is configured", async () => {
+    const fakeClient = new FakeAppServerClient();
+    fakeClient.setHandler("thread/start", () => ({ thread: { id: "thread_no_mcp" } }));
+    fakeClient.setHandler("turn/start", () => {
+      queueMicrotask(() => {
+        fakeClient.emit("turn/completed", {
+          threadId: "thread_no_mcp",
+          turn: { id: "turn_no_mcp", status: "completed" },
+        });
+      });
+      return { turn: { id: "turn_no_mcp" } };
+    });
+    const factoryCalls: CodexAppServerClientOptions[] = [];
+    const provider = createProvider(baseConfig, factoryCalls, fakeClient);
+
+    await provider.runOnce(promptContentFromText("no mcp tools"));
+
+    const config = (factoryCalls[0]?.configOverrides ?? {}) as Record<string, any>;
+    expect(config.disallowedTools).toEqual(
+      expect.arrayContaining([
+        "mcpToolCall",
+        "read_mcp_resource",
+        "list_mcp_resources",
+        "resources/read",
+        "resources/list",
+      ]),
+    );
   });
 
   it("uses approval callbacks to block matching shell commands when shell policy is configured", async () => {
