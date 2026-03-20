@@ -1,0 +1,573 @@
+schema_version: 2
+
+runtime_defaults:
+  supervisor_provider: codex
+  supervisor_model: gpt-5.4
+  default_worker_profile: spatial-analysis
+  conversation_strategy: mixed
+
+models:
+  fast_reader:
+    provider: codex
+    model: gpt-5.4-mini
+    reasoning_effort: low
+    strengths:
+      - artifact summarization
+      - schema-bound extraction
+      - lightweight follow-up
+    weaknesses:
+      - frontier synthesis
+      - long-horizon contradiction handling
+    relative_cost: low
+    max_parallelism: 4
+
+  frontier_reasoner:
+    provider: claude
+    model: claude-opus-4-6
+    reasoning_effort: high
+    strengths:
+      - contradiction resolution
+      - frontier mechanic synthesis
+      - long-form task execution
+    weaknesses:
+      - broad uncontrolled workflows
+    relative_cost: high
+    max_parallelism: 2
+
+  code_repair:
+    provider: codex
+    model: gpt-5.4
+    reasoning_effort: high
+    strengths:
+      - code patching
+      - parity debugging
+      - artifact-driven repair
+    weaknesses:
+      - unconstrained visual theorizing
+    relative_cost: medium
+    max_parallelism: 2
+
+  critique:
+    provider: codex
+    model: gpt-5.4
+    reasoning_effort: medium
+    strengths:
+      - second-opinion critique
+      - contradiction finding
+    weaknesses:
+      - owning the primary workflow
+    relative_cost: medium
+    max_parallelism: 2
+
+tools:
+  arc_status:
+    kind: shell
+    description: Read the authoritative current game state.
+    command: arc_repl status --game-id "${vars.game_id}"
+    examples:
+      - arc_repl status --game-id "${vars.game_id}"
+    parse_as: json
+    mutates_state: false
+    categories: [game-state, authoritative]
+
+  arc_exec:
+    kind: shell
+    description: Execute one or more game actions in the live game.
+    command: arc_repl exec --game-id "${vars.game_id}"
+    examples:
+      - printf '%s' 'env.step(GameAction.ACTION1)' | arc_repl exec --game-id "${vars.game_id}"
+    parse_as: json
+    mutates_state: true
+    categories: [game-action, authoritative]
+
+  arc_reset:
+    kind: shell
+    description: Reset the current real-game level.
+    command: arc_repl reset_level --game-id "${vars.game_id}"
+    examples:
+      - arc_repl reset_level --game-id "${vars.game_id}"
+    parse_as: json
+    mutates_state: true
+    categories: [recovery, authoritative]
+
+  compare_sequences:
+    kind: shell
+    description: Compare model behavior against recorded real-game sequences.
+    command: python3 model.py compare_sequences --game-id "${vars.game_id}"
+    examples:
+      - python3 model.py compare_sequences --game-id "${vars.game_id}"
+    parse_as: json
+    mutates_state: false
+    categories: [model, validator]
+
+  model_exec_file:
+    kind: shell
+    description: Run the model-driven branch in play.py.
+    command: python3 model.py exec_file --game-id "${vars.game_id}" play.py
+    examples:
+      - python3 model.py exec_file --game-id "${vars.game_id}" play.py
+    parse_as: json
+    mutates_state: true
+    categories: [model, proof]
+
+  component_coverage:
+    kind: shell
+    description: Validate that current component definitions cover all seen states for the level.
+    command: python3 inspect_components.py --coverage --level "${state.visible_level}"
+    examples:
+      - python3 inspect_components.py --coverage --level 3
+    parse_as: json
+    mutates_state: false
+    categories: [components, validator]
+
+  inspect_sequence:
+    kind: shell
+    description: Inspect current compare mismatch details.
+    command: python3 inspect_sequence.py --current-mismatch
+    examples:
+      - python3 inspect_sequence.py --current-mismatch
+    parse_as: text
+    mutates_state: false
+    categories: [compare, debugging]
+
+  inspect_grid_slice:
+    kind: shell
+    description: Read a targeted slice of a grid artifact.
+    command: python3 inspect_grid_slice.py --file "${args.file}" --rows "${args.rows}" --cols "${args.cols}"
+    examples:
+      - python3 inspect_grid_slice.py --file level_current/current_state.hex --rows 0:20 --cols 0:20
+    parse_as: text
+    mutates_state: false
+    categories: [artifact-reading]
+
+  inspect_grid_values:
+    kind: shell
+    description: Find all positions of specific values in a grid artifact.
+    command: python3 inspect_grid_values.py --file "${args.file}" --value "${args.value}"
+    examples:
+      - python3 inspect_grid_values.py --file level_current/current_state.hex --value C --value 9
+    parse_as: text
+    mutates_state: false
+    categories: [artifact-reading]
+
+validators:
+  action_vocabulary_minimum:
+    description: Confirm that the run has enough action-linked evidence to name the primary movement semantics.
+    run:
+      command: arc_repl status --game-id "${vars.game_id}"
+      cwd_scope: workspace
+    parse:
+      mode: json
+    pass_when: ledger.action_vocabulary.primary_movement_confirmed == true
+    failure_summary: Action vocabulary is still underspecified.
+
+  feature_coverage:
+    description: Require detector coverage before feature reasoning may progress.
+    run:
+      command: python3 inspect_components.py --coverage --level "${state.visible_level}"
+      cwd_scope: workspace
+    parse:
+      mode: json
+    pass_when: json.status == "pass"
+    failure_summary: Component coverage is incomplete or failing.
+
+  model_compare:
+    description: Require compare-clean on explored sequences before parity is considered healthy.
+    run:
+      command: python3 model.py compare_sequences --game-id "${vars.game_id}"
+      cwd_scope: workspace
+    parse:
+      mode: json
+    pass_when: json.ok == true and json.all_match == true
+    failure_summary: Model parity is still red or compare failed.
+
+  model_proof:
+    description: Check whether the current deterministic branch is internally consistent in the model.
+    run:
+      command: python3 model.py exec_file --game-id "${vars.game_id}" play.py
+      cwd_scope: workspace
+    parse:
+      mode: json
+    pass_when: json.ok == true or json.error.message contains "missing initial_state.hex for level"
+    failure_summary: Model proof did not support the current branch.
+
+  real_replay_result:
+    description: Check the real-game replay result after a solve attempt.
+    run:
+      command: arc_repl status --game-id "${vars.game_id}"
+      cwd_scope: workspace
+    parse:
+      mode: json
+    pass_when: json.levels_completed > state.levels_completed_before_attempt
+    failure_summary: Real-game replay did not advance the level.
+
+task_profiles:
+  action-vocabulary:
+    description: Establish action semantics with minimal real-game probes.
+    preferred_models: [frontier_reasoner, fast_reader]
+    tools:
+      allow: [arc_status, arc_exec, inspect_grid_slice, inspect_grid_values]
+    context:
+      recipe:
+        - process_ledger
+        - latest_live_state
+        - latest_action_history_summary
+        - current_theory_summary
+    worker_contract:
+      output_schema:
+        type: object
+        required: [outcome, action_updates, proposed_probe]
+      forbidden_conclusions:
+        - Do not claim a full mechanic from static inspection alone.
+      required_citations:
+        - cite action-linked evidence for each claimed action meaning
+    validation_loop:
+      after_turn: [action_vocabulary_minimum]
+      on_failure:
+        resume_strategy: fork_fresh
+        inject_validator_output_as: user_message
+      on_success:
+        update_ledger: true
+
+  spatial-analysis:
+    description: Identify and define visible features and verify detector coverage.
+    preferred_models: [frontier_reasoner, fast_reader]
+    tools:
+      allow: [arc_status, inspect_grid_slice, inspect_grid_values, component_coverage]
+    context:
+      recipe:
+        - process_ledger
+        - visible_level_state
+        - component_definitions
+        - prior_level_feature_summary
+    worker_contract:
+      output_schema:
+        type: object
+        required: [outcome, feature_updates, open_questions]
+      forbidden_conclusions:
+        - Do not rule out a newly introduced feature without action-linked evidence.
+        - Do not call a frontier-level color/value decorative by static reasoning alone.
+      required_citations:
+        - cite exact artifact slices for each new feature definition
+    validation_loop:
+      after_turn: [feature_coverage]
+      on_failure:
+        resume_strategy: same_conversation
+        inject_validator_output_as: user_message
+      on_success:
+        update_ledger: true
+
+  mechanic-probing:
+    description: Run bounded real-game probes to resolve feature purpose and frontier deltas.
+    preferred_models: [frontier_reasoner]
+    tools:
+      allow: [arc_status, arc_exec, arc_reset, inspect_grid_slice, inspect_grid_values]
+    context:
+      recipe:
+        - process_ledger
+        - active_feature_questions
+        - latest_live_state
+        - recent_probe_results
+    worker_contract:
+      output_schema:
+        type: object
+        required: [outcome, evidence_updates, next_probe_or_stop]
+      forbidden_conclusions:
+        - Do not say a feature is non-gating without a discriminating probe.
+        - Do not keep probing inherited mechanics while a new frontier delta is unexplained.
+      required_citations:
+        - cite exact turn/action evidence
+    validation_loop:
+      after_turn: [real_replay_result]
+      on_failure:
+        resume_strategy: same_conversation
+        inject_validator_output_as: user_message
+      on_success:
+        update_ledger: true
+
+  model-repair:
+    description: Patch model mechanics, detectors, or branches to match explored evidence.
+    preferred_models: [code_repair]
+    tools:
+      allow:
+        [
+          compare_sequences,
+          model_exec_file,
+          component_coverage,
+          inspect_sequence,
+          inspect_grid_slice,
+          inspect_grid_values,
+        ]
+    context:
+      recipe:
+        - process_ledger
+        - current_compare
+        - mismatch_report
+        - component_definitions
+        - current_model_files
+    worker_contract:
+      output_schema:
+        type: object
+        required: [outcome, code_changes, exact_blocker]
+      forbidden_conclusions:
+        - Do not mark a new frontier mechanic proven from model-only behavior.
+        - Do not treat vacuous compare-clean as parity proof for unseen suffixes.
+      required_citations:
+        - cite compare report, mismatch step, and artifact paths
+    validation_loop:
+      after_turn: [feature_coverage, model_compare, model_proof]
+      on_failure:
+        resume_strategy: same_conversation
+        inject_validator_output_as: user_message
+      on_success:
+        update_ledger: true
+
+  solution-synthesis:
+    description: Produce and test efficient solution candidates from evidenced mechanics.
+    preferred_models: [frontier_reasoner, code_repair]
+    tools:
+      allow: [model_exec_file, compare_sequences, arc_exec, arc_status, arc_reset]
+    context:
+      recipe:
+        - process_ledger
+        - proved_mechanics_only
+        - current_branch_candidates
+        - recovery_status
+    worker_contract:
+      output_schema:
+        type: object
+        required: [outcome, branch_candidate, justification]
+      forbidden_conclusions:
+        - Do not claim real-game readiness for a branch using unevidenced frontier mechanics.
+      required_citations:
+        - cite the mechanics ledger entries used by the branch
+    validation_loop:
+      after_turn: [model_proof, real_replay_result]
+      on_failure:
+        resume_strategy: fork_fresh
+        inject_validator_output_as: user_message
+      on_success:
+        update_ledger: true
+
+  recovery:
+    description: Restore the live game to a known frontier state using already-certified branches.
+    preferred_models: [code_repair, frontier_reasoner]
+    tools:
+      allow: [arc_status, arc_reset, arc_exec]
+    context:
+      recipe:
+        - process_ledger
+        - certified_branches_only
+        - live_state
+        - recovery_goal
+    worker_contract:
+      output_schema:
+        type: object
+        required: [outcome, recovery_result]
+      forbidden_conclusions:
+        - Do not invent recovery steps outside certified branches.
+      required_citations:
+        - cite the certified branch ids used
+    validation_loop:
+      after_turn: [real_replay_result]
+      on_failure:
+        resume_strategy: same_conversation
+        inject_validator_output_as: user_message
+      on_success:
+        update_ledger: true
+
+process:
+  global_rules:
+    - A newly introduced frontier-level component cannot be ruled out as non-gating without action-linked evidence on that level.
+    - A newly introduced frontier-level color or value is a mandatory investigation target until proven decorative.
+    - Compare-clean validates explored real-game sequences only; it never proves unseen suffixes or new mechanics.
+    - Model proof is a hypothesis check, not certification of real-game correctness for unseen frontier mechanics.
+    - Any real-game contradiction against a resolved mechanic automatically reopens that mechanic.
+    - A prior-level completion schema cannot become the leading frontier theory until all new frontier deltas are incorporated or ruled out with evidence.
+  ledger:
+    path: agent/game_${vars.game_id}/process_ledger.json
+    required_sections:
+      [run, action_vocabulary, features, hypotheses, model_state, solution_state, blockers, artifacts]
+  stages:
+    - id: action_vocabulary
+      description: Establish controllable movement and first-order action semantics.
+      objective: Determine enough action-linked behavior to identify the controllable actor and basic movement/control vocabulary.
+      prerequisites: []
+      required_evidence:
+        - at least one action-linked movement observation
+      forbidden_progress_without:
+        - identified controllable actor
+        - primary movement semantics
+      completion_requirements:
+        - action vocabulary recorded in ledger with confidence
+      default_profile: action-vocabulary
+      candidate_profiles: [action-vocabulary]
+      validators: [action_vocabulary_minimum]
+      next:
+        on_success: [feature_inventory]
+        on_failure: [action_vocabulary]
+        on_blocked: [feature_inventory]
+
+    - id: feature_inventory
+      description: Enumerate all visible features and verify detector coverage.
+      objective: Detect all visible features, define them, and classify inherited vs new-on-level.
+      prerequisites: [action_vocabulary]
+      required_evidence:
+        - coverage pass
+      forbidden_progress_without:
+        - all visible features named
+        - all new frontier deltas tagged
+      completion_requirements:
+        - feature ledger filled for current level
+      default_profile: spatial-analysis
+      candidate_profiles: [spatial-analysis]
+      validators: [feature_coverage]
+      next:
+        on_success: [frontier_delta_investigation]
+        on_failure: [feature_inventory]
+        on_blocked: [frontier_delta_investigation]
+
+    - id: frontier_delta_investigation
+      description: Resolve the purpose of new frontier-level features before inherited schemas dominate planning.
+      objective: Probe all newly introduced features, colors, or values until each has evidence-backed purpose or an explicit evidence gap.
+      prerequisites: [feature_inventory]
+      required_evidence:
+        - one discriminating probe for each new frontier delta
+      forbidden_progress_without:
+        - new feature purpose unresolved
+      completion_requirements:
+        - every new frontier delta has purpose/confidence or an explicit blocker
+      default_profile: mechanic-probing
+      candidate_profiles: [mechanic-probing, spatial-analysis]
+      validators: [real_replay_result]
+      next:
+        on_success: [model_parity]
+        on_failure: [frontier_delta_investigation]
+        on_blocked: [contradiction_review]
+
+    - id: model_parity
+      description: Build or repair model behavior to match explored real-game evidence.
+      objective: Make compare pass for all recorded sequences and keep feature coverage green.
+      prerequisites: [frontier_delta_investigation]
+      required_evidence:
+        - compare clean on explored sequences
+      forbidden_progress_without:
+        - exact mismatch unclassified
+      completion_requirements:
+        - compare clean
+        - coverage pass
+        - model proof consistent with evidenced mechanics
+      default_profile: model-repair
+      candidate_profiles: [model-repair]
+      validators: [feature_coverage, model_compare, model_proof]
+      next:
+        on_success: [solution_candidate]
+        on_failure: [model_parity]
+        on_blocked: [frontier_delta_investigation]
+
+    - id: solution_candidate
+      description: Generate and validate efficient solution candidates.
+      objective: Produce a concrete branch grounded in evidenced mechanics and test it in model and real game.
+      prerequisites: [model_parity]
+      required_evidence:
+        - branch justification cites proved mechanics
+      forbidden_progress_without:
+        - unexplained frontier delta still live
+      completion_requirements:
+        - model proof passes
+        - real-game replay advances level or yields an exact contradiction
+      default_profile: solution-synthesis
+      candidate_profiles: [solution-synthesis, recovery]
+      validators: [model_proof, real_replay_result]
+      next:
+        on_success: [wrapup_or_next_level]
+        on_failure: [contradiction_review]
+        on_blocked: [recovery]
+
+    - id: contradiction_review
+      description: Reopen any mechanic or completion theory contradicted by real-game evidence.
+      objective: Reclassify the exact failed assumption and route back to the right stage.
+      prerequisites: []
+      required_evidence:
+        - exact contradiction recorded
+      forbidden_progress_without:
+        - contradiction still unclassified
+      completion_requirements:
+        - reopened hypothesis and next stage selected
+      default_profile: spatial-analysis
+      candidate_profiles: [spatial-analysis, mechanic-probing, model-repair]
+      validators: []
+      next:
+        on_success: [frontier_delta_investigation, model_parity]
+        on_failure: [contradiction_review]
+        on_blocked: [contradiction_review]
+
+    - id: recovery
+      description: Restore the live run to a known frontier state using certified branches only.
+      objective: Return from reset or GAME_OVER to the correct frontier state without inventing new mechanics.
+      prerequisites: []
+      required_evidence:
+        - certified recovery route
+      forbidden_progress_without:
+        - uncertified recovery steps
+      completion_requirements:
+        - live state matches recovery target
+      default_profile: recovery
+      candidate_profiles: [recovery]
+      validators: [real_replay_result]
+      next:
+        on_success: [frontier_delta_investigation, solution_candidate]
+        on_failure: [recovery]
+        on_blocked: [contradiction_review]
+
+    - id: wrapup_or_next_level
+      description: Certify current level and transition cleanly to the next frontier level.
+      objective: Confirm the solved level is certified, update the ledger, and reopen the process for the next frontier level.
+      prerequisites: [solution_candidate]
+      required_evidence:
+        - certified solve result
+      forbidden_progress_without:
+        - uncertified level completion
+      completion_requirements:
+        - level certification recorded
+        - next frontier stage selected
+      default_profile: spatial-analysis
+      candidate_profiles: [spatial-analysis]
+      validators: []
+      next:
+        on_success: [feature_inventory]
+        on_failure: [contradiction_review]
+        on_blocked: [contradiction_review]
+
+orchestration:
+  supervisor_owns_context: true
+  short_lived_workers_by_default: true
+  allow_parallel_workers: true
+  parallelism_rules:
+    - Only run workers in parallel when they have disjoint objectives or one is a critique/second-opinion task.
+    - Do not let multiple workers write to the same core artifact in parallel.
+  reuse_rules:
+    - Reuse a worker conversation only when validator feedback clearly continues the same bounded repair task.
+    - Prefer fresh workers after a contradicted theory or when a frontier delta was previously ignored.
+  fresh_fork_rules:
+    - Use a fresh worker for contradiction review, frontier delta analysis, and second-opinion critique.
+    - Use a fresh worker when a prior task packet contained unsupported inferences.
+  model_selection_policy:
+    - Prefer cheaper models for extraction, summarization, and coverage bookkeeping.
+    - Prefer stronger reasoning models for frontier synthesis and contradiction resolution.
+    - Prefer code-oriented models for parity and branch implementation.
+
+artifact_policies:
+  canonical_surfaces:
+    process_ledger: agent/game_${vars.game_id}/process_ledger.json
+    current_compare: agent/game_${vars.game_id}/current_compare.json
+    component_coverage: agent/game_${vars.game_id}/component_coverage.json
+    model_status: agent/game_${vars.game_id}/model_status.json
+    live_state: supervisor/arc/state.json
+  visibility_rules:
+    - The supervisor chooses which artifact slices each worker sees.
+    - Workers should get the smallest artifact set that can satisfy the task packet.
+  state_contract_rules:
+    - No silent fallback from missing canonical state to guessed state.
+    - No compare surface may be treated as authoritative if it disagrees with the process ledger.
+    - Solved-level certification and frontier visibility must be explicit process-ledger state, not hidden runtime magic.
