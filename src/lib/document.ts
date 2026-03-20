@@ -8,6 +8,8 @@ export function buildInitialDocument(args: {
   forkId: string;
   renderedRunConfig: RenderedRunConfig | null;
   mode: string;
+  processStage?: string;
+  taskProfile?: string;
   provider: string;
   model: string;
   userMessage: string;
@@ -33,6 +35,8 @@ export function buildInitialDocument(args: {
     `conversation_id: ${args.conversationId}`,
     `fork_id: ${args.forkId}`,
     `mode: ${args.mode}`,
+    ...(args.processStage ? [`process_stage: ${args.processStage}`] : []),
+    ...(args.taskProfile ? [`task_profile: ${args.taskProfile}`] : []),
     "---",
     "",
     renderChat("system", systemMessage, { scope: "agent_base" }),

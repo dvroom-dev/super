@@ -18,6 +18,17 @@ import { mergeRunConfig, validateMergedConfig } from "./run_config_merge.js";
 import { clonePromptPartsMap, normalizePromptPartsMap } from "./run_config_prompt_parts.js";
 import { applyRuleList, applyAgentRuleList, asRecord, assertNoLegacyPromptKeys, combineSystemMessages, combineUserMessages, normalizeAgentRuleList, normalizeBoolean, normalizeOperation, normalizeOutputSchemaFile, normalizePresets, normalizePromptMessage, normalizeReviewTimeoutMs, normalizeRuleList, normalizeStopCondition, normalizeToolOutput } from "./run_config_helpers.js";
 import { interpolateRunConfigVariables } from "./run_config_vars.js";
+import {
+  normalizeModelCatalog,
+  normalizeProcess,
+  normalizeSchemaVersion,
+  normalizeTaskProfiles,
+  normalizeValidators,
+  type RunConfigModelCatalogEntry,
+  type RunConfigProcess,
+  type RunConfigTaskProfile,
+  type RunConfigValidator,
+} from "./run_config_v2.js";
 import type { ToolOutputConfig } from "../tools/tool_output.js";
 export type RunConfigOperation = "append" | "replace";
 export type RunConfigFileListScope = "config_file" | "agent_file" | "supervisor_file";
@@ -68,6 +79,7 @@ export type RenderedRunConfigSupervisorTriggerEntry = SupervisorTriggerEntry<Ren
 export type RunConfigSupervisorTriggers = SupervisorTriggers<RunConfigPromptMessage, SupervisorMessageTemplate>;
 export type RenderedRunConfigSupervisorTriggers = SupervisorTriggers<RenderedRunConfigMessage, SupervisorMessageTemplate>;
 export type RunConfig = {
+  schemaVersion?: number;
   sources: string[];
   presets?: RunConfigPresetName[];
   promptParts?: Record<string, RunConfigPart[]>;
@@ -91,6 +103,10 @@ export type RunConfig = {
   toolOutput?: ToolOutputConfig;
   outputSchemaFile?: { value: string; baseDir: string; sourcePath: string };
   supervisorTriggers?: RunConfigSupervisorTriggers;
+  models?: Record<string, RunConfigModelCatalogEntry>;
+  validators?: Record<string, RunConfigValidator>;
+  taskProfiles?: Record<string, RunConfigTaskProfile>;
+  process?: RunConfigProcess;
 };
 export type RenderedRunConfigMessage = {
   operation: RunConfigOperation;
@@ -104,6 +120,7 @@ export type RenderedRunConfigUserMessage = {
   content: PromptContent;
 };
 export type RenderedRunConfig = {
+  schemaVersion?: number;
   sources: string[];
   presets: RunConfigPresetName[];
   promptParts?: Record<string, RunConfigPart[]>;
@@ -127,6 +144,10 @@ export type RenderedRunConfig = {
   toolOutput?: ToolOutputConfig;
   outputSchema?: any;
   supervisorTriggers?: RenderedRunConfigSupervisorTriggers;
+  models?: Record<string, RunConfigModelCatalogEntry>;
+  validators?: Record<string, RunConfigValidator>;
+  taskProfiles?: Record<string, RunConfigTaskProfile>;
+  process?: RunConfigProcess;
 };
 export type LoadRunConfigOptions = {
   explicitConfigPath?: string;
@@ -250,6 +271,11 @@ async function readRunConfigFile(
     supervisorObj?.supervisor_triggers,
     resolved,
   );
+  const schemaVersion = normalizeSchemaVersion(obj.schema_version, resolved);
+  const models = normalizeModelCatalog(obj.models, resolved);
+  const validators = normalizeValidators(obj.validators, resolved);
+  const taskProfiles = normalizeTaskProfiles(obj.task_profiles, resolved);
+  const process = normalizeProcess(obj.process, resolved);
   const stopConditionRaw = supervisorObj?.stop_condition ?? supervisorConfig?.stopCondition;
   const normalizedModes = normalizeModes(obj.modes, resolved, {
     normalizeSystemMessage: (rawMessage, sourcePath) => normalizePromptMessage(rawMessage, "system_message", sourcePath),
@@ -274,6 +300,7 @@ async function readRunConfigFile(
 
   return {
     config: {
+      schemaVersion,
       sources: [resolved],
       presets: normalizePresets(presetsRaw, resolved),
       promptParts: normalizePromptPartsMap({
@@ -309,6 +336,10 @@ async function readRunConfigFile(
       toolOutput: normalizeToolOutput(obj.tool_output, resolved),
       outputSchemaFile: normalizeOutputSchemaFile(obj.output_schema_file, resolved),
       supervisorTriggers,
+      models,
+      validators,
+      taskProfiles,
+      process,
     },
     vars: interpolated.vars,
   };
@@ -454,6 +485,7 @@ export async function renderRunConfig(
           : {}),
       } : undefined;
   return {
+    schemaVersion: config.schemaVersion,
     sources: [...config.sources],
     presets: [...presets],
     promptParts: clonePromptPartsMap(config.promptParts),
@@ -491,5 +523,9 @@ export async function renderRunConfig(
     toolOutput: config.toolOutput ? { ...config.toolOutput } : undefined,
     outputSchema,
     supervisorTriggers: supervisorTriggers as RenderedRunConfigSupervisorTriggers | undefined,
+    models: config.models ? Object.fromEntries(Object.entries(config.models).map(([key, value]) => [key, { ...value, ...(value.providerOptions ? { providerOptions: { ...value.providerOptions } } : {}) }])) : undefined,
+    validators: config.validators ? Object.fromEntries(Object.entries(config.validators).map(([key, value]) => [key, { ...value, ...(value.success ? { success: { ...value.success } } : {}) }])) : undefined,
+    taskProfiles: config.taskProfiles ? Object.fromEntries(Object.entries(config.taskProfiles).map(([key, value]) => [key, { ...value, preferredModels: value.preferredModels ? [...value.preferredModels] : undefined, validators: value.validators ? [...value.validators] : undefined, contextRules: value.contextRules ? [...value.contextRules] : undefined }])) : undefined,
+    process: config.process ? { ...config.process, globalRules: config.process.globalRules ? [...config.process.globalRules] : undefined, stages: config.process.stages ? Object.fromEntries(Object.entries(config.process.stages).map(([key, value]) => [key, { ...value, validators: value.validators ? [...value.validators] : undefined, allowedNextProfiles: value.allowedNextProfiles ? [...value.allowedNextProfiles] : undefined }])) : undefined } : undefined,
   };
 }

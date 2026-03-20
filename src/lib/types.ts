@@ -4,6 +4,8 @@ export type SuperState = {
   conversationId: string;
   activeForkId: string;
   activeMode?: string;
+  activeProcessStage?: string;
+  activeTaskProfile?: string;
   activeModePayload?: Record<string, string>;
   activeTransitionPayload?: Record<string, string>;
   agentProvider: string;

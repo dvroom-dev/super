@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { ProviderPermissionProfile } from "../../../providers/types.js";
 import { toolDefinitionsMarkdown } from "../../../tools/definitions.js";
+import { renderChat } from "../../../markdown/render.js";
 import { compileFullPrompt, compileIncrementalPrompt, compileRecoveryPrompt } from "../../../supervisor/compile.js";
 import { combineTranscript, normalizeRules, normalizeFileContexts } from "../helpers.js";
 import { loadAgentsInstructions, workspaceListing, taggedFileContexts } from "../workspace.js";
@@ -31,6 +32,16 @@ import { buildManagedSuperviseContext, emitManagedSuperviseContextStats } from "
 import { runSuperviseReviewStep } from "../supervisor/supervise_review.js";
 import { applySupervisorForkDecision } from "./conversation_supervise_inline_mode_helpers.js";
 import { runSupervisorRecoverySummary } from "../supervisor/supervisor_run.js";
+import { persistAgentTurnWithoutSupervisor } from "../supervisor/no_supervisor_finalize.js";
+import {
+  allowedNextModesForProcess,
+  profileIdForMode,
+  renderProcessContractMarkdown,
+  resolveActiveProcessState,
+  selectedModelKeyForTaskProfile,
+  validatorsForActiveProcessState,
+} from "../supervisor/process_runtime.js";
+import { buildValidatorFailureUserMessage, runConfiguredValidators } from "../supervisor/validator_runtime.js";
 export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtime.js"; export async function handleConversationSupervise(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const agentWorkspaceRoot = path.resolve(workspaceRoot, String((params as any)?.agentBaseDir ?? workspaceRoot));
@@ -139,9 +150,13 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   };
   const sendBudgetUpdate = () => sendBudgetUpdateNotification({ ctx, startedAt, budget, currentModel, supervisorModel, timeBudgetMs, tokenBudgetAdjusted, cadenceTimeMs, cadenceTokensAdjusted });
   let stopReasons: string[] = [], stopDetails: string[] = [];
+  let lastValidatorFailureSignature = "";
+  let repeatedValidatorFailureCount = 0;
   const renderedRunConfig = initialRunConfig;
   const runtimeStateForDocument = (docText: string) => ({
     activeMode: resolveActiveMode(docText, renderedRunConfig),
+    activeProcessStage: resolveActiveProcessState(docText, renderedRunConfig).stageId ?? undefined,
+    activeTaskProfile: resolveActiveProcessState(docText, renderedRunConfig).profileId ?? undefined,
     activeModePayload: resolveModePayload(docText),
     activeTransitionPayload: { ...currentTransitionPayload },
   });
@@ -174,7 +189,19 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       lifecycle.finishRun("stopped");
       return { conversationId, forkId: lifecycle.currentForkId(), mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
     }
-    const activeMode = resolveActiveMode(currentDocText, renderedRunConfig), modeConfig = resolveModeConfig(renderedRunConfig, activeMode);
+    const documentProcessState = resolveActiveProcessState(currentDocText, renderedRunConfig);
+    const activeMode = documentProcessState.mode ?? resolveActiveMode(currentDocText, renderedRunConfig);
+    const modeConfig = resolveModeConfig(renderedRunConfig, activeMode);
+    const selectedModelKey = selectedModelKeyForTaskProfile(renderedRunConfig, documentProcessState.profileId);
+    const selectedModel = selectedModelKey ? renderedRunConfig?.models?.[selectedModelKey] : undefined;
+    if (selectedModel?.model && selectedModel.model !== currentModel) {
+      currentModel = selectedModel.model;
+      if (currentThreadId) {
+        currentThreadId = undefined;
+        fullResyncNeeded = true;
+      }
+      sendBudgetUpdate();
+    }
     const { agentModelReasoningEffort: effectiveAgentModelReasoningEffort, supervisorModelReasoningEffort: effectiveSupervisorModelReasoningEffort } = resolveModeReasoningEfforts({ modeConfig, defaultAgentReasoningEffort: agentModelReasoningEffort, defaultSupervisorReasoningEffort: supervisorModelReasoningEffort });
     const effectiveToolConfig = modeConfig?.tools ?? renderedRunConfig?.tools;
     const activeModePayload = resolveModePayload(currentDocText);
@@ -220,11 +247,14 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
           cadenceTimeMs,
           cadenceTokensAdjusted,
         };
-    const allowedNextModes = await allowedNextModesFor({
-      renderedRunConfig,
-      activeMode,
-      agentBaseDir: agentWorkspaceRoot,
-    });
+    const processAllowedNextModes = allowedNextModesForProcess(renderedRunConfig, documentProcessState.stageId);
+    const allowedNextModes = processAllowedNextModes.length
+      ? processAllowedNextModes
+      : await allowedNextModesFor({
+          renderedRunConfig,
+          activeMode,
+          agentBaseDir: agentWorkspaceRoot,
+        });
     const modePayloadFields = modePayloadFieldsByMode(renderedRunConfig, allowedNextModes);
     const modeGuidance = modeGuidanceByMode(renderedRunConfig, allowedNextModes, activeMode);
     const shouldBootstrap = !disableSupervision
@@ -422,6 +452,8 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         skillInstructions,
         configuredSystemMessage: effectiveAgentConfiguredSystemMessage,
         defaultSystemMessage: disableSupervision ? undefined : renderedRunConfig?.supervisor?.agentDefaultSystemMessage,
+        activeProcessState: documentProcessState,
+        processContractText: renderProcessContractMarkdown(renderedRunConfig, documentProcessState),
       };
       const compile = compileMode === "recovery"
         ? compileRecoveryPrompt(compileArgs)
@@ -646,6 +678,64 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     const transitionMs = Date.now() - transitionStartedAt;
     if (transitionOutcome.kind === "stop") { stopReasons = transitionOutcome.stopReasons; stopDetails = transitionOutcome.stopDetails; currentDocText = transitionOutcome.currentDocText; lifecycle.finishRun("stopped"); return { conversationId, forkId: transitionOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) }; }
     if (transitionOutcome.kind === "continue") { currentDocText = transitionOutcome.currentDocText; currentThreadId = transitionOutcome.currentThreadId; currentSupervisorThreadId = transitionOutcome.currentSupervisorThreadId; currentTransitionPayload = { ...transitionOutcome.activeTransitionPayload }; fullResyncNeeded = transitionOutcome.fullResyncNeeded; turnIndex += 1; cycleTurnCount += 1; continue; }
+    const validatorResults = await runConfiguredValidators({
+      workspaceRoot,
+      agentWorkspaceRoot,
+      supervisorWorkspaceRoot,
+      renderedRunConfig,
+      validatorKeys: validatorsForActiveProcessState(renderedRunConfig, documentProcessState.stageId, documentProcessState.profileId),
+    });
+    const validatorFailureMessage = buildValidatorFailureUserMessage(validatorResults);
+    if (validatorFailureMessage) {
+      const validatorFailureSignature = validatorResults
+        .filter((entry) => !entry.ok)
+        .map((entry) => `${entry.key}:${entry.summary}`)
+        .join("|");
+      if (validatorFailureSignature === lastValidatorFailureSignature) {
+        repeatedValidatorFailureCount += 1;
+      } else {
+        lastValidatorFailureSignature = validatorFailureSignature;
+        repeatedValidatorFailureCount = 1;
+      }
+      ctx.sendNotification({
+        method: "log",
+        params: {
+          level: "info",
+          message: `process validators failed for stage=${documentProcessState.stageId ?? "(none)"} profile=${documentProcessState.profileId ?? "(none)"}`,
+        },
+      });
+      currentDocText = combineTranscript(currentDocText, [renderChat("user", validatorFailureMessage)]);
+      const persistedValidatorRetry = await persistAgentTurnWithoutSupervisor({
+        ctx,
+        workspaceRoot,
+        conversationId,
+        currentDocText,
+        currentForkId: lifecycle.currentForkId(),
+        docPath,
+        agentRules: effectiveAgentRequirements,
+        providerName,
+        currentModel,
+        supervisorModel,
+        currentThreadId,
+        currentSupervisorThreadId,
+        switchActiveFork: lifecycle.switchActiveFork,
+      });
+      currentDocText = persistedValidatorRetry.nextDocText;
+      if (repeatedValidatorFailureCount > 1) {
+        stopReasons = ["validator_failure"];
+        stopDetails = [
+          `repeated validator failure for stage=${documentProcessState.stageId ?? "(none)"} profile=${documentProcessState.profileId ?? "(none)"}: ${validatorFailureSignature}`,
+        ];
+        lifecycle.finishRun("stopped");
+        return { conversationId, forkId: persistedValidatorRetry.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
+      }
+      fullResyncNeeded = true;
+      turnIndex += 1;
+      cycleTurnCount += 1;
+      continue;
+    }
+    lastValidatorFailureSignature = "";
+    repeatedValidatorFailureCount = 0;
     const finalizeOutcome = await finalizeSuperviseTurn({
       ctx,
       workspaceRoot,

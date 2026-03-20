@@ -33,6 +33,7 @@ import {
 } from "./agent_system_prompt.js";
 import type { ProviderName } from "../providers/types.js";
 import { systemMessageForProvider } from "./system_message.js";
+import type { ActiveProcessState } from "../server/stdio/supervisor/process_runtime.js";
 export {
   AGENT_RULES_SYSTEM_BEGIN,
   AGENT_RULES_SYSTEM_END,
@@ -115,6 +116,8 @@ export type CompileInputs = {
   skillInstructions?: SkillInstruction[];
   configuredSystemMessage?: PromptMessageOverride;
   defaultSystemMessage?: string;
+  activeProcessState?: ActiveProcessState;
+  processContractText?: string;
 };
 
 export type SupervisorReviewInputs = {
@@ -361,6 +364,12 @@ function appendActiveModeContract(promptParts: string[], input: CompileInputs, p
   );
 }
 
+function appendProcessContract(promptParts: string[], input: CompileInputs): void {
+  const processText = String(input.processContractText ?? "").trim();
+  if (!processText) return;
+  promptParts.push(processText, "");
+}
+
 function normalizeConfiguredImages(images: string[] | undefined, workspaceRoot?: string): PromptImagePart[] {
   if (!Array.isArray(images) || images.length === 0) return [];
   return dedupePromptImages(
@@ -404,6 +413,7 @@ export function compileFullPrompt(input: CompileInputs): { prompt: PromptContent
   if (skillsSection) {
     promptParts.push(skillsSection, "");
   }
+  appendProcessContract(promptParts, input);
   appendActiveModeContract(promptParts, input, parsed);
   appendAgentModeContext(promptParts, input);
   appendSharedPromptContext(promptParts, input);
@@ -447,6 +457,7 @@ export function compileIncrementalPrompt(input: CompileInputs): { prompt: Prompt
   if (skillsSection) {
     promptParts.push(skillsSection, "");
   }
+  appendProcessContract(promptParts, input);
   appendActiveModeContract(promptParts, input, parsed);
   appendAgentModeContext(promptParts, input);
   appendSharedPromptContext(promptParts, input);
@@ -492,6 +503,7 @@ export function compileRecoveryPrompt(
     promptParts.push(skillsSection, "");
   }
 
+  appendProcessContract(promptParts, input);
   appendAgentModeContext(promptParts, input);
   appendSharedPromptContext(promptParts, input);
 

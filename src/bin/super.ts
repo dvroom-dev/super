@@ -1,6 +1,7 @@
 import path from "node:path";
 import { loadRunConfigForDirectory, renderRunConfig } from "../supervisor/run_config.ts";
 import { resolveModeConfig } from "../server/stdio/supervisor/mode_runtime.ts";
+import { resolveInitialProcessStage, resolveTaskProfileMode } from "../server/stdio/supervisor/process_runtime.ts";
 import { handleConversationSupervise } from "../server/stdio/requests/conversation_supervise.ts";
 import { newId } from "../lib/ids.ts";
 import { buildInitialDocument, normalizeExportedDocumentFrontmatter } from "../lib/document.ts";
@@ -106,7 +107,12 @@ async function buildNewDocument(options: CliOptions) {
   );
   const renderedConfig = await renderRunConfig(runConfig, { configBaseDir, agentBaseDir, supervisorBaseDir });
   const { agentProvider, agentModel } = resolveRuntimeProvidersAndModels(options, renderedConfig);
-  const mode = options.startMode ?? renderedConfig?.modeStateMachine?.initialMode ?? "";
+  const initialStage = resolveInitialProcessStage(renderedConfig);
+  const initialTaskProfile = initialStage ? renderedConfig?.process?.stages?.[initialStage]?.profile ?? null : null;
+  const mode = options.startMode
+    ?? (initialTaskProfile ? resolveTaskProfileMode(renderedConfig, initialTaskProfile) : null)
+    ?? renderedConfig?.modeStateMachine?.initialMode
+    ?? "";
   if (!mode) throw new Error("new mode requires mode_state_machine.initial_mode or --start-mode");
   const modeConfig = resolveModeConfig(renderedConfig, mode);
   const userMessage = String(options.prompt ?? modeConfig?.userMessage?.text ?? "").trim();
@@ -117,6 +123,8 @@ async function buildNewDocument(options: CliOptions) {
     forkId,
     renderedRunConfig: renderedConfig,
     mode,
+    processStage: initialStage ?? undefined,
+    taskProfile: initialTaskProfile ?? undefined,
     provider: agentProvider,
     model: agentModel,
     userMessage,
@@ -129,6 +137,8 @@ async function buildNewDocument(options: CliOptions) {
     conversationId,
     activeForkId: forkId,
     activeMode: mode,
+    activeProcessStage: initialStage ?? undefined,
+    activeTaskProfile: initialTaskProfile ?? undefined,
     activeModePayload: {},
     renderedConfig,
   };
@@ -191,6 +201,8 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     conversationId: built.conversationId,
     activeForkId: built.activeForkId,
     activeMode: built.activeMode || (continuingPriorState ? prior?.activeMode : undefined),
+    activeProcessStage: (built as any).activeProcessStage || (continuingPriorState ? prior?.activeProcessStage : undefined),
+    activeTaskProfile: (built as any).activeTaskProfile || (continuingPriorState ? prior?.activeTaskProfile : undefined),
     activeModePayload: built.activeModePayload ?? (continuingPriorState ? prior?.activeModePayload : undefined),
     activeTransitionPayload: continuingPriorState ? prior?.activeTransitionPayload : undefined,
     agentProvider,
@@ -254,6 +266,8 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     conversationId: result.conversationId,
     activeForkId: result.forkId,
     activeMode: result.activeMode || prior?.activeMode,
+    activeProcessStage: (result as any).activeProcessStage || prior?.activeProcessStage,
+    activeTaskProfile: (result as any).activeTaskProfile || prior?.activeTaskProfile,
     activeModePayload: result.activeModePayload ?? prior?.activeModePayload,
     activeTransitionPayload: result.activeTransitionPayload,
     agentProvider,

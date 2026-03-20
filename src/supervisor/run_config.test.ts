@@ -745,4 +745,66 @@ describe("run_config", () => {
     expect(rendered?.toolOutput).toBeUndefined();
   });
 
+  it("parses v2 models, validators, task profiles, and process stages", async () => {
+    const root = await makeTempRoot("run-config-v2-");
+    const configPath = path.join(root, "super.yaml");
+    await fs.writeFile(
+      configPath,
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "models:",
+        "  fast_reader:",
+        "    provider: mock",
+        "    model: mock-fast",
+        "    reasoning_effort: low",
+        "validators:",
+        "  compare_clean:",
+        "    command: |",
+        "      echo '{\"all_match\": true}'",
+        "    parse_as: json",
+        "    success:",
+        "      type: json_field_truthy",
+        "      field: all_match",
+        "task_profiles:",
+        "  spatial_analysis:",
+        "    mode: theory",
+        "    preferred_models: [fast_reader]",
+        "    validators: [compare_clean]",
+        "process:",
+        "  initial_stage: feature_inventory",
+        "  global_rules:",
+        "    - newly introduced frontier components require action-linked evidence",
+        "  stages:",
+        "    feature_inventory:",
+        "      profile: spatial_analysis",
+        "      allowed_next_profiles: [spatial_analysis]",
+        "modes:",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory task",
+        "mode_state_machine:",
+        "  initial_mode: theory",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const loaded = await loadRunConfigForDirectory(root, { explicitConfigPath: configPath });
+    const rendered = await renderRunConfig(loaded, {
+      configBaseDir: root,
+      agentBaseDir: root,
+      supervisorBaseDir: root,
+    });
+    expect(rendered?.schemaVersion).toBe(2);
+    expect(rendered?.models?.fast_reader?.model).toBe("mock-fast");
+    expect(rendered?.validators?.compare_clean?.success?.type).toBe("json_field_truthy");
+    expect(rendered?.taskProfiles?.spatial_analysis?.mode).toBe("theory");
+    expect(rendered?.process?.initialStage).toBe("feature_inventory");
+    expect(rendered?.process?.stages?.feature_inventory?.profile).toBe("spatial_analysis");
+  });
+
 });

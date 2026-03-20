@@ -1889,4 +1889,78 @@ describe("handleConversationSupervise", () => {
     expect(createForkCalls[0].agentRules).toEqual(["rule from params", "rule from config"]);
     expect(createForkCalls[1].agentRules).toEqual(["rule from params", "rule from config"]);
   });
+
+  it("runs v2 validators after a turn and resumes with validator output when they fail", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-validators-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "models:",
+        "  fast_reader:",
+        "    provider: mock",
+        "    model: mock-fast",
+        "validators:",
+        "  fail_check:",
+        "    command: |",
+        "      echo '{\"ok\": false}'",
+        "    parse_as: json",
+        "    success:",
+        "      type: json_field_truthy",
+        "      field: ok",
+        "task_profiles:",
+        "  spatial_analysis:",
+        "    mode: theory",
+        "    preferred_models: [fast_reader]",
+        "    validators: [fail_check]",
+        "process:",
+        "  initial_stage: feature_inventory",
+        "  stages:",
+        "    feature_inventory:",
+        "      profile: spatial_analysis",
+        "modes:",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory seed",
+        "mode_state_machine:",
+        "  initial_mode: theory",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { ctx, createForkCalls } = makeCtx({ conversationId: "conversation_v2_validator" });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "validator loop turn";
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_v2_validator",
+          forkId: "fork_doc",
+          mode: "theory",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+        supervisor: { enabled: false },
+      });
+
+      expect(result.activeMode).toBe("theory");
+      expect((result as any).activeProcessStage).toBe("feature_inventory");
+      expect((result as any).activeTaskProfile).toBe("spatial_analysis");
+      expect(createForkCalls.length).toBeGreaterThanOrEqual(2);
+      expect(String(createForkCalls.at(-1)?.documentText ?? "")).toContain("Post-turn validator failures:");
+      expect(String(createForkCalls.at(-1)?.documentText ?? "")).toContain("Validator: fail_check");
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  });
 });
