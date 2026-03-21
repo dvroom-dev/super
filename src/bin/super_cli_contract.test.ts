@@ -188,6 +188,11 @@ describe("super CLI contracts", () => {
     expect(ledger.current.profileId).toBe("action_vocabulary");
     expect(Array.isArray(ledger.history)).toBe(true);
     expect(ledger.history.length).toBeGreaterThan(0);
+    const runHistory = JSON.parse(
+      await fs.readFile(path.join(workspaceRoot, ".ai-supervisor", "supervisor", "run_history", "index.json"), "utf8"),
+    );
+    expect(Array.isArray(runHistory.forks)).toBe(true);
+    expect(runHistory.forks.length).toBeGreaterThanOrEqual(2);
   });
 
   it("rejects transcript paths for resume", async () => {

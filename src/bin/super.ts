@@ -10,6 +10,7 @@ import { createRuntimeContext } from "../lib/context.ts";
 import { appendEvents, exportSessionDocument, loadSuperState, saveSuperState } from "../lib/state.ts";
 import { loadForkDocument } from "../lib/store.ts";
 import { writeProcessLedger } from "../server/stdio/supervisor/process_ledger.ts";
+import { buildSupervisorRunHistoryContext } from "../server/stdio/supervisor/run_history.ts";
 import type { CliOptions, SuperEvent, SuperState } from "../lib/types.ts";
 
 function usage(): string {
@@ -305,6 +306,11 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     workspaceRoot: options.workspaceRoot,
     renderedRunConfig: renderedConfig,
     state: nextState,
+  });
+  await buildSupervisorRunHistoryContext({
+    workspaceRoot: options.workspaceRoot,
+    currentConversationId: nextState.conversationId,
+    currentSupervisorThreadId: nextState.activeTransitionPayload?.supervisor_thread_id,
   });
   await appendEvents(options.workspaceRoot, events);
   await exportSessionDocument(options.workspaceRoot, documentTextRef.value, options.outputPath);

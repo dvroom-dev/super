@@ -628,6 +628,23 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       currentSupervisorThreadId = toolOutcome.currentSupervisorThreadId;
       currentTransitionPayload = { ...toolOutcome.activeTransitionPayload };
       fullResyncNeeded = toolOutcome.fullResyncNeeded;
+      const persistedContinue = await persistAgentTurnWithoutSupervisor({
+        ctx,
+        workspaceRoot,
+        conversationId,
+        currentDocText,
+        currentForkId: lifecycle.currentForkId(),
+        docPath,
+        agentRules: effectiveAgentRequirements,
+        providerName,
+        currentModel,
+        supervisorModel,
+        currentThreadId,
+        currentSupervisorThreadId,
+        switchActiveFork: lifecycle.switchActiveFork,
+      });
+      currentDocText = persistedContinue.nextDocText;
+      fullResyncNeeded = true;
       turnIndex += 1;
       cycleTurnCount += 1;
       continue;
@@ -684,7 +701,33 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     });
     const transitionMs = Date.now() - transitionStartedAt;
     if (transitionOutcome.kind === "stop") { stopReasons = transitionOutcome.stopReasons; stopDetails = transitionOutcome.stopDetails; currentDocText = transitionOutcome.currentDocText; lifecycle.finishRun("stopped"); return { conversationId, forkId: transitionOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) }; }
-    if (transitionOutcome.kind === "continue") { currentDocText = transitionOutcome.currentDocText; currentThreadId = transitionOutcome.currentThreadId; currentSupervisorThreadId = transitionOutcome.currentSupervisorThreadId; currentTransitionPayload = { ...transitionOutcome.activeTransitionPayload }; fullResyncNeeded = transitionOutcome.fullResyncNeeded; turnIndex += 1; cycleTurnCount += 1; continue; }
+    if (transitionOutcome.kind === "continue") {
+      currentDocText = transitionOutcome.currentDocText;
+      currentThreadId = transitionOutcome.currentThreadId;
+      currentSupervisorThreadId = transitionOutcome.currentSupervisorThreadId;
+      currentTransitionPayload = { ...transitionOutcome.activeTransitionPayload };
+      fullResyncNeeded = transitionOutcome.fullResyncNeeded;
+      const persistedContinue = await persistAgentTurnWithoutSupervisor({
+        ctx,
+        workspaceRoot,
+        conversationId,
+        currentDocText,
+        currentForkId: lifecycle.currentForkId(),
+        docPath,
+        agentRules: effectiveAgentRequirements,
+        providerName,
+        currentModel,
+        supervisorModel,
+        currentThreadId,
+        currentSupervisorThreadId,
+        switchActiveFork: lifecycle.switchActiveFork,
+      });
+      currentDocText = persistedContinue.nextDocText;
+      fullResyncNeeded = true;
+      turnIndex += 1;
+      cycleTurnCount += 1;
+      continue;
+    }
     const validatorResults = await runConfiguredValidators({
       workspaceRoot,
       agentWorkspaceRoot,
