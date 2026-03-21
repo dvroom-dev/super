@@ -2123,6 +2123,213 @@ describe("handleConversationSupervise", () => {
     }
   });
 
+  it("enforces fork_fresh resume_strategy for v2 task profiles even when supervisor asks to resume_mode_head", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-fork-fresh-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "  supervisor_provider: mock",
+        "  supervisor_model: mock-supervisor",
+        "task_profiles:",
+        "  spatial_analysis:",
+        "    mode: theory",
+        "    resume_strategy: fork_fresh",
+        "process:",
+        "  initial_stage: feature_inventory",
+        "  stages:",
+        "    feature_inventory:",
+        "      profile: spatial_analysis",
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory seed",
+        "mode_state_machine:",
+        "  initial_mode: theory",
+        "  transitions:",
+        "    theory: [theory]",
+      ].join("\n"),
+      "utf8",
+    );
+    const existingTheoryFork = {
+      id: "fork_existing_theory",
+      documentText: makeModeDoc({
+        conversationId: "conversation_v2_fork_fresh",
+        forkId: "fork_existing_theory",
+        mode: "theory",
+        userMessage: "old theory head",
+      }),
+      providerThreadId: "thread_existing_theory",
+      supervisorThreadId: "supervisor_thread_existing_theory",
+    };
+    const { ctx, createForkCalls } = makeCtx({
+      conversationId: "conversation_v2_fork_fresh",
+      index: {
+        conversationId: "conversation_v2_fork_fresh",
+        headId: "fork_existing_theory",
+        headIds: ["fork_existing_theory"],
+        forks: [{ id: "fork_existing_theory" }],
+      },
+      forksById: {
+        fork_existing_theory: existingTheoryFork,
+      },
+      historyEdited: false,
+    });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```tool_call name=report_process_result",
+      '{"outcome":"blocked","summary":"need a fresh theory worker","requested_profile":"spatial_analysis","user_message":"Reopen theory with a fresh packet."}',
+      "```",
+    ].join("\n");
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "resume_mode_head",
+      payload: strictSupervisorPayload({
+        mode: "theory",
+        mode_payload: {},
+        message: "Fresh theory packet.",
+        message_type: "user",
+        wait_for_boundary: false,
+      }),
+      transition_payload: {
+        process_stage: "feature_inventory",
+        task_profile: "spatial_analysis",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [
+          { mode: "theory", confidence: "high", evidence: "target profile maps to theory" },
+        ],
+        recommended_action: "resume_mode_head",
+      },
+      reasoning: "request a fresh theory worker despite same mode",
+      agent_model: null,
+    });
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_v2_fork_fresh",
+          forkId: "fork_doc",
+          mode: "theory",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+      });
+      expect(createForkCalls.length).toBeGreaterThanOrEqual(2);
+      expect(String(createForkCalls.at(-1)?.documentText ?? "")).toContain("Fresh theory packet.");
+      expect(createForkCalls.at(-1)?.providerThreadId).toBeUndefined();
+      expect(result.activeMode).toBe("theory");
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+    }
+  });
+
+  it("boots schema_version 2 runs from supervisor-owned process state before the first worker mode exists", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-bootstrap-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "  supervisor_provider: mock",
+        "  supervisor_model: mock-supervisor",
+        "task_profiles:",
+        "  action_vocabulary:",
+        "    mode: explore_and_solve",
+        "process:",
+        "  initial_stage: action_vocabulary",
+        "  stages:",
+        "    action_vocabulary:",
+        "      profile: action_vocabulary",
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: explore seed",
+        "mode_state_machine:",
+        "  initial_mode: explore_and_solve",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const bootstrapDoc = [
+      "---",
+      "conversation_id: conversation_v2_bootstrap",
+      "fork_id: fork_doc",
+      "process_stage: action_vocabulary",
+      "task_profile: action_vocabulary",
+      "---",
+      "",
+      "<!-- supervisor-owned process bootstrap: no worker conversation has started yet -->",
+    ].join("\n");
+    const { ctx, createForkCalls, updateForkCalls } = makeCtx({ conversationId: "conversation_v2_bootstrap" });
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "fork_new_conversation",
+      payload: strictSupervisorPayload({
+        mode: "explore_and_solve",
+        mode_payload: { explore_and_solve: {} },
+        wait_for_boundary: false,
+      }),
+      transition_payload: {
+        process_stage: "action_vocabulary",
+        task_profile: "action_vocabulary",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [
+          { mode: "explore_and_solve", confidence: "high", evidence: "initial profile maps to explore_and_solve" },
+        ],
+        recommended_action: "fork_new_conversation",
+      },
+      reasoning: "bootstrap into first worker profile",
+      agent_model: null,
+    });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "bootstrap worker turn";
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: bootstrapDoc,
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+      });
+
+      const bootstrapFrontmatter = String(updateForkCalls[0]?.patch?.documentText ?? "").split("\n---\n")[0] ?? "";
+      expect(bootstrapFrontmatter).toContain("process_stage: action_vocabulary");
+      expect(bootstrapFrontmatter).not.toContain("\nmode:");
+      const initialForkFrontmatter = String(createForkCalls[0]?.documentText ?? "").split("\n---\n")[0] ?? "";
+      expect(initialForkFrontmatter).not.toContain("\nmode:");
+      expect(String(createForkCalls[1]?.documentText ?? "")).toContain("mode: explore_and_solve");
+      expect(result.activeMode).toBe("explore_and_solve");
+      expect((result as any).activeProcessStage).toBe("action_vocabulary");
+      expect((result as any).activeTaskProfile).toBe("action_vocabulary");
+    } finally {
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  });
+
   it("rejects switch_mode on schema_version 2 runs", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-v2-switch-reject-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });

@@ -22,7 +22,11 @@ import type { SwitchModeRequest } from "./conversation_supervise_switch_mode.js"
 import { validateSwitchModeHandoffText } from "./conversation_supervise_switch_mode.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
-import { applyProcessFrontmatter, processAssignmentForTransition } from "../supervisor/process_runtime.ts";
+import {
+  applyProcessFrontmatter,
+  processAssignmentForTransition,
+  resumeStrategyForTaskProfile,
+} from "../supervisor/process_runtime.ts";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -254,6 +258,15 @@ export async function applySupervisorForkDecision(args: {
       await maybeCheckpointCurrentMode();
     }
     const nextModePayload = decisionModePayload({ review: args.review, mode: requestedMode });
+    const targetAssignment = processAssignmentForTransition({
+      config: effectiveRenderedRunConfig,
+      mode: requestedMode,
+      transitionPayload: activeTransitionPayload,
+    });
+    const resumeStrategy = resumeStrategyForTaskProfile(
+      effectiveRenderedRunConfig,
+      targetAssignment.profileId,
+    );
     const targetModeFork = await loadLatestForkInMode({
       ctx: args.ctx,
       workspaceRoot: args.workspaceRoot,
@@ -261,7 +274,7 @@ export async function applySupervisorForkDecision(args: {
       mode: requestedMode,
     });
     const nextForkId = newId("fork");
-    if (!targetModeFork) {
+    if (!targetModeFork || resumeStrategy === "fork_fresh") {
       const nextModeConfig = resolveModeConfig(effectiveRenderedRunConfig, requestedMode);
       const nextModeRuleSet = mergeAgentRuleSet({
         requestRequirements: args.requestAgentRuleRequirements,
@@ -275,8 +288,8 @@ export async function applySupervisorForkDecision(args: {
         conversationId: args.conversationId,
         forkId: nextForkId,
         mode: requestedMode,
-        processStage: processAssignmentForTransition({ config: effectiveRenderedRunConfig, mode: requestedMode, transitionPayload: activeTransitionPayload }).stageId ?? undefined,
-        taskProfile: processAssignmentForTransition({ config: effectiveRenderedRunConfig, mode: requestedMode, transitionPayload: activeTransitionPayload }).profileId ?? undefined,
+        processStage: targetAssignment.stageId ?? undefined,
+        taskProfile: targetAssignment.profileId ?? undefined,
         systemMessage: buildSessionSystemPromptForMode({ renderedRunConfig: effectiveRenderedRunConfig, mode: requestedMode, modePayload: nextModePayload, provider: args.providerName, model: args.currentModel, agentRules: nextModeRuleSet.requirements }),
         userMessage: seeded,
         modePayload: nextModePayload,

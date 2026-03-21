@@ -37,10 +37,10 @@ supervisor:
           - literal: |
               Trigger context:
               - Trigger: `run_start_bootstrap`.
-              - Why this review ran: this is the first supervisor pass before any agent turn in a new conversation.
+              - Why this review ran: this is the first supervisor pass before any worker turn in a new conversation.
               - There is no assistant response to review yet.
-              - Use the visible workspace state and the run configuration to decide whether the configured initial mode should begin.
-              - Prefer `fork_new_conversation` into the allowed initial mode with a concise bootstrap handoff in `mode_payload`.
+              - On schema_version 2 runs, you own initial worker invocation. Choose the first worker profile/mode from the allowed starting set and set any required `transition_payload` process fields.
+              - Prefer `fork_new_conversation` into the allowed starting worker mode with a concise bootstrap handoff in `mode_payload`.
               - Stop instead of guessing if the initial handoff cannot be stated safely from the visible evidence.
     agent_yield:
       supervisor_prompt:
@@ -176,6 +176,8 @@ supervisor:
               - Trigger: `agent_process_result_report`.
               - Why this review ran: the worker reported process-stage results and requested supervisor-owned progression.
               - Decide whether to continue in the same stage/profile, route to a new stage/profile, stop, or inject corrective guidance.
+              - Treat the worker's `requested_profile` as a hint, not authority.
+              - On schema_version 2 runs, prefer process-aware `transition_payload` updates over mode-centric reasoning.
           - builtin: message_templates
       message_templates:
         - name: replace_process_result_with_guidance

@@ -51,6 +51,44 @@ async function writeBasicConfig(workspaceRoot: string): Promise<void> {
   );
 }
 
+async function writeV2Config(workspaceRoot: string): Promise<void> {
+  await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+    [
+      "schema_version: 2",
+      "runtime_defaults:",
+      "  agent_provider: mock",
+      "  agent_model: mock-model",
+      "  supervisor_provider: mock",
+      "  supervisor_model: mock-supervisor",
+      "task_profiles:",
+      "  action_vocabulary:",
+      "    mode: default",
+      "    resume_strategy: fork_fresh",
+      "process:",
+      "  initial_stage: action_vocabulary",
+      "  ledger_path: super/process_ledger.json",
+      "  stages:",
+      "    action_vocabulary:",
+      "      profile: action_vocabulary",
+      "supervisor:",
+      "  stop_condition: task complete",
+      "modes:",
+      "  default:",
+      "    user_message:",
+      "      operation: append",
+      "      parts:",
+      "        - literal: seeded prompt",
+      "mode_state_machine:",
+      "  initial_mode: default",
+      "  transitions:",
+      "    default: [default]",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
 afterEach(async () => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
@@ -102,6 +140,54 @@ describe("super CLI contracts", () => {
     expect(exported).toContain("seeded prompt");
     expect(exported).toContain("assistant from new");
     expect(exported).toContain("assistant from resume");
+  });
+
+  it("writes a process ledger for schema_version 2 runs", async () => {
+    const workspaceRoot = await makeTempDir("super-cli-v2-ledger-");
+    const outputPath = path.join(workspaceRoot, "session.md");
+    await writeV2Config(workspaceRoot);
+
+    const result = await runSuper(
+      ["new", "--workspace", workspaceRoot, "--provider", "mock", "--model", "mock-model", "--cycle-limit", "1", "--output", outputPath],
+      {
+        MOCK_PROVIDER_RUNONCE_TEXT: JSON.stringify({
+          decision: "fork_new_conversation",
+          payload: {
+            reason: null,
+            advice: null,
+            agent_rule_checks: null,
+            agent_violation_checks: null,
+            message: null,
+            message_template: null,
+            message_type: null,
+            wait_for_boundary: false,
+            mode: "default",
+            mode_payload: { default: {} },
+          },
+          transition_payload: {
+            process_stage: "action_vocabulary",
+            task_profile: "action_vocabulary",
+          },
+          mode_assessment: {
+            current_mode_stop_satisfied: true,
+            candidate_modes_ranked: [
+              { mode: "default", confidence: "high", evidence: "initial profile maps to default" },
+            ],
+            recommended_action: "fork_new_conversation",
+          },
+          reasoning: "bootstrap into default",
+          agent_model: null,
+        }),
+        MOCK_PROVIDER_STREAMED_TEXT: "assistant from v2 new",
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    const ledger = JSON.parse(await fs.readFile(path.join(workspaceRoot, "super", "process_ledger.json"), "utf8"));
+    expect(ledger.current.stageId).toBe("action_vocabulary");
+    expect(ledger.current.profileId).toBe("action_vocabulary");
+    expect(Array.isArray(ledger.history)).toBe(true);
+    expect(ledger.history.length).toBeGreaterThan(0);
   });
 
   it("rejects transcript paths for resume", async () => {

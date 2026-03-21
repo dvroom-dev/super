@@ -2,6 +2,7 @@ import type { ProviderName } from "../providers/types.js";
 import type { ProviderFilesystemPolicy } from "../providers/filesystem_permissions.js";
 import type { ShellInvocationPolicy } from "../tools/shell_invocation_policy.js";
 import { buildModeContractJson, type SupervisorModeGuidance } from "./compile_mode_contract.js";
+import type { ActiveProcessState } from "../server/stdio/supervisor/process_runtime.js";
 
 export type AgentModeContextInput = {
   currentMode?: string;
@@ -12,6 +13,7 @@ export type AgentModeContextInput = {
   provider?: ProviderName;
   providerFilesystemPolicy?: ProviderFilesystemPolicy;
   shellInvocationPolicy?: ShellInvocationPolicy;
+  activeProcessState?: ActiveProcessState;
 };
 
 function backtickedList(values: string[]): string {
@@ -91,19 +93,31 @@ function appendShellPolicy(promptParts: string[], input: AgentModeContextInput):
 export function appendAgentModeContext(promptParts: string[], input: AgentModeContextInput): void {
   const currentMode = String(input.currentMode ?? "").trim();
   const allowedNextModes = (input.allowedNextModes ?? []).map((entry) => String(entry ?? "").trim()).filter(Boolean);
+  const processOwnedProgression = Boolean(input.activeProcessState?.stageId || input.activeProcessState?.profileId);
   if (currentMode) {
-    const modeContractJson = buildModeContractJson({
-      currentMode,
-      allowedNextModes,
-      modePayloadFieldsByMode: input.modePayloadFieldsByMode,
-      modeGuidanceByMode: input.modeGuidanceByMode,
-    });
+    const modeContractJson = processOwnedProgression
+      ? JSON.stringify(
+          {
+            worker_mode: currentMode,
+            progression_owner: "supervisor",
+          },
+          null,
+          2,
+        )
+      : buildModeContractJson({
+          currentMode,
+          allowedNextModes,
+          modePayloadFieldsByMode: input.modePayloadFieldsByMode,
+          modeGuidanceByMode: input.modeGuidanceByMode,
+        });
     promptParts.push(
-      "Mode Contract (agent-visible):",
+      processOwnedProgression ? "Worker Profile Contract (agent-visible):" : "Mode Contract (agent-visible):",
       "",
       modeContractJson,
       "",
-      "Use the `switch_mode` CLI only when you need to move to another mode. Choose `--target-mode` from `candidate_modes` and include a concise `--reason`.",
+      processOwnedProgression
+        ? "Progression is supervisor-owned on this run. Do not use `switch_mode`. When this task packet is complete, blocked, or contradicted, use `report_process_result` so the supervisor can choose the next worker invocation."
+        : "Use the `switch_mode` CLI only when you need to move to another mode. Choose `--target-mode` from `candidate_modes` and include a concise `--reason`.",
       "",
     );
   }

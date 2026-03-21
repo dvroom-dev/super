@@ -4,6 +4,11 @@ import type { renderRunConfig } from "../../../supervisor/run_config.js";
 import type { appendTurnTelemetry } from "../supervisor/telemetry.js";
 import type { RuntimeContext } from "./context.js";
 import { frontmatterValue, resolveInitialMode } from "../supervisor/mode_runtime.js";
+import {
+  isV2ProcessEnabled,
+  resolveInitialProcessStage,
+  resolveTaskProfileMode,
+} from "../supervisor/process_runtime.ts";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -34,6 +39,10 @@ export async function shouldRunInitialSupervisorBootstrap(args: {
   currentThreadId?: string;
   agentBaseDir?: string;
 }): Promise<boolean> {
+  if (isV2ProcessEnabled(args.renderedRunConfig)) {
+    if (args.currentThreadId) return false;
+    return !frontmatterValue(args.documentText, "mode")?.trim();
+  }
   if (!args.agentBaseDir) return false;
   if (args.currentThreadId) return false;
   if (frontmatterValue(args.documentText, "mode")?.trim()) return false;
@@ -45,6 +54,14 @@ export async function initialBootstrapModesFor(args: {
   renderedRunConfig: RenderedRunConfig;
   agentBaseDir?: string;
 }): Promise<string[]> {
+  if (isV2ProcessEnabled(args.renderedRunConfig)) {
+    const initialStage = resolveInitialProcessStage(args.renderedRunConfig);
+    const initialProfile = initialStage
+      ? String(args.renderedRunConfig?.process?.stages?.[initialStage]?.profile ?? "").trim()
+      : "";
+    const initialMode = resolveTaskProfileMode(args.renderedRunConfig, initialProfile || null);
+    return initialMode ? [initialMode] : [];
+  }
   const initialMode = resolveInitialMode(args.renderedRunConfig);
   if (!initialMode) return [];
   return [initialMode];

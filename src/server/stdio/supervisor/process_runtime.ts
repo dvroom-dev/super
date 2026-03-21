@@ -40,6 +40,11 @@ export function resolveTaskProfileMode(config: RenderedRunConfig | null | undefi
   return String(config.taskProfiles[profileId]?.mode ?? "").trim() || null;
 }
 
+export function resolveDocumentWorkerMode(documentText: string): string | null {
+  const fromDoc = String(frontmatterValue(documentText, "mode") ?? "").trim();
+  return fromDoc || null;
+}
+
 export function profileIdForMode(config: RenderedRunConfig | null | undefined, mode: string | null | undefined): string | null {
   const targetMode = String(mode ?? "").trim();
   if (!targetMode || !config?.taskProfiles) return null;
@@ -74,7 +79,7 @@ export function processAssignmentForTransition(args: {
 export function resolveActiveProcessState(documentText: string, config: RenderedRunConfig | null | undefined): ActiveProcessState {
   const stageId = resolveProcessStage(documentText, config);
   const profileId = resolveTaskProfile(documentText, config);
-  const mode = resolveTaskProfileMode(config, profileId);
+  const mode = resolveDocumentWorkerMode(documentText);
   return { stageId, profileId, mode };
 }
 
@@ -124,6 +129,14 @@ export function selectedModelKeyForTaskProfile(
   return null;
 }
 
+export function resumeStrategyForTaskProfile(
+  config: RenderedRunConfig | null | undefined,
+  profileId: string | null | undefined,
+): "same_conversation" | "fork_fresh" {
+  const configured = String(config?.taskProfiles?.[profileId ?? ""]?.resumeStrategy ?? "").trim();
+  return configured === "fork_fresh" ? "fork_fresh" : "same_conversation";
+}
+
 export function applyProcessFrontmatter(
   documentText: string,
   args: { stageId?: string | null; profileId?: string | null; mode?: string | null },
@@ -149,6 +162,7 @@ export function renderProcessContractMarkdown(config: RenderedRunConfig | null |
     stage?.objective ? `- Stage objective: ${stage.objective}` : "",
     profile?.description ? `- Profile description: ${profile.description}` : "",
     profile?.preferredModels?.length ? `- Preferred models: ${profile.preferredModels.join(", ")}` : "",
+    profile?.resumeStrategy ? `- Resume strategy: ${profile.resumeStrategy}` : "",
     profile?.validators?.length || stage?.validators?.length
       ? `- Validators after turn: ${validatorsForActiveProcessState(config, state.stageId, state.profileId).join(", ")}`
       : "",

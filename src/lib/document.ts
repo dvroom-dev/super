@@ -45,6 +45,24 @@ export function buildInitialDocument(args: {
   ].join("\n");
 }
 
+export function buildInitialProcessDocument(args: {
+  conversationId: string;
+  forkId: string;
+  processStage?: string;
+  taskProfile?: string;
+}): string {
+  return [
+    "---",
+    `conversation_id: ${args.conversationId}`,
+    `fork_id: ${args.forkId}`,
+    ...(args.processStage ? [`process_stage: ${args.processStage}`] : []),
+    ...(args.taskProfile ? [`task_profile: ${args.taskProfile}`] : []),
+    "---",
+    "",
+    "<!-- supervisor-owned process bootstrap: no worker conversation has started yet -->",
+  ].join("\n");
+}
+
 export function frontmatterValue(documentText: string, key: string): string | undefined {
   const lines = documentText.split(/\r?\n/);
   if (lines[0] !== "---") return undefined;

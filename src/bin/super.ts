@@ -1,14 +1,15 @@
 import path from "node:path";
 import { loadRunConfigForDirectory, renderRunConfig } from "../supervisor/run_config.ts";
 import { resolveModeConfig } from "../server/stdio/supervisor/mode_runtime.ts";
-import { resolveInitialProcessStage, resolveTaskProfileMode } from "../server/stdio/supervisor/process_runtime.ts";
+import { isV2ProcessEnabled, resolveInitialProcessStage, resolveTaskProfileMode } from "../server/stdio/supervisor/process_runtime.ts";
 import { handleConversationSupervise } from "../server/stdio/requests/conversation_supervise.ts";
 import { newId } from "../lib/ids.ts";
-import { buildInitialDocument, normalizeExportedDocumentFrontmatter } from "../lib/document.ts";
+import { buildInitialDocument, buildInitialProcessDocument, normalizeExportedDocumentFrontmatter } from "../lib/document.ts";
 import { createNotificationHandler } from "../lib/notifications.ts";
 import { createRuntimeContext } from "../lib/context.ts";
 import { appendEvents, exportSessionDocument, loadSuperState, saveSuperState } from "../lib/state.ts";
 import { loadForkDocument } from "../lib/store.ts";
+import { writeProcessLedger } from "../server/stdio/supervisor/process_ledger.ts";
 import type { CliOptions, SuperEvent, SuperState } from "../lib/types.ts";
 
 function usage(): string {
@@ -109,6 +110,23 @@ async function buildNewDocument(options: CliOptions) {
   const { agentProvider, agentModel } = resolveRuntimeProvidersAndModels(options, renderedConfig);
   const initialStage = resolveInitialProcessStage(renderedConfig);
   const initialTaskProfile = initialStage ? renderedConfig?.process?.stages?.[initialStage]?.profile ?? null : null;
+  if (isV2ProcessEnabled(renderedConfig)) {
+    const documentText = buildInitialProcessDocument({
+      conversationId,
+      forkId,
+      processStage: initialStage ?? undefined,
+      taskProfile: initialTaskProfile ?? undefined,
+    });
+    return {
+      documentText,
+      conversationId,
+      activeForkId: forkId,
+      activeProcessStage: initialStage ?? undefined,
+      activeTaskProfile: initialTaskProfile ?? undefined,
+      activeModePayload: {},
+      renderedConfig,
+    };
+  }
   const mode = options.startMode
     ?? (initialTaskProfile ? resolveTaskProfileMode(renderedConfig, initialTaskProfile) : null)
     ?? renderedConfig?.modeStateMachine?.initialMode
@@ -283,6 +301,11 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     lastStopDetails: result.stopDetails ?? [],
   };
   await saveSuperState(options.workspaceRoot, nextState);
+  await writeProcessLedger({
+    workspaceRoot: options.workspaceRoot,
+    renderedRunConfig: renderedConfig,
+    state: nextState,
+  });
   await appendEvents(options.workspaceRoot, events);
   await exportSessionDocument(options.workspaceRoot, documentTextRef.value, options.outputPath);
   return { state: nextState, documentText: documentTextRef.value, assistantMessages };

@@ -415,7 +415,7 @@ export function compileFullPrompt(input: CompileInputs): { prompt: PromptContent
   }
   appendProcessContract(promptParts, input);
   appendActiveModeContract(promptParts, input, parsed);
-  appendAgentModeContext(promptParts, input);
+  appendAgentModeContext(promptParts, { ...input, activeProcessState: input.activeProcessState });
   appendSharedPromptContext(promptParts, input);
 
   promptParts.push(FULL_PROMPT_POSTLUDE.replace("{transcript}", transcript.trim()));
@@ -459,7 +459,7 @@ export function compileIncrementalPrompt(input: CompileInputs): { prompt: Prompt
   }
   appendProcessContract(promptParts, input);
   appendActiveModeContract(promptParts, input, parsed);
-  appendAgentModeContext(promptParts, input);
+  appendAgentModeContext(promptParts, { ...input, activeProcessState: input.activeProcessState });
   appendSharedPromptContext(promptParts, input);
 
   promptParts.push(INCREMENTAL_PROMPT_POSTLUDE.replace("{last_user_message}", lastUser.content.trim()));
@@ -504,7 +504,7 @@ export function compileRecoveryPrompt(
   }
 
   appendProcessContract(promptParts, input);
-  appendAgentModeContext(promptParts, input);
+  appendAgentModeContext(promptParts, { ...input, activeProcessState: input.activeProcessState });
   appendSharedPromptContext(promptParts, input);
 
   promptParts.push(

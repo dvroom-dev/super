@@ -35,9 +35,12 @@ import { runSupervisorRecoverySummary } from "../supervisor/supervisor_run.js";
 import { persistAgentTurnWithoutSupervisor } from "../supervisor/no_supervisor_finalize.js";
 import {
   allowedNextModesForProcess,
+  isV2ProcessEnabled,
   profileIdForMode,
   renderProcessContractMarkdown,
+  resolveDocumentWorkerMode,
   resolveActiveProcessState,
+  resolveTaskProfileMode,
   selectedModelKeyForTaskProfile,
   validatorsForActiveProcessState,
 } from "../supervisor/process_runtime.js";
@@ -154,7 +157,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   let repeatedValidatorFailureCount = 0;
   const renderedRunConfig = initialRunConfig;
   const runtimeStateForDocument = (docText: string) => ({
-    activeMode: resolveActiveMode(docText, renderedRunConfig),
+    activeMode: resolveDocumentWorkerMode(docText) ?? undefined,
     activeProcessStage: resolveActiveProcessState(docText, renderedRunConfig).stageId ?? undefined,
     activeTaskProfile: resolveActiveProcessState(docText, renderedRunConfig).profileId ?? undefined,
     activeModePayload: resolveModePayload(docText),
@@ -190,7 +193,11 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       return { conversationId, forkId: lifecycle.currentForkId(), mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
     }
     const documentProcessState = resolveActiveProcessState(currentDocText, renderedRunConfig);
-    const activeMode = documentProcessState.mode ?? resolveActiveMode(currentDocText, renderedRunConfig);
+    const activeMode = documentProcessState.mode
+      ?? (isV2ProcessEnabled(renderedRunConfig)
+        ? resolveTaskProfileMode(renderedRunConfig, documentProcessState.profileId)
+        : null)
+      ?? resolveActiveMode(currentDocText, renderedRunConfig);
     const modeConfig = resolveModeConfig(renderedRunConfig, activeMode);
     const selectedModelKey = selectedModelKeyForTaskProfile(renderedRunConfig, documentProcessState.profileId, providerName);
     const selectedModel = selectedModelKey ? renderedRunConfig?.models?.[selectedModelKey] : undefined;
@@ -276,7 +283,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       if (bootstrapModes.length === 0) {
         throw new Error("initial supervisor bootstrap requires at least one allowed starting mode");
       }
-      const bootstrapMode = resolveInitialMode(renderedRunConfig);
+      const bootstrapMode = bootstrapModes[0]!;
       const bootstrapReview = await runSuperviseReviewStep({
         ctx,
         workspaceRoot,
@@ -333,8 +340,8 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         lifecycle.finishRun("stopped");
         return { conversationId, forkId: lifecycle.currentForkId(), mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
       }
-      if (bootstrapReview.effectiveAction !== "fork" || bootstrapReview.nextMode !== bootstrapMode) {
-        throw new Error(`initial supervisor bootstrap must fork into the configured initial mode '${bootstrapMode}'`);
+      if (bootstrapReview.effectiveAction !== "fork" || !bootstrapReview.nextMode || !bootstrapModes.includes(bootstrapReview.nextMode)) {
+        throw new Error(`initial supervisor bootstrap must fork into one of the allowed starting modes: ${bootstrapModes.join(", ")}`);
       }
       const bootstrapFork = await applySupervisorForkDecision({
         ctx,
@@ -349,7 +356,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         agentBaseDir: agentWorkspaceRoot,
         supervisorBaseDir: supervisorWorkspaceRoot,
         requestAgentRuleRequirements,
-        activeMode: bootstrapMode,
+        activeMode: bootstrapReview.nextMode,
         allowedNextModes: bootstrapModes,
         review: bootstrapReview.review,
         reasonLabel: "run_start_bootstrap",
