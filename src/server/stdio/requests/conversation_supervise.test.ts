@@ -2026,4 +2026,165 @@ describe("handleConversationSupervise", () => {
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
     }
   });
+
+  it("lets report_process_result drive stage/profile progression on the v2 path", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-process-result-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "  supervisor_provider: mock",
+        "  supervisor_model: mock-supervisor",
+        "task_profiles:",
+        "  action_vocabulary:",
+        "    mode: explore_and_solve",
+        "  spatial_analysis:",
+        "    mode: theory",
+        "process:",
+        "  initial_stage: action_vocabulary",
+        "  stages:",
+        "    action_vocabulary:",
+        "      profile: action_vocabulary",
+        "      allowed_next_profiles: [spatial_analysis]",
+        "    feature_inventory:",
+        "      profile: spatial_analysis",
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: explore seed",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory seed",
+        "mode_state_machine:",
+        "  initial_mode: explore_and_solve",
+        "  transitions:",
+        "    explore_and_solve: [theory]",
+      ].join("\n"),
+      "utf8",
+    );
+    const { ctx } = makeCtx({ conversationId: "conversation_v2_process_result" });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```tool_call name=report_process_result",
+      '{"outcome":"complete","summary":"action vocabulary established","evidence":"ACTION1 moves the actor","requested_profile":"spatial_analysis","user_message":"Inventory frontier features next."}',
+      "```",
+    ].join("\n");
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "fork_new_conversation",
+      payload: strictSupervisorPayload({
+        mode: "theory",
+        mode_payload: { theory: {} },
+        wait_for_boundary: false,
+      }),
+      transition_payload: {
+        process_stage: "feature_inventory",
+        task_profile: "spatial_analysis",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [
+          { mode: "theory", confidence: "high", evidence: "next process profile maps to theory" },
+        ],
+        recommended_action: "fork_new_conversation",
+      },
+      reasoning: "advance from action_vocabulary to feature_inventory",
+      agent_model: null,
+    });
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_v2_process_result",
+          forkId: "fork_doc",
+          mode: "explore_and_solve",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+      });
+      expect(result.activeMode).toBe("theory");
+      expect((result as any).activeProcessStage).toBe("feature_inventory");
+      expect((result as any).activeTaskProfile).toBe("spatial_analysis");
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+    }
+  });
+
+  it("rejects switch_mode on schema_version 2 runs", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-switch-reject-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "task_profiles:",
+        "  spatial_analysis:",
+        "    mode: theory",
+        "process:",
+        "  initial_stage: feature_inventory",
+        "  stages:",
+        "    feature_inventory:",
+        "      profile: spatial_analysis",
+        "modes:",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory seed",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: explore seed",
+        "mode_state_machine:",
+        "  initial_mode: theory",
+        "  transitions:",
+        "    theory: [explore_and_solve]",
+      ].join("\n"),
+      "utf8",
+    );
+    const { ctx } = makeCtx({ conversationId: "conversation_v2_switch_reject" });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```tool_call name=switch_mode",
+      '{"target_mode":"explore_and_solve","reason":"legacy path"}',
+      "```",
+    ].join("\n");
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_v2_switch_reject",
+          forkId: "fork_doc",
+          mode: "theory",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+        supervisor: { enabled: false },
+      });
+      expect(result.activeMode).toBe("theory");
+      expect(result.stopReasons).toContain("cycle_limit");
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  });
 });

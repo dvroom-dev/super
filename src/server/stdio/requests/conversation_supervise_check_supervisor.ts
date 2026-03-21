@@ -29,7 +29,7 @@ type InlineCheckSupervisorOutcome =
 
 export async function applyInlineCheckSupervisorOutcome(args: {
   review: SupervisorReviewResult | undefined;
-  reviewTrigger?: "agent_check_supervisor" | "agent_wrapup_certification_request";
+  reviewTrigger?: "agent_check_supervisor" | "agent_wrapup_certification_request" | "agent_process_result_report";
   stopReason?: string;
   reasonLabel?: string;
   detailLabel?: string;

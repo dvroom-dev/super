@@ -4,6 +4,7 @@ export type SupervisorTriggerKind =
   | "agent_compaction"
   | "agent_error"
   | "agent_check_supervisor"
+  | "agent_process_result_report"
   | "agent_wrapup_certification_request"
   | "agent_tool_intercept"
   | "agent_switch_mode_request";
@@ -139,6 +140,13 @@ const TRIGGER_DECISIONS: Record<SupervisorTriggerKind, SupervisorDecisionKind[]>
     "fork_new_conversation",
     "resume_mode_head",
     "stop_and_return",
+  ],
+  agent_process_result_report: [
+    "append_message_and_continue",
+    "fork_new_conversation",
+    "resume_mode_head",
+    "stop_and_return",
+    "continue",
   ],
   agent_wrapup_certification_request: [
     "append_message_and_continue",

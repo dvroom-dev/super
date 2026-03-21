@@ -7,6 +7,7 @@ export type SupervisorPromptTrigger =
   | "agent_compaction"
   | "agent_error"
   | "agent_check_supervisor"
+  | "agent_process_result_report"
   | "agent_wrapup_certification_request"
   | "agent_tool_intercept"
   | "agent_switch_mode_request"
@@ -28,6 +29,7 @@ const SUPERVISOR_PROMPT_TRIGGER_ALIASES: Record<string, SupervisorPromptTrigger>
   agent_compaction: "agent_compaction",
   agent_error: "agent_error",
   agent_check_supervisor: "agent_check_supervisor",
+  agent_process_result_report: "agent_process_result_report",
   agent_wrapup_certification_request: "agent_wrapup_certification_request",
   agent_tool_intercept: "agent_tool_intercept",
   agent_switch_mode_request: "agent_switch_mode_request",

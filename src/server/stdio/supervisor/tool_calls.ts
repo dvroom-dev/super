@@ -80,6 +80,47 @@ export async function executeInlineToolCall(args: {
       ok = true;
       supervisorReview = outcome.review;
       supervisorThreadId = outcome.threadId;
+    } else if (toolName === "report_process_result") {
+      if (!args.rulesCheck) {
+        throw new Error("report_process_result requires rulesCheck context");
+      }
+      const outcomeText = typeof args.call.args?.outcome === "string" ? String(args.call.args.outcome).trim() : "";
+      const summary = typeof args.call.args?.summary === "string" ? String(args.call.args.summary).trim() : "";
+      const evidence = typeof args.call.args?.evidence === "string" ? String(args.call.args.evidence).trim() : "";
+      const blocker = typeof args.call.args?.blocker === "string" ? String(args.call.args.blocker).trim() : "";
+      const requestedProfile = typeof args.call.args?.requested_profile === "string" ? String(args.call.args.requested_profile).trim() : "";
+      const userMessage = typeof args.call.args?.user_message === "string" ? String(args.call.args.user_message).trim() : "";
+      if (!outcomeText) throw new Error("report_process_result requires outcome");
+      if (!summary) throw new Error("report_process_result requires summary");
+      const requestText = [
+        "<agent-process-result-report>",
+        `outcome: ${outcomeText}`,
+        `summary: ${summary}`,
+        evidence ? `evidence: ${evidence}` : "",
+        blocker ? `blocker: ${blocker}` : "",
+        requestedProfile ? `requested_profile: ${requestedProfile}` : "",
+        userMessage ? `user_message: ${userMessage}` : "",
+        "</agent-process-result-report>",
+        "Decide the next process step. Use supervisor-owned progression; do not assume the worker chose correctly.",
+      ].filter(Boolean).join("\n");
+      const outcome = await runSupervisorReview({
+        ...args.rulesCheck,
+        assistantText: requestText,
+        trigger: "agent_process_result_report",
+        mode: "hard",
+      });
+      output = formatSupervisorCheckOutput({
+        review: outcome.review,
+        promptLogRel: outcome.promptLogRel,
+        responseLogRel: outcome.responseLogRel,
+        source: "report_process_result",
+        trigger: "agent_process_result_report",
+        mode: "hard",
+        reasons: ["report_process_result"],
+      });
+      ok = true;
+      supervisorReview = outcome.review;
+      supervisorThreadId = outcome.threadId;
     } else if (toolName === "certify_wrapup") {
       if (!args.rulesCheck) {
         throw new Error("certify_wrapup requires rulesCheck context");

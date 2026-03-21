@@ -22,7 +22,7 @@ import type { SwitchModeRequest } from "./conversation_supervise_switch_mode.js"
 import { validateSwitchModeHandoffText } from "./conversation_supervise_switch_mode.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
-import { applyProcessFrontmatter, profileIdForMode, stageIdForProfile } from "../supervisor/process_runtime.ts";
+import { applyProcessFrontmatter, processAssignmentForTransition } from "../supervisor/process_runtime.ts";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -275,8 +275,8 @@ export async function applySupervisorForkDecision(args: {
         conversationId: args.conversationId,
         forkId: nextForkId,
         mode: requestedMode,
-        processStage: stageIdForProfile(effectiveRenderedRunConfig, profileIdForMode(effectiveRenderedRunConfig, requestedMode)) ?? undefined,
-        taskProfile: profileIdForMode(effectiveRenderedRunConfig, requestedMode) ?? undefined,
+        processStage: processAssignmentForTransition({ config: effectiveRenderedRunConfig, mode: requestedMode, transitionPayload: activeTransitionPayload }).stageId ?? undefined,
+        taskProfile: processAssignmentForTransition({ config: effectiveRenderedRunConfig, mode: requestedMode, transitionPayload: activeTransitionPayload }).profileId ?? undefined,
         systemMessage: buildSessionSystemPromptForMode({ renderedRunConfig: effectiveRenderedRunConfig, mode: requestedMode, modePayload: nextModePayload, provider: args.providerName, model: args.currentModel, agentRules: nextModeRuleSet.requirements }),
         userMessage: seeded,
         modePayload: nextModePayload,
@@ -357,11 +357,11 @@ export async function applySupervisorForkDecision(args: {
           "mode",
           requestedMode,
         ),
-        (() => {
-          const profileId = profileIdForMode(args.renderedRunConfig, requestedMode);
-          const stageId = stageIdForProfile(args.renderedRunConfig, profileId);
-          return { mode: requestedMode, profileId, stageId };
-        })(),
+        processAssignmentForTransition({
+          config: args.renderedRunConfig,
+          mode: requestedMode,
+          transitionPayload: activeTransitionPayload,
+        }),
       ),
       nextModePayload,
     );
@@ -435,8 +435,8 @@ export async function applySupervisorForkDecision(args: {
     conversationId: args.conversationId,
     forkId: nextForkId,
     mode: requestedMode,
-    processStage: stageIdForProfile(effectiveRenderedRunConfig, profileIdForMode(effectiveRenderedRunConfig, requestedMode)) ?? undefined,
-    taskProfile: profileIdForMode(effectiveRenderedRunConfig, requestedMode) ?? undefined,
+    processStage: processAssignmentForTransition({ config: effectiveRenderedRunConfig, mode: requestedMode, transitionPayload: activeTransitionPayload }).stageId ?? undefined,
+    taskProfile: processAssignmentForTransition({ config: effectiveRenderedRunConfig, mode: requestedMode, transitionPayload: activeTransitionPayload }).profileId ?? undefined,
     systemMessage: buildSessionSystemPromptForMode({ renderedRunConfig: effectiveRenderedRunConfig, mode: requestedMode, modePayload, provider: args.providerName, model: args.currentModel, agentRules: nextModeRuleSet.requirements }),
     userMessage: seeded,
     modePayload,

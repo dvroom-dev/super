@@ -58,6 +58,19 @@ export function stageIdForProfile(config: RenderedRunConfig | null | undefined, 
   return null;
 }
 
+export function processAssignmentForTransition(args: {
+  config: RenderedRunConfig | null | undefined;
+  mode: string | null | undefined;
+  transitionPayload?: Record<string, string> | null | undefined;
+}): { mode: string | null; profileId: string | null; stageId: string | null } {
+  const mode = String(args.mode ?? "").trim() || null;
+  const requestedProfile = String(args.transitionPayload?.task_profile ?? "").trim() || null;
+  const requestedStage = String(args.transitionPayload?.process_stage ?? "").trim() || null;
+  const profileId = requestedProfile || profileIdForMode(args.config, mode);
+  const stageId = requestedStage || stageIdForProfile(args.config, profileId);
+  return { mode, profileId, stageId };
+}
+
 export function resolveActiveProcessState(documentText: string, config: RenderedRunConfig | null | undefined): ActiveProcessState {
   const stageId = resolveProcessStage(documentText, config);
   const profileId = resolveTaskProfile(documentText, config);

@@ -13,7 +13,7 @@ import {
   updateFrontmatterField,
   updateFrontmatterModePayload,
 } from "../supervisor/mode_runtime.js";
-import { applyProcessFrontmatter, profileIdForMode, stageIdForProfile } from "../supervisor/process_runtime.ts";
+import { applyProcessFrontmatter, processAssignmentForTransition } from "../supervisor/process_runtime.ts";
 import type { BudgetState } from "../supervisor/agent_turn.js";
 import type { InlineToolCall } from "../supervisor/inline_tools.js";
 import type { RuntimeContext } from "./context.js";
@@ -322,11 +322,10 @@ export async function applySwitchModeRequestFork(
           "mode",
           targetMode,
         ),
-        (() => {
-          const profileId = profileIdForMode(effectiveRenderedRunConfig, targetMode);
-          const stageId = stageIdForProfile(effectiveRenderedRunConfig, profileId);
-          return { mode: targetMode, profileId, stageId };
-        })(),
+        processAssignmentForTransition({
+          config: effectiveRenderedRunConfig,
+          mode: targetMode,
+        }),
       ),
       modePayload,
     );
@@ -370,8 +369,8 @@ export async function applySwitchModeRequestFork(
     conversationId: args.conversationId,
     forkId: nextForkId,
     mode: targetMode,
-    processStage: stageIdForProfile(effectiveRenderedRunConfig, profileIdForMode(effectiveRenderedRunConfig, targetMode)) ?? undefined,
-    taskProfile: profileIdForMode(effectiveRenderedRunConfig, targetMode) ?? undefined,
+    processStage: processAssignmentForTransition({ config: effectiveRenderedRunConfig, mode: targetMode }).stageId ?? undefined,
+    taskProfile: processAssignmentForTransition({ config: effectiveRenderedRunConfig, mode: targetMode }).profileId ?? undefined,
     systemMessage: buildSessionSystemPromptForMode({
       renderedRunConfig: effectiveRenderedRunConfig,
       mode: targetMode,

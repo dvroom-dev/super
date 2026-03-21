@@ -22,6 +22,7 @@ import {
 } from "./conversation_supervise_tool_interception.js";
 import { runInlineToolInterceptionReview } from "./conversation_supervise_tool_interception_review.js";
 import type { InlineToolCallOutcome, ProcessInlineToolCallsArgs } from "./conversation_supervise_inline_tools_types.js";
+import { isV2ProcessEnabled } from "../supervisor/process_runtime.ts";
 
 function normalizeInlineToolName(name: string): string {
   const trimmed = String(name ?? "").trim();
@@ -138,6 +139,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
   };
 
   let checkSupervisorReview: SupervisorReviewResult | undefined;
+  let processResultReview: SupervisorReviewResult | undefined;
   let wrapupCertificationReview: SupervisorReviewResult | undefined;
   for (let i = 0; i < toolCalls.length; i += 1) {
     const call = toolCalls[i];
@@ -157,6 +159,12 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
       return continueAfterInlineTermination();
     }
     if (switchParse.kind === "request") {
+      if (isV2ProcessEnabled(args.renderedRunConfig)) {
+        appendInlineError(
+          "switch_mode is legacy on schema_version: 2 runs. Use report_process_result so the supervisor owns stage/profile progression.",
+        );
+        return continueAfterInlineTermination();
+      }
       if (args.disableSupervision || args.effectiveSupervisor.enabled === false) {
         const direct = await applySwitchModeRequestFork({
           ctx: args.ctx,
@@ -450,6 +458,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
     if (execution.supervisorThreadId) nextSupervisorThreadId = execution.supervisorThreadId;
     if (execution.supervisorReview) {
       if (toolName === "certify_wrapup") wrapupCertificationReview = execution.supervisorReview;
+      else if (toolName === "report_process_result") processResultReview = execution.supervisorReview;
       else checkSupervisorReview = execution.supervisorReview;
     }
     const responseOutputText = [String(execution.output ?? "").trim(), execution.error ? `[error]\n${execution.error}` : ""].filter(Boolean).join("\n\n").trim();
@@ -515,6 +524,49 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
   nextTransitionPayload = checkSupervisorState.activeTransitionPayload;
   nextResync = checkSupervisorState.fullResyncNeeded;
   if (checkSupervisorOutcome.kind === "stop") return checkSupervisorOutcome;
+
+  const processResultState = {
+    currentDocText: nextDocText,
+    currentThreadId: nextThreadId,
+    currentSupervisorThreadId: nextSupervisorThreadId,
+    activeTransitionPayload: nextTransitionPayload,
+    fullResyncNeeded: nextResync,
+  };
+  const processResultOutcome = await applyInlineCheckSupervisorOutcome({
+    review: processResultReview,
+    reviewTrigger: "agent_process_result_report",
+    stopReason: "process_result_report",
+    reasonLabel: "process_result_report",
+    detailLabel: "report_process_result requested progression",
+    state: processResultState,
+    ctx: args.ctx,
+    workspaceRoot: args.workspaceRoot,
+    docPath: args.docPath,
+    conversationId: args.conversationId,
+    activeForkId: args.activeForkId,
+    switchActiveFork: args.switchActiveFork,
+    renderedRunConfig: args.renderedRunConfig,
+    runConfigPath: args.runConfigPath,
+    configBaseDir: args.configBaseDir,
+    agentBaseDir: args.agentBaseDir,
+    supervisorBaseDir: args.supervisorBaseDir,
+    requestAgentRuleRequirements: args.requestAgentRuleRequirements,
+    activeMode: args.activeMode,
+    allowedNextModes: args.allowedNextModes,
+    startedAt: args.startedAt,
+    budget: args.budget,
+    providerName: args.providerName,
+    supervisorProviderName: args.supervisorProviderName,
+    currentModel: args.currentModel,
+    supervisorModel: args.supervisorModel,
+    effectiveAgentRequirements: args.effectiveAgentRequirements,
+  });
+  nextDocText = processResultState.currentDocText;
+  nextThreadId = processResultState.currentThreadId;
+  nextSupervisorThreadId = processResultState.currentSupervisorThreadId;
+  nextTransitionPayload = processResultState.activeTransitionPayload;
+  nextResync = processResultState.fullResyncNeeded;
+  if (processResultOutcome.kind === "stop") return processResultOutcome;
 
   const wrapupCertificationState = {
     currentDocText: nextDocText,

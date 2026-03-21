@@ -167,6 +167,23 @@ supervisor:
           text: |
             Supervisor guidance:
             {{message}}
+    agent_process_result_report:
+      supervisor_prompt:
+        operation: append
+        parts:
+          - literal: |
+              Trigger context:
+              - Trigger: `agent_process_result_report`.
+              - Why this review ran: the worker reported process-stage results and requested supervisor-owned progression.
+              - Decide whether to continue in the same stage/profile, route to a new stage/profile, stop, or inject corrective guidance.
+          - builtin: message_templates
+      message_templates:
+        - name: replace_process_result_with_guidance
+          description: "Replace the process result report with direct supervisor guidance."
+          message_type: user
+          text: |
+            Supervisor guidance:
+            {{message}}
     cadence:
       supervisor_prompt:
         operation: append
