@@ -21,6 +21,8 @@ export type RunHistoryForkSummary = {
   forkSummary?: string;
   actionSummary?: string;
   mode?: string;
+  processStage?: string;
+  taskProfile?: string;
   docHash?: string;
   initialUserPreview?: string;
   lastAssistantPreview?: string;
@@ -41,6 +43,8 @@ type RunHistoryIndex = {
     firstForkAt?: string;
     lastForkAt?: string;
     latestMode?: string;
+    latestProcessStage?: string;
+    latestTaskProfile?: string;
   }>;
   forks: RunHistoryForkSummary[];
 };
@@ -103,6 +107,12 @@ function preview(text: string | undefined, maxChars = PREVIEW_LIMIT): string | u
 
 function parseModeFromDocument(text: string): string | undefined {
   const match = String(text ?? "").match(/^mode:\s*(.+)$/m);
+  const value = match?.[1]?.trim();
+  return value || undefined;
+}
+
+function parseFrontmatterValue(text: string, key: string): string | undefined {
+  const match = String(text ?? "").match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
   const value = match?.[1]?.trim();
   return value || undefined;
 }
@@ -244,6 +254,8 @@ async function buildForkArtifact(args: {
     forkSummary: args.fork.forkSummary,
     actionSummary: args.fork.actionSummary,
     mode: parseModeFromDocument(args.documentText),
+    processStage: parseFrontmatterValue(args.documentText, "process_stage"),
+    taskProfile: parseFrontmatterValue(args.documentText, "task_profile"),
     docHash: args.fork.docHash,
     initialUserPreview: firstPreview(chatBlocks, "user"),
     lastAssistantPreview: latestPreview(chatBlocks, "assistant"),
@@ -435,6 +447,8 @@ export async function buildSupervisorRunHistoryContext(args: {
         firstForkAt: built[0]?.createdAt,
         lastForkAt: built.at(-1)?.createdAt,
         latestMode: built.at(-1)?.mode,
+        latestProcessStage: built.at(-1)?.processStage,
+        latestTaskProfile: built.at(-1)?.taskProfile,
       });
       forks.push(...built);
     }

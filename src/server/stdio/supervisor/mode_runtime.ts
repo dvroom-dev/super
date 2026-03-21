@@ -343,6 +343,8 @@ export function buildFreshModeDocument(args: {
   conversationId: string;
   forkId: string;
   mode: string;
+  processStage?: string;
+  taskProfile?: string;
   systemMessage?: string;
   userMessage: string;
   modePayload?: Record<string, string>;
@@ -360,6 +362,8 @@ export function buildFreshModeDocument(args: {
     `conversation_id: ${args.conversationId}`,
     `fork_id: ${args.forkId}`,
     `mode: ${args.mode}`,
+    ...(String(args.processStage ?? "").trim() ? [`process_stage: ${String(args.processStage).trim()}`] : []),
+    ...(String(args.taskProfile ?? "").trim() ? [`task_profile: ${String(args.taskProfile).trim()}`] : []),
     ...(encodedPayload ? [`${MODE_PAYLOAD_FRONTMATTER_KEY}: ${encodedPayload}`] : []),
     "---",
     "",

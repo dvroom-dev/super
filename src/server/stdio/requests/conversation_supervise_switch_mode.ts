@@ -13,6 +13,7 @@ import {
   updateFrontmatterField,
   updateFrontmatterModePayload,
 } from "../supervisor/mode_runtime.js";
+import { applyProcessFrontmatter, profileIdForMode, stageIdForProfile } from "../supervisor/process_runtime.ts";
 import type { BudgetState } from "../supervisor/agent_turn.js";
 import type { InlineToolCall } from "../supervisor/inline_tools.js";
 import type { RuntimeContext } from "./context.js";
@@ -314,11 +315,21 @@ export async function applySwitchModeRequestFork(
       "user",
       seeded,
     );
-    const nextDoc = updateFrontmatterModePayload(updateFrontmatterField(
-      updateFrontmatterForkId(resumedDoc, args.conversationId, nextForkId),
-      "mode",
-      targetMode,
-    ), modePayload);
+    const nextDoc = updateFrontmatterModePayload(
+      applyProcessFrontmatter(
+        updateFrontmatterField(
+          updateFrontmatterForkId(resumedDoc, args.conversationId, nextForkId),
+          "mode",
+          targetMode,
+        ),
+        (() => {
+          const profileId = profileIdForMode(effectiveRenderedRunConfig, targetMode);
+          const stageId = stageIdForProfile(effectiveRenderedRunConfig, profileId);
+          return { mode: targetMode, profileId, stageId };
+        })(),
+      ),
+      modePayload,
+    );
     const nextFork = await args.ctx.store.createFork({
       workspaceRoot: args.workspaceRoot,
       conversationId: args.conversationId,
@@ -359,6 +370,8 @@ export async function applySwitchModeRequestFork(
     conversationId: args.conversationId,
     forkId: nextForkId,
     mode: targetMode,
+    processStage: stageIdForProfile(effectiveRenderedRunConfig, profileIdForMode(effectiveRenderedRunConfig, targetMode)) ?? undefined,
+    taskProfile: profileIdForMode(effectiveRenderedRunConfig, targetMode) ?? undefined,
     systemMessage: buildSessionSystemPromptForMode({
       renderedRunConfig: effectiveRenderedRunConfig,
       mode: targetMode,

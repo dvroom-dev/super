@@ -61,7 +61,7 @@ export function frontmatterValue(documentText: string, key: string): string | un
 
 export function normalizeExportedDocumentFrontmatter(
   documentText: string,
-  args: { conversationId: string; forkId: string; mode?: string },
+  args: { conversationId: string; forkId: string; mode?: string; processStage?: string; taskProfile?: string },
 ): string {
   const lines = documentText.split(/\r?\n/);
   if (lines[0] !== "---") return documentText;
@@ -79,6 +79,8 @@ export function normalizeExportedDocumentFrontmatter(
   entries.set("conversation_id", args.conversationId);
   entries.set("fork_id", args.forkId);
   if (args.mode) entries.set("mode", args.mode);
+  if (args.processStage) entries.set("process_stage", args.processStage);
+  if (args.taskProfile) entries.set("task_profile", args.taskProfile);
 
   const normalizedFrontmatter = [
     "---",

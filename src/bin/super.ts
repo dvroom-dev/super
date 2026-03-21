@@ -259,6 +259,8 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     conversationId: result.conversationId,
     forkId: result.forkId,
     mode: result.activeMode || undefined,
+    processStage: (result as any).activeProcessStage || undefined,
+    taskProfile: (result as any).activeTaskProfile || undefined,
   });
   const nextState: SuperState = {
     version: 1,
