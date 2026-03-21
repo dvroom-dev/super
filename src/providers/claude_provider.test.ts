@@ -615,7 +615,8 @@ describe("ClaudeProvider", () => {
     const firstCall = createCalls[0] as any;
     expect(firstCall.name).toBe("super_custom_tools");
     expect(Array.isArray(firstCall.tools)).toBe(true);
-    expect(firstCall.tools[0]?.name).toBe("arc_action");
+    const toolNames = firstCall.tools.map((tool: any) => tool?.name);
+    expect(toolNames).toContain("arc_action");
 
     const options = (capture.invocation?.options ?? {}) as Record<string, any>;
     expect(options.mcpServers?.super_custom_tools).toEqual({ type: "sdk", name: "super_custom_tools" });
@@ -666,6 +667,45 @@ describe("ClaudeProvider", () => {
       any: "payload",
       nested: { ok: true },
     });
+  });
+
+  it("registers supervisor runtime tools as Claude MCP tools and auto-allows them", async () => {
+    const capture: { invocation?: QueryInvocation; closed?: boolean } = {};
+    const createCalls: Array<Record<string, unknown>> = [];
+    const createSdkMcpServer = (options: Record<string, unknown>) => {
+      createCalls.push(options);
+      return { type: "sdk", name: String(options.name ?? "super_custom_tools") };
+    };
+    const query = makeQueryStub(
+      [{ type: "result", subtype: "success", result: "{\"action\":\"ok\"}", session_id: "sess_runtime_tools" }],
+      capture,
+    );
+    const provider = new ClaudeProvider(
+      {
+        ...baseConfig,
+        providerOptions: {
+          allowedTools: ["Bash"],
+        },
+      },
+      { query, createSdkMcpServer },
+    );
+
+    await provider.runOnce(promptContentFromText("runtime tools"));
+
+    expect(createCalls.length).toBe(1);
+    const firstCall = createCalls[0] as any;
+    const toolNames = Array.isArray(firstCall.tools)
+      ? firstCall.tools.map((tool: any) => tool?.name)
+      : [];
+    expect(toolNames).toContain("report_process_result");
+    expect(toolNames).toContain("check_supervisor");
+    expect(toolNames).toContain("certify_wrapup");
+
+    const options = (capture.invocation?.options ?? {}) as Record<string, any>;
+    expect(options.allowedTools).toContain("Bash");
+    expect(options.allowedTools).toContain("report_process_result");
+    const allow = await options.canUseTool("mcp__super_custom_tools__report_process_result", {}, { toolUseID: "tool_runtime_process" });
+    expect(allow?.behavior).toBe("allow");
   });
 
   it("defaults includePartialMessages and emits reasoning provider items", async () => {
