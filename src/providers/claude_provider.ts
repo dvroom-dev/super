@@ -12,7 +12,20 @@ import {
   normalizeClaudeUserMessage,
   normalizeProviderFallback,
 } from "./normalize_item.js";
-import { asRecord, asToolNameList, extractAssistantText, extractDeltaFromStreamEvent, extractResultText, extractUsage, makePermissiveToolInputSchema, makeSwitchModeToolInputSchema, normalizeSchemaConstrainedResultText } from "./claude_provider_helpers.js";
+import {
+  asRecord,
+  asToolNameList,
+  extractAssistantText,
+  extractDeltaFromStreamEvent,
+  extractResultText,
+  extractUsage,
+  makeCertifyWrapupToolInputSchema,
+  makeCheckSupervisorToolInputSchema,
+  makePermissiveToolInputSchema,
+  makeReportProcessResultToolInputSchema,
+  makeSwitchModeToolInputSchema,
+  normalizeSchemaConstrainedResultText,
+} from "./claude_provider_helpers.js";
 import { promptContentToPlainText, type PromptContent } from "../utils/prompt_content.js";
 import { executeTool } from "../tools/tools.js";
 import type { CustomToolDefinition } from "../tools/definitions.js";
@@ -87,7 +100,12 @@ export class ClaudeProvider implements AgentProvider {
           : name === "report_process_result"
             ? "Report task-packet results so the supervisor can decide next process progression."
             : "Request solved-level wrap-up certification from the supervisor.",
-      inputSchema: makePermissiveToolInputSchema(),
+      inputSchema:
+        name === "check_supervisor"
+          ? makeCheckSupervisorToolInputSchema()
+          : name === "report_process_result"
+            ? makeReportProcessResultToolInputSchema()
+            : makeCertifyWrapupToolInputSchema(),
       handler: async () => ({
         content: [{ type: "text", text: "{\"ok\":true,\"queued\":true}" }],
       }),

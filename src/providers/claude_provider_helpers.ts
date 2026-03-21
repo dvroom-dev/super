@@ -185,6 +185,185 @@ export function makeSwitchModeToolInputSchema(): ClaudeToolInputSchema {
   };
 }
 
+export function makeCheckSupervisorToolInputSchema(): ClaudeToolInputSchema {
+  const validate = (value: unknown): SafeParseSuccess | SafeParseFailure => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {
+        success: false,
+        error: {
+          message: "check_supervisor args must be a JSON object",
+          issues: [{ path: [], message: "check_supervisor args must be a JSON object", code: "invalid_type" }],
+          errors: [{ path: [], message: "check_supervisor args must be a JSON object", code: "invalid_type" }],
+        },
+      };
+    }
+    const record = value as Record<string, unknown>;
+    const mode = record.mode == null ? undefined : String(record.mode).trim();
+    if (mode && mode !== "hard" && mode !== "soft") {
+      const issue = { path: ["mode"] as Array<string | number>, message: "mode must be hard or soft", code: "invalid_type" };
+      return {
+        success: false,
+        error: {
+          message: issue.message,
+          issues: [issue],
+          errors: [issue],
+        },
+      };
+    }
+    return { success: true, data: mode ? { mode } : {} };
+  };
+  return {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      mode: { type: "string", description: "Optional supervisor review mode: hard or soft." },
+    },
+    parse: (value) => {
+      const out = validate(value);
+      if (out.success) return out.data;
+      throw new Error(out.error.message);
+    },
+    parseAsync: async (value) => {
+      const out = validate(value);
+      if (out.success) return out.data;
+      throw new Error(out.error.message);
+    },
+    safeParse: (value) => validate(value),
+    safeParseAsync: async (value) => validate(value),
+  };
+}
+
+export function makeReportProcessResultToolInputSchema(): ClaudeToolInputSchema {
+  const validate = (value: unknown): SafeParseSuccess | SafeParseFailure => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {
+        success: false,
+        error: {
+          message: "report_process_result args must be a JSON object",
+          issues: [{ path: [], message: "report_process_result args must be a JSON object", code: "invalid_type" }],
+          errors: [{ path: [], message: "report_process_result args must be a JSON object", code: "invalid_type" }],
+        },
+      };
+    }
+    const record = value as Record<string, unknown>;
+    const outcome = typeof record.outcome === "string" ? record.outcome.trim() : "";
+    const summary = typeof record.summary === "string" ? record.summary.trim() : "";
+    const optionalStringKeys = ["evidence", "blocker", "requested_profile", "user_message"] as const;
+    const issues: Array<{ path: Array<string | number>; message: string; code: string }> = [];
+    if (!outcome) issues.push({ path: ["outcome"], message: "outcome is required", code: "invalid_type" });
+    if (!summary) issues.push({ path: ["summary"], message: "summary is required", code: "invalid_type" });
+    for (const key of optionalStringKeys) {
+      const raw = record[key];
+      if (raw == null) continue;
+      if (typeof raw !== "string" || !raw.trim()) {
+        issues.push({ path: [key], message: `${key} must be a non-empty string when provided`, code: "invalid_type" });
+      }
+    }
+    if (issues.length > 0) {
+      return {
+        success: false,
+        error: {
+          message: issues.map((issue) => issue.message).join("; "),
+          issues,
+          errors: issues,
+        },
+      };
+    }
+    const normalized: Record<string, unknown> = { outcome, summary };
+    for (const key of optionalStringKeys) {
+      const raw = record[key];
+      if (typeof raw === "string" && raw.trim()) normalized[key] = raw.trim();
+    }
+    return { success: true, data: normalized };
+  };
+  return {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      outcome: { type: "string", description: "Worker result classification, for example complete, blocked, or contradicted." },
+      summary: { type: "string", description: "Short summary of what was learned or completed." },
+      evidence: { type: "string", description: "Concrete supporting evidence for the reported outcome." },
+      blocker: { type: "string", description: "Exact blocker if the task packet is blocked." },
+      requested_profile: { type: "string", description: "Optional requested next task profile for supervisor consideration." },
+      user_message: { type: "string", description: "Optional concise handoff message for the next worker." },
+    },
+    parse: (value) => {
+      const out = validate(value);
+      if (out.success) return out.data;
+      throw new Error(out.error.message);
+    },
+    parseAsync: async (value) => {
+      const out = validate(value);
+      if (out.success) return out.data;
+      throw new Error(out.error.message);
+    },
+    safeParse: (value) => validate(value),
+    safeParseAsync: async (value) => validate(value),
+  };
+}
+
+export function makeCertifyWrapupToolInputSchema(): ClaudeToolInputSchema {
+  const validate = (value: unknown): SafeParseSuccess | SafeParseFailure => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {
+        success: false,
+        error: {
+          message: "certify_wrapup args must be a JSON object",
+          issues: [{ path: [], message: "certify_wrapup args must be a JSON object", code: "invalid_type" }],
+          errors: [{ path: [], message: "certify_wrapup args must be a JSON object", code: "invalid_type" }],
+        },
+      };
+    }
+    const record = value as Record<string, unknown>;
+    const wrapupLevel = Number(record.wrapup_level);
+    const reason = typeof record.reason === "string" ? record.reason.trim() : "";
+    const issues: Array<{ path: Array<string | number>; message: string; code: string }> = [];
+    if (!Number.isFinite(wrapupLevel) || wrapupLevel <= 0) {
+      issues.push({ path: ["wrapup_level"], message: "wrapup_level must be a positive number", code: "invalid_type" });
+    }
+    if (!reason) {
+      issues.push({ path: ["reason"], message: "reason is required", code: "invalid_type" });
+    }
+    if (record.user_message != null && (typeof record.user_message !== "string" || !String(record.user_message).trim())) {
+      issues.push({ path: ["user_message"], message: "user_message must be a non-empty string when provided", code: "invalid_type" });
+    }
+    if (issues.length > 0) {
+      return {
+        success: false,
+        error: {
+          message: issues.map((issue) => issue.message).join("; "),
+          issues,
+          errors: issues,
+        },
+      };
+    }
+    const normalized: Record<string, unknown> = { wrapup_level: Math.floor(wrapupLevel), reason };
+    if (typeof record.user_message === "string" && record.user_message.trim()) normalized.user_message = record.user_message.trim();
+    return { success: true, data: normalized };
+  };
+  return {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      wrapup_level: { type: "number", description: "Solved level awaiting wrap-up certification." },
+      reason: { type: "string", description: "Why wrap-up is ready for certification." },
+      user_message: { type: "string", description: "Optional concise handoff for the next worker after certification." },
+    },
+    parse: (value) => {
+      const out = validate(value);
+      if (out.success) return out.data;
+      throw new Error(out.error.message);
+    },
+    parseAsync: async (value) => {
+      const out = validate(value);
+      if (out.success) return out.data;
+      throw new Error(out.error.message);
+    },
+    safeParse: (value) => validate(value),
+    safeParseAsync: async (value) => validate(value),
+  };
+}
+
 function asFiniteNumber(value: unknown): number | undefined {
   const n = Number(value);
   return Number.isFinite(n) ? n : undefined;

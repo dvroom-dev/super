@@ -700,6 +700,14 @@ describe("ClaudeProvider", () => {
     expect(toolNames).toContain("report_process_result");
     expect(toolNames).toContain("check_supervisor");
     expect(toolNames).toContain("certify_wrapup");
+    const reportTool = Array.isArray(firstCall.tools)
+      ? firstCall.tools.find((tool: any) => tool?.name === "report_process_result")
+      : undefined;
+    await expect(reportTool.inputSchema.parseAsync({ outcome: "complete", summary: "done" })).resolves.toMatchObject({
+      outcome: "complete",
+      summary: "done",
+    });
+    await expect(reportTool.inputSchema.parseAsync({})).rejects.toThrow(/outcome is required|summary is required/);
 
     const options = (capture.invocation?.options ?? {}) as Record<string, any>;
     expect(options.allowedTools).toContain("Bash");
