@@ -1963,4 +1963,67 @@ describe("handleConversationSupervise", () => {
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
     }
   });
+
+  it("does not switch the agent model to a task-profile model from a different provider", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-provider-compat-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "models:",
+        "  code_repair:",
+        "    provider: codex",
+        "    model: gpt-5.4",
+        "task_profiles:",
+        "  model_repair:",
+        "    mode: code_model",
+        "    preferred_models: [code_repair]",
+        "process:",
+        "  initial_stage: model_parity",
+        "  stages:",
+        "    model_parity:",
+        "      profile: model_repair",
+        "modes:",
+        "  code_model:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: code model seed",
+        "mode_state_machine:",
+        "  initial_mode: code_model",
+        "supervisor:",
+        "  enabled: false",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { ctx, notifications, createForkCalls } = makeCtx({ conversationId: "conversation_v2_provider_compat" });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "provider compatibility turn";
+    try {
+      await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_v2_provider_compat",
+          forkId: "fork_doc",
+          mode: "code_model",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+        supervisor: { enabled: false },
+      });
+      const budgetNotice = notifications.find((note) => note.method === "conversation.budget");
+      expect(budgetNotice).toBeUndefined();
+      expect(createForkCalls.every((call) => call.model === "mock-model")).toBe(true);
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  });
 });

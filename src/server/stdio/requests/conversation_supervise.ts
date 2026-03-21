@@ -192,7 +192,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     const documentProcessState = resolveActiveProcessState(currentDocText, renderedRunConfig);
     const activeMode = documentProcessState.mode ?? resolveActiveMode(currentDocText, renderedRunConfig);
     const modeConfig = resolveModeConfig(renderedRunConfig, activeMode);
-    const selectedModelKey = selectedModelKeyForTaskProfile(renderedRunConfig, documentProcessState.profileId);
+    const selectedModelKey = selectedModelKeyForTaskProfile(renderedRunConfig, documentProcessState.profileId, providerName);
     const selectedModel = selectedModelKey ? renderedRunConfig?.models?.[selectedModelKey] : undefined;
     if (selectedModel?.model && selectedModel.model !== currentModel) {
       currentModel = selectedModel.model;

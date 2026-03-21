@@ -94,10 +94,21 @@ export function validatorsForActiveProcessState(config: RenderedRunConfig | null
   return out;
 }
 
-export function selectedModelKeyForTaskProfile(config: RenderedRunConfig | null | undefined, profileId: string | null | undefined): string | null {
+export function selectedModelKeyForTaskProfile(
+  config: RenderedRunConfig | null | undefined,
+  profileId: string | null | undefined,
+  providerName?: string | null,
+): string | null {
   const preferred = config?.taskProfiles?.[profileId ?? ""]?.preferredModels ?? [];
-  const modelKey = String(preferred[0] ?? "").trim();
-  return modelKey || null;
+  const normalizedProvider = String(providerName ?? "").trim();
+  for (const key of preferred) {
+    const modelKey = String(key ?? "").trim();
+    if (!modelKey) continue;
+    if (!normalizedProvider) return modelKey;
+    const entryProvider = String(config?.models?.[modelKey]?.provider ?? "").trim();
+    if (!entryProvider || entryProvider === normalizedProvider) return modelKey;
+  }
+  return null;
 }
 
 export function applyProcessFrontmatter(
