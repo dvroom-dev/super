@@ -19,10 +19,7 @@ import {
   extractDeltaFromStreamEvent,
   extractResultText,
   extractUsage,
-  makeCertifyWrapupToolInputSchema,
-  makeCheckSupervisorToolInputSchema,
   makePermissiveToolInputSchema,
-  makeReportProcessResultToolInputSchema,
   makeSwitchModeToolInputSchema,
   normalizeSchemaConstrainedResultText,
 } from "./claude_provider_helpers.js";
@@ -53,7 +50,6 @@ const READ_ONLY_DISALLOWED_TOOLS = ["Bash", "Edit", "MultiEdit", "Write", "FileE
 const NETWORK_DISALLOWED_TOOLS = ["WebFetch", "WebSearch", "Browser", "Fetch", "HTTP", "UrlFetch", "Search"];
 const SUPER_CUSTOM_TOOL_MCP_SERVER = "super_custom_tools";
 const SWITCH_MODE_INPUT_SCHEMA = makeSwitchModeToolInputSchema();
-const RUNTIME_SUPERVISOR_TOOL_NAMES = ["check_supervisor", "report_process_result", "certify_wrapup"] as const;
 const isStrictProfile = (config: ProviderConfig): boolean => config.permissionProfile !== "yolo";
 export class ClaudeProvider implements AgentProvider {
   private config: ProviderConfig;
@@ -91,37 +87,15 @@ export class ClaudeProvider implements AgentProvider {
   private customToolsFromConfig(): CustomToolDefinition[] {
     return Array.isArray(this.config.customTools) ? this.config.customTools : [];
   }
-  private runtimeSupervisorTools() {
-    return RUNTIME_SUPERVISOR_TOOL_NAMES.map((name) => ({
-      name,
-      description:
-        name === "check_supervisor"
-          ? "Request supervisor guidance during the current task."
-          : name === "report_process_result"
-            ? "Report task-packet results so the supervisor can decide next process progression."
-            : "Request solved-level wrap-up certification from the supervisor.",
-      inputSchema:
-        name === "check_supervisor"
-          ? makeCheckSupervisorToolInputSchema()
-          : name === "report_process_result"
-            ? makeReportProcessResultToolInputSchema()
-            : makeCertifyWrapupToolInputSchema(),
-      handler: async () => ({
-        content: [{ type: "text", text: "{\"ok\":true,\"queued\":true}" }],
-      }),
-    }));
-  }
   private async buildCustomToolMcpServer(): Promise<Record<string, unknown> | undefined> {
     const customTools = this.customToolsFromConfig();
-    const runtimeTools = this.runtimeSupervisorTools();
-    if (!customTools.length && !runtimeTools.length) return undefined;
+    if (!customTools.length) return undefined;
     if (this.customToolMcpServer) return this.customToolMcpServer;
     await this.ensureQuery();
     if (!this.createSdkMcpServer) {
       throw new Error("claude provider custom tools require createSdkMcpServer()");
     }
     const tools = [
-      ...runtimeTools,
       ...customTools.map((customTool) => ({
         name: customTool.name,
         description: customTool.description,
@@ -191,11 +165,7 @@ export class ClaudeProvider implements AgentProvider {
           .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
           .filter(Boolean);
         const customToolNames = this.customToolsFromConfig().map((tool) => tool.name);
-        out.allowedTools = Array.from(new Set([
-          ...existingAllowedTools,
-          ...RUNTIME_SUPERVISOR_TOOL_NAMES,
-          ...customToolNames,
-        ]));
+        out.allowedTools = Array.from(new Set([...existingAllowedTools, ...customToolNames]));
       }
     }
     const hasProviderToolRestrictions =

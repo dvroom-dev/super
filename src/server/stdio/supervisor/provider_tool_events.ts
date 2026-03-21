@@ -11,6 +11,7 @@ export type ProviderToolInterceptionEvent = {
 
 const RUNTIME_INLINE_PROVIDER_TOOLS = new Set(["switch_mode", "check_supervisor", "check_rules", "certify_wrapup", "report_process_result"]);
 const SWITCH_MODE_BASH_TOOL_NAMES = new Set(["bash", "shell"]);
+const RUNTIME_SHELL_COMMANDS = new Set(["switch_mode", "check_supervisor", "certify_wrapup", "report_process_result"]);
 
 function normalizeRuntimeInlineToolName(name: string): string {
   const trimmed = String(name ?? "").trim();
@@ -140,6 +141,76 @@ function parseSwitchModeShellArgs(commandText: string): Record<string, unknown> 
   return args;
 }
 
+function parseCheckSupervisorShellArgs(commandText: string): Record<string, unknown> | null {
+  const tokens = tokenizeShellCommand(commandText);
+  if (!tokens.length || tokens[0] !== "check_supervisor") return null;
+  const args: Record<string, unknown> = {};
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    const next = tokens[i + 1];
+    if (token === "--mode" && next) {
+      args.mode = next;
+      i += 1;
+    }
+  }
+  return args;
+}
+
+function parseReportProcessResultShellArgs(commandText: string): Record<string, unknown> | null {
+  const tokens = tokenizeShellCommand(commandText);
+  if (!tokens.length || tokens[0] !== "report_process_result") return null;
+  const args: Record<string, unknown> = {};
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    const next = tokens[i + 1];
+    if (!token.startsWith("--") || !next) continue;
+    if (token === "--outcome") args.outcome = next;
+    else if (token === "--summary") args.summary = next;
+    else if (token === "--evidence") args.evidence = next;
+    else if (token === "--blocker") args.blocker = next;
+    else if (token === "--requested-profile") args.requested_profile = next;
+    else if (token === "--user-message") args.user_message = next;
+    else continue;
+    i += 1;
+  }
+  return args;
+}
+
+function parseCertifyWrapupShellArgs(commandText: string): Record<string, unknown> | null {
+  const tokens = tokenizeShellCommand(commandText);
+  if (!tokens.length || tokens[0] !== "certify_wrapup") return null;
+  const args: Record<string, unknown> = {};
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    const next = tokens[i + 1];
+    if (!token.startsWith("--") || !next) continue;
+    if (token === "--wrapup-level") args.wrapup_level = next;
+    else if (token === "--reason") args.reason = next;
+    else if (token === "--user-message") args.user_message = next;
+    else continue;
+    i += 1;
+  }
+  return args;
+}
+
+function parseRuntimeShellCommand(commandText: string): { name: string; args: Record<string, unknown> } | null {
+  const tokens = tokenizeShellCommand(commandText);
+  if (!tokens.length) return null;
+  const commandName = tokens[0];
+  if (!RUNTIME_SHELL_COMMANDS.has(commandName)) return null;
+  if (commandName === "switch_mode") {
+    const args = parseSwitchModeShellArgs(commandText);
+    return args ? { name: "switch_mode", args } : null;
+  }
+  if (commandName === "check_supervisor") {
+    return { name: "check_supervisor", args: parseCheckSupervisorShellArgs(commandText) ?? {} };
+  }
+  if (commandName === "report_process_result") {
+    return { name: "report_process_result", args: parseReportProcessResultShellArgs(commandText) ?? {} };
+  }
+  return { name: "certify_wrapup", args: parseCertifyWrapupShellArgs(commandText) ?? {} };
+}
+
 type ProviderToolSignal =
   | { kind: "call"; id?: string; name: string; args: Record<string, unknown> }
   | { kind: "result"; id?: string; name?: string; outputText: string };
@@ -206,11 +277,11 @@ function extractProviderToolSignals(event: ProviderEvent): ProviderToolSignal[] 
         const id = asString(rawItem.id) ?? asString(params?.itemId) ?? asString(params?.item_id);
         const fallbackName = asString(rawItem.name) ?? asString(rawItem.tool_name) ?? asString(rawItem.tool) ?? asString(rawItem.command) ?? asString(event.item.name);
         const commandText = extractShellCommandText(rawItem) ?? extractShellCommandText(params) ?? "";
-        const switchModeArgs = fallbackName && SWITCH_MODE_BASH_TOOL_NAMES.has(fallbackName.toLowerCase())
-          ? parseSwitchModeShellArgs(commandText)
+        const runtimeShellCommand = fallbackName && SWITCH_MODE_BASH_TOOL_NAMES.has(fallbackName.toLowerCase())
+          ? parseRuntimeShellCommand(commandText)
           : null;
-        const name = switchModeArgs ? "switch_mode" : fallbackName;
-        const args = switchModeArgs ?? parseToolArgs(rawItem.input ?? rawItem.args ?? rawItem.arguments ?? rawItem.parameters ?? rawItem.params);
+        const name = runtimeShellCommand?.name ?? fallbackName;
+        const args = runtimeShellCommand?.args ?? parseToolArgs(rawItem.input ?? rawItem.args ?? rawItem.arguments ?? rawItem.parameters ?? rawItem.params);
         const outputText = pickText(rawItem.output ?? rawItem.result ?? rawItem.content ?? rawItem.error);
         const status = (asString(rawItem.status) ?? "").toLowerCase();
         const started = method === "item/started" || status.includes("progress") || status.includes("inprogress") || status.includes("in_");
@@ -227,10 +298,10 @@ function extractProviderToolSignals(event: ProviderEvent): ProviderToolSignal[] 
   if (event.item.kind === "tool_call" && event.item.name) {
     const fallbackName = String(event.item.name ?? "");
     const commandText = extractShellCommandText((event.raw && typeof event.raw === "object") ? event.raw : undefined) ?? "";
-    const switchModeArgs = SWITCH_MODE_BASH_TOOL_NAMES.has(fallbackName.toLowerCase())
-      ? parseSwitchModeShellArgs(commandText)
+    const runtimeShellCommand = SWITCH_MODE_BASH_TOOL_NAMES.has(fallbackName.toLowerCase())
+      ? parseRuntimeShellCommand(commandText)
       : null;
-    out.push({ kind: "call", id: event.item.id, name: switchModeArgs ? "switch_mode" : fallbackName, args: switchModeArgs ?? {} });
+    out.push({ kind: "call", id: event.item.id, name: runtimeShellCommand?.name ?? fallbackName, args: runtimeShellCommand?.args ?? {} });
   } else if (event.item.kind === "tool_result" || event.item.kind === "tool_error") {
     out.push({ kind: "result", id: event.item.id, name: event.item.name, outputText: String(event.item.text ?? "") });
   }
@@ -256,28 +327,32 @@ export function extractRuntimeInlineCallsFromProviderEvent(event: ProviderEvent)
         const blockName = normalizeRuntimeInlineToolName(String(toolUse.name ?? "").trim());
         if (!SWITCH_MODE_BASH_TOOL_NAMES.has(blockName.toLowerCase())) continue;
         const commandText = extractShellCommandText(toolUse.input) ?? "";
-        const args = parseSwitchModeShellArgs(commandText);
-        if (!args) continue;
-        const topLevelUserMessage =
-          typeof (args.mode_payload as Record<string, unknown> | undefined)?.user_message === "string"
-            ? String((args.mode_payload as Record<string, unknown>).user_message)
-            : undefined;
-        if (topLevelUserMessage) args.user_message = topLevelUserMessage;
-        out.push({ name: "switch_mode", args, body: JSON.stringify(args, null, 2), source: "runtime_provider" });
+        const parsed = parseRuntimeShellCommand(commandText);
+        if (!parsed) continue;
+        if (parsed.name === "switch_mode") {
+          const topLevelUserMessage =
+            typeof (parsed.args.mode_payload as Record<string, unknown> | undefined)?.user_message === "string"
+              ? String((parsed.args.mode_payload as Record<string, unknown>).user_message)
+              : undefined;
+          if (topLevelUserMessage) parsed.args.user_message = topLevelUserMessage;
+        }
+        out.push({ name: parsed.name, args: parsed.args, body: JSON.stringify(parsed.args, null, 2), source: "runtime_provider" });
       }
       if (out.length > 0) return out;
     }
     const params = raw.params && typeof raw.params === "object" ? raw.params as Record<string, unknown> : undefined;
     const rawItem = (params?.item && typeof params.item === "object" ? params.item : raw.item) as Record<string, unknown> | undefined;
     const commandText = extractShellCommandText(rawItem) ?? extractShellCommandText(params) ?? "";
-    const args = parseSwitchModeShellArgs(commandText);
-    if (args) {
-      const topLevelUserMessage =
-        typeof (args.mode_payload as Record<string, unknown> | undefined)?.user_message === "string"
-          ? String((args.mode_payload as Record<string, unknown>).user_message)
-          : undefined;
-      if (topLevelUserMessage) args.user_message = topLevelUserMessage;
-      return [{ name: "switch_mode", args, body: JSON.stringify(args, null, 2), source: "runtime_provider" }];
+    const parsed = parseRuntimeShellCommand(commandText);
+    if (parsed) {
+      if (parsed.name === "switch_mode") {
+        const topLevelUserMessage =
+          typeof (parsed.args.mode_payload as Record<string, unknown> | undefined)?.user_message === "string"
+            ? String((parsed.args.mode_payload as Record<string, unknown>).user_message)
+            : undefined;
+        if (topLevelUserMessage) parsed.args.user_message = topLevelUserMessage;
+      }
+      return [{ name: parsed.name, args: parsed.args, body: JSON.stringify(parsed.args, null, 2), source: "runtime_provider" }];
     }
     return [];
   }
