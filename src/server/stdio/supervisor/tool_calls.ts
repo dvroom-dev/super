@@ -67,6 +67,7 @@ export async function executeInlineToolCall(args: {
         assistantText: args.rulesCheck.assistantText,
         trigger: "agent_check_supervisor",
         mode,
+        timeoutMs: args.rulesCheck.timeoutMs,
       });
       output = formatSupervisorCheckOutput({
         review: outcome.review,
@@ -108,6 +109,7 @@ export async function executeInlineToolCall(args: {
         assistantText: requestText,
         trigger: "agent_process_result_report",
         mode: "hard",
+        timeoutMs: args.rulesCheck.timeoutMs,
       });
       output = formatSupervisorCheckOutput({
         review: outcome.review,

@@ -102,6 +102,7 @@ export async function handleToolExecute(ctx: RuntimeContext, params: any) {
       currentMode,
       allowedNextModes,
       modePayloadFieldsByMode: modePayloadFieldsByMode(renderedRunConfig, allowedNextModes),
+      timeoutMs: renderedRunConfig?.reviewTimeoutMs,
     });
 
     let output = formatSupervisorCheckOutput({

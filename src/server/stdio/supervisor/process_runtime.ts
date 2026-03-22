@@ -71,8 +71,17 @@ export function processAssignmentForTransition(args: {
   const mode = String(args.mode ?? "").trim() || null;
   const requestedProfile = String(args.transitionPayload?.task_profile ?? "").trim() || null;
   const requestedStage = String(args.transitionPayload?.process_stage ?? "").trim() || null;
-  const profileId = requestedProfile || profileIdForMode(args.config, mode);
-  const stageId = requestedStage || stageIdForProfile(args.config, profileId);
+  const derivedProfile = profileIdForMode(args.config, mode);
+  const requestedProfileMode = resolveTaskProfileMode(args.config, requestedProfile);
+  const profileId = requestedProfile && requestedProfileMode === mode
+    ? requestedProfile
+    : derivedProfile;
+  const requestedStageProfile = requestedStage
+    ? String(args.config?.process?.stages?.[requestedStage]?.profile ?? "").trim() || null
+    : null;
+  const stageId = requestedStage && requestedStageProfile === profileId
+    ? requestedStage
+    : stageIdForProfile(args.config, profileId);
   return { mode, profileId, stageId };
 }
 

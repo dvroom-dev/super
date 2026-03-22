@@ -96,6 +96,7 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
         modeGuidanceByMode: args.modeGuidanceByMode,
         supervisorCarryover: "",
         supervisorWorkspaceRoot: args.supervisorWorkspaceRoot,
+        timeoutMs: args.effectiveSupervisor.reviewTimeoutMs,
       };
   const toolInterceptionRules = args.effectiveSupervisor.toolInterception?.rules;
   const toolInterceptionEnabled = !args.disableSupervision && args.effectiveSupervisor.enabled !== false && Array.isArray(toolInterceptionRules) && toolInterceptionRules.length > 0;

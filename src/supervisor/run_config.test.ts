@@ -516,7 +516,7 @@ describe("run_config", () => {
     expect(rendered?.supervisorTriggers?.cadence?.supervisorPrompt?.text).not.toContain("Cadence trigger policy");
     expect(rendered?.supervisor?.cadenceTimeMs).toBe(600000);
     expect(rendered?.supervisor?.cadenceInterruptPolicy).toBe("boundary");
-    expect(rendered?.supervisor?.reviewTimeoutMs).toBe(120000);
+    expect(rendered?.supervisor?.reviewTimeoutMs).toBe(240000);
   });
 
   it("allows cadence to be disabled explicitly", async () => {

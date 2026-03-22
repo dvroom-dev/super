@@ -266,7 +266,7 @@ export async function runSupervisorRecoverySummary(
 
   try {
     const controller = new AbortController();
-    const timeoutMs = input.timeoutMs ?? 120000;
+    const timeoutMs = input.timeoutMs ?? 240000;
     const timeoutPromise = new Promise<never>((_, reject) => {
       const timer = setTimeout(() => {
         controller.abort();
@@ -455,7 +455,7 @@ export async function runSupervisorReview(input: SupervisorReviewInputs): Promis
   } as ProviderConfig);
   const activeReviewPromise = (async () => {
   try {
-    const timeoutMs = input.timeoutMs ?? 120000;
+    const timeoutMs = input.timeoutMs ?? 240000;
     const maxSchemaRetries = 1;
     let reviewPrompt: PromptContent = prompt.prompt;
     let reviewText = "";
