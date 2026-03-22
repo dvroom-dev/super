@@ -77,6 +77,7 @@ export type CadenceParallelController = {
     supervisorThreadId?: string;
     reviewStep?: SuperviseReviewStepResult;
     appendedMarkdowns: string[];
+    inlineReviewApplied: boolean;
   }>;
 };
 
@@ -363,6 +364,7 @@ export function createCadenceParallelController(args: CreateCadenceParallelContr
           ? cadenceReviewStep
           : undefined,
         appendedMarkdowns,
+        inlineReviewApplied: inlineCadenceReviewApplied,
       };
     },
   };

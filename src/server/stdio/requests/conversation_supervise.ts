@@ -853,6 +853,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       skillInstructions,
       fullResyncNeeded,
       persistedCadenceReviewStep,
+      cadenceInlineReviewApplied: cadenceFinalize.inlineReviewApplied,
       timeBudgetMs,
       tokenBudgetAdjusted,
       cadenceTimeMs,

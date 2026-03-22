@@ -786,4 +786,50 @@ describe("runAgentTurn", () => {
     expect(result.interruptionReason).toBe("provider_compaction");
     expect(result.streamEnded).toBe(false);
   });
+
+  it("fires cadence time from wall clock even when no new provider events arrive", async () => {
+    let releaseTurn!: () => void;
+    const waitForInterrupt = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const ctx: any = {
+      sendNotification() {},
+    };
+    let cadenceCalls = 0;
+    const provider: AgentProvider = {
+      async *runStreamed() {
+        yield { type: "status", message: "provider: started" };
+        await waitForInterrupt;
+      },
+      async runOnce() {
+        return { text: "" };
+      },
+      async interruptActiveTurn() {
+        releaseTurn();
+        return { interrupted: true, reason: "cadence_supervisor", threadId: "thread_cadence", turnId: "turn_cadence" };
+      },
+    };
+    const result = await runAgentTurn({
+      ctx,
+      docPath: "/tmp/session.md",
+      provider,
+      prompt: promptContentFromText("go"),
+      supervisor: {},
+      budget: makeBudget({ cadenceTimeMs: 10 }),
+      currentModel: "mock-model",
+      controller: new AbortController(),
+      sendBudgetUpdate: () => {},
+      workspaceRoot: "/tmp/work",
+      conversationId: "conversation_1",
+      onCadenceHit: async ({ requestInterrupt }) => {
+        cadenceCalls += 1;
+        requestInterrupt("cadence_supervisor");
+      },
+    });
+
+    expect(cadenceCalls).toBe(1);
+    expect(result.cadenceHit).toBe(true);
+    expect(result.cadenceReason).toBe("cadence_time");
+    expect(result.interrupted).toBe(true);
+  });
 });

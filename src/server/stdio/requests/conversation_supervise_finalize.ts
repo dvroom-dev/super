@@ -78,6 +78,7 @@ export async function finalizeSuperviseTurn(args: {
   skillInstructions: any[];
   fullResyncNeeded: boolean;
   persistedCadenceReviewStep?: any;
+  cadenceInlineReviewApplied: boolean;
   timeBudgetMs: number;
   tokenBudgetAdjusted: number;
   cadenceTimeMs: number;
@@ -153,7 +154,77 @@ export async function finalizeSuperviseTurn(args: {
   if (!args.disableSupervision && reasons.length > 0) {
     args.ctx.sendNotification({ method: "conversation.status", params: { message: `supervisor stop: ${stopDetails.join("; ")}` } });
   }
-  const supervisorMode = args.persistedCadenceReviewStep ? "soft" : turnDecision.supervisorMode;
+  const cadenceHandledInline =
+    args.cadenceInlineReviewApplied
+    && !args.persistedCadenceReviewStep
+    && turnDecision.supervisorMode === "soft";
+  const supervisorMode = args.persistedCadenceReviewStep
+    ? "soft"
+    : cadenceHandledInline
+      ? null
+      : turnDecision.supervisorMode;
+  if (cadenceHandledInline) {
+    await writeTurnTelemetryWithSupervisor({
+      triggered: true,
+      mode: "soft",
+      action: "continue",
+      resume: true,
+      edits: 0,
+      appendEdits: 0,
+      replaceEdits: 0,
+      blocks: 0,
+      violations: 0,
+      critique: undefined,
+    });
+    const persisted = await persistAgentTurnWithoutSupervisor({
+      ctx: args.ctx,
+      workspaceRoot: args.workspaceRoot,
+      conversationId: args.conversationId,
+      currentDocText: args.currentDocText,
+      currentForkId: args.currentForkId,
+      docPath: args.docPath,
+      agentRules: args.effectiveAgentRequirements,
+      providerName: args.providerName,
+      currentModel: args.turnAgentModel,
+      supervisorModel: args.supervisorModel,
+      currentThreadId: args.currentThreadId,
+      currentSupervisorThreadId: args.currentSupervisorThreadId,
+      switchActiveFork: args.switchActiveFork,
+    });
+    return {
+      kind: "supervised" as const,
+      reasons,
+      stopDetails,
+      supervisorPersist: {
+        nextDocText: persisted.nextDocText,
+        nextForkId: persisted.nextForkId,
+        nextThreadId: args.currentThreadId,
+        nextSupervisorThreadId: args.currentSupervisorThreadId,
+        activeTransitionPayload: {},
+        nextModel: args.turnAgentModel,
+        review: {
+          decision: "continue",
+          payload: {},
+          mode_assessment: null,
+          transition_payload: null,
+          reasoning: "cadence review already applied inline",
+          agent_model: args.turnAgentModel,
+        },
+        reviewReasons: reasons,
+        effectiveAction: "continue",
+        resume: true,
+        historyRewritten: false,
+        supervisorHookChanged: false,
+        reviewAdvice: undefined,
+        reviewFailedRulesCount: 0,
+        fullResyncNeeded: args.fullResyncNeeded,
+      },
+      nextDocText: persisted.nextDocText,
+      nextThreadId: args.currentThreadId,
+      nextSupervisorThreadId: args.currentSupervisorThreadId,
+      fullResyncNeeded: args.fullResyncNeeded,
+    };
+  }
   if (!args.effectiveSupervisor.enabled || !supervisorMode) {
     await writeTurnTelemetryWithSupervisor({ triggered: false, mode: turnDecision.supervisorMode ?? "none" });
     const persisted = await persistAgentTurnWithoutSupervisor({

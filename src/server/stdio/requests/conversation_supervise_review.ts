@@ -201,49 +201,7 @@ async function loadLatestForkInMode(args: {
 export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAndPersistArgs): Promise<RunSupervisorReviewAndPersistResult> {
   let reviewStep = await (async () => {
     if (args.precomputedReviewStep) {
-      return runSuperviseReviewStep({
-        ctx: args.ctx,
-        workspaceRoot: args.workspaceRoot,
-        conversationId: args.conversationId,
-        documentText: args.documentText,
-        currentDocText: args.currentDocText,
-        agentRules: args.agentRules,
-        agentRuleViolations: args.agentRuleViolations,
-        supervisorInstructions: args.supervisorInstructions,
-        result: args.result,
-        reasons: args.precomputedReviewStep.reviewReasons,
-        supervisorMode: args.supervisorMode,
-        providerName: args.supervisorProviderName,
-        supervisorProviderOptions: args.supervisorProviderOptions,
-        supervisor: {
-          ...args.supervisor,
-          reviewOverrideJson: JSON.stringify(args.precomputedReviewStep.review),
-        },
-        supervisorModel: args.supervisorModel,
-        currentModel: args.currentModel,
-        agentModelReasoningEffort: args.agentModelReasoningEffort,
-        supervisorModelReasoningEffort: args.supervisorModelReasoningEffort,
-        agentsText: args.agentsText,
-        workspaceListingText: args.workspaceListingText,
-        taggedFiles: args.taggedFiles,
-        openFiles: args.openFiles,
-        utilities: args.utilities,
-        skills: args.skills,
-        skillsToInvoke: args.skillsToInvoke,
-        skillInstructions: args.skillInstructions,
-        configuredSystemMessage: args.configuredSystemMessage,
-        permissionProfile: args.permissionProfile,
-        stopCondition: args.stopCondition,
-        currentMode: args.activeMode,
-        allowedNextModes: args.allowedNextModes,
-        modePayloadFieldsByMode: args.modePayloadFieldsByMode,
-        modeGuidanceByMode: args.modeGuidanceByMode,
-        supervisorTriggers: args.supervisorTriggers,
-        supervisorCarryover: "",
-        supervisorWorkspaceRoot: args.supervisorWorkspaceRoot,
-        currentSupervisorThreadId:
-          args.precomputedReviewStep.nextSupervisorThreadId ?? args.currentSupervisorThreadId,
-      });
+      return args.precomputedReviewStep;
     }
 
     const carryover = await loadSupervisorCarryover({

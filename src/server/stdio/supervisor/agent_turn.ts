@@ -121,6 +121,7 @@ export async function runAgentTurn(args: {
   let providerToolEvents: ProviderToolInterceptionEvent[] | null = null;
   let cadenceHit = false;
   let cadenceReason: "cadence_time" | "cadence_tokens" | null = null;
+  let cadenceTimer: ReturnType<typeof setTimeout> | undefined;
   let compactionDetected = false;
   let compactionDetails: string | null = null;
   let interrupted = false;
@@ -143,6 +144,40 @@ export async function runAgentTurn(args: {
       controller.abort();
     }
   };
+
+  const maybeTriggerCadenceTime = () => {
+    if (cadenceHit || !budget.cadenceTimeMs) return;
+    cadenceHit = true;
+    cadenceReason = "cadence_time";
+    try {
+      const maybe = args.onCadenceHit?.({
+        reason: "cadence_time",
+        requestInterrupt,
+        requestSteer: async (message, steerOptions) => {
+          if (!provider.steerActiveTurn) {
+            return { applied: false, deferred: true, reason: "provider does not support steering" };
+          }
+          return provider.steerActiveTurn(promptContentFromText(message), {
+            signal: controller.signal,
+            expectedTurnId: steerOptions?.expectedTurnId,
+          });
+        },
+      });
+      if (maybe && typeof (maybe as Promise<void>).then === "function") {
+        void (maybe as Promise<void>).catch(() => {});
+      }
+    } catch {
+      // best-effort cadence callback
+    }
+  };
+
+  if (budget.cadenceTimeMs) {
+    const cadenceDelayMs = Math.max(0, budget.cadenceTimeMs - (Date.now() - budget.cadenceAnchorAt));
+    cadenceTimer = setTimeout(() => {
+      cadenceTimer = undefined;
+      maybeTriggerCadenceTime();
+    }, cadenceDelayMs);
+  }
 
   let hadError = false;
   let errorMessage: string | null = null;
@@ -246,28 +281,7 @@ export async function runAgentTurn(args: {
         break;
       }
       if (budget.cadenceTimeMs && !cadenceHit && Date.now() - budget.cadenceAnchorAt >= budget.cadenceTimeMs) {
-        cadenceHit = true;
-        cadenceReason = "cadence_time";
-        try {
-          const maybe = args.onCadenceHit?.({
-            reason: "cadence_time",
-            requestInterrupt,
-            requestSteer: async (message, steerOptions) => {
-              if (!provider.steerActiveTurn) {
-                return { applied: false, deferred: true, reason: "provider does not support steering" };
-              }
-              return provider.steerActiveTurn(promptContentFromText(message), {
-                signal: controller.signal,
-                expectedTurnId: steerOptions?.expectedTurnId,
-              });
-            },
-          });
-          if (maybe && typeof (maybe as Promise<void>).then === "function") {
-            void (maybe as Promise<void>).catch(() => {});
-          }
-        } catch {
-          // best-effort cadence callback
-        }
+        maybeTriggerCadenceTime();
         if (interrupted) {
           break;
         }
@@ -437,6 +451,10 @@ export async function runAgentTurn(args: {
       hadError = true;
       errorMessage = msg;
     }
+  }
+
+  if (cadenceTimer) {
+    clearTimeout(cadenceTimer);
   }
 
   if (abortError) {
