@@ -155,7 +155,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   let stopReasons: string[] = [], stopDetails: string[] = [];
   let lastValidatorFailureSignature = "";
   let repeatedValidatorFailureCount = 0;
-  const renderedRunConfig = initialRunConfig;
+  let renderedRunConfig = initialRunConfig;
   const runtimeStateForDocument = (docText: string) => ({
     activeMode: resolveDocumentWorkerMode(docText) ?? undefined,
     activeProcessStage: resolveActiveProcessState(docText, renderedRunConfig).stageId ?? undefined,
@@ -183,6 +183,11 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   } as const;
   try {
     while (true) {
+    renderedRunConfig = await renderRunConfig(runConfig, {
+      configBaseDir,
+      agentBaseDir: agentWorkspaceRoot,
+      supervisorBaseDir: supervisorWorkspaceRoot,
+    });
     const turnForkId = lifecycle.currentForkId();
     const turnAgentModel = currentModel;
     const effectiveCycleLimit = cycleLimit ?? renderedRunConfig?.cycleLimit;
