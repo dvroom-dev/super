@@ -24,6 +24,7 @@ import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_ru
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
 import {
   applyProcessFrontmatter,
+  normalizeTransitionPayloadForMode,
   processAssignmentForTransition,
   resumeStrategyForTaskProfile,
 } from "../supervisor/process_runtime.ts";
@@ -174,10 +175,13 @@ export async function applySupervisorForkDecision(args: {
   fullResyncNeeded: true;
 } | undefined> {
   if (args.review.decision !== "fork_new_conversation" && args.review.decision !== "resume_mode_head") return undefined;
-  const activeTransitionPayload =
+  const activeTransitionPayload = normalizeTransitionPayloadForMode(
+    args.renderedRunConfig,
+    String(args.review.payload.mode ?? "").trim(),
     args.review.transition_payload && typeof args.review.transition_payload === "object"
       ? { ...args.review.transition_payload }
-      : {};
+      : {},
+  );
   const refreshedRunConfig = await refreshRenderedRunConfigForModeFork({
     workspaceRoot: args.workspaceRoot,
     runConfigPath: args.runConfigPath,

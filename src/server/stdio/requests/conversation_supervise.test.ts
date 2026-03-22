@@ -2058,6 +2058,105 @@ describe("handleConversationSupervise", () => {
     }
   });
 
+  it("normalizes stale process transition payload to the chosen mode on the v2 path", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-normalize-transition-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "  supervisor_provider: mock",
+        "  supervisor_model: mock-supervisor",
+        "task_profiles:",
+        "  spatial_analysis:",
+        "    mode: theory",
+        "  model_repair:",
+        "    mode: code_model",
+        "process:",
+        "  initial_stage: feature_inventory",
+        "  stages:",
+        "    feature_inventory:",
+        "      profile: spatial_analysis",
+        "    model_repair:",
+        "      profile: model_repair",
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  theory:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: theory seed",
+        "  code_model:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: code seed",
+        "mode_state_machine:",
+        "  initial_mode: theory",
+        "  transitions:",
+        "    theory: [code_model]",
+      ].join("\n"),
+      "utf8",
+    );
+    const { ctx } = makeCtx({ conversationId: "conversation_v2_normalize_transition" });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```tool_call name=report_process_result",
+      '{"outcome":"complete","summary":"ready for model repair","requested_profile":"spatial_analysis","user_message":"patch model now"}',
+      "```",
+    ].join("\n");
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "fork_new_conversation",
+      payload: strictSupervisorPayload({
+        mode: "code_model",
+        mode_payload: { code_model: {} },
+        wait_for_boundary: false,
+      }),
+      transition_payload: {
+        process_stage: "feature_inventory",
+        task_profile: "spatial_analysis",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [
+          { mode: "code_model", confidence: "high", evidence: "model repair is the chosen next task" },
+        ],
+        recommended_action: "fork_new_conversation",
+      },
+      reasoning: "move from theory to code_model",
+      agent_model: null,
+    });
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_v2_normalize_transition",
+          forkId: "fork_doc",
+          mode: "theory",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+      });
+      expect(result.activeMode).toBe("code_model");
+      expect((result as any).activeProcessStage).toBe("model_repair");
+      expect((result as any).activeTaskProfile).toBe("model_repair");
+      expect((result as any).activeTransitionPayload).toEqual({
+        process_stage: "model_repair",
+        task_profile: "model_repair",
+      });
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+    }
+  });
+
   it("enforces fork_fresh resume_strategy for v2 task profiles even when supervisor asks to resume_mode_head", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-v2-fork-fresh-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });

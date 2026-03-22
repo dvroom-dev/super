@@ -85,6 +85,24 @@ export function processAssignmentForTransition(args: {
   return { mode, profileId, stageId };
 }
 
+export function normalizeTransitionPayloadForMode(
+  config: RenderedRunConfig | null | undefined,
+  mode: string | null | undefined,
+  transitionPayload?: Record<string, string> | null | undefined,
+): Record<string, string> {
+  const out = transitionPayload && typeof transitionPayload === "object"
+    ? { ...transitionPayload }
+    : {};
+  const assignment = processAssignmentForTransition({ config, mode, transitionPayload: out });
+  if (assignment.profileId) out.task_profile = assignment.profileId;
+  else delete out.task_profile;
+  if (assignment.stageId) out.process_stage = assignment.stageId;
+  else delete out.process_stage;
+  delete out.next_process_stage;
+  delete out.next_task_profile;
+  return out;
+}
+
 export function resolveActiveProcessState(documentText: string, config: RenderedRunConfig | null | undefined): ActiveProcessState {
   const stageId = resolveProcessStage(documentText, config);
   const profileId = resolveTaskProfile(documentText, config);

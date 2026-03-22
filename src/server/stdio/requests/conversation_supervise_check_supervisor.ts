@@ -4,6 +4,7 @@ import type { BudgetState } from "../supervisor/agent_turn.js";
 import { persistAgentTurnWithoutSupervisor } from "../supervisor/no_supervisor_finalize.js";
 import { applySupervisorForkDecision } from "./conversation_supervise_inline_mode_helpers.js";
 import type { RuntimeContext } from "./context.js";
+import { normalizeTransitionPayloadForMode } from "../supervisor/process_runtime.ts";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -88,7 +89,11 @@ export async function applyInlineCheckSupervisorOutcome(args: {
   }
   if (args.review.decision !== "fork_new_conversation" && args.review.decision !== "resume_mode_head") {
     if (args.review.decision === "continue" && args.review.transition_payload) {
-      args.state.activeTransitionPayload = { ...args.review.transition_payload };
+      args.state.activeTransitionPayload = normalizeTransitionPayloadForMode(
+        args.renderedRunConfig,
+        args.activeMode,
+        args.review.transition_payload,
+      );
       args.state.fullResyncNeeded = true;
     }
     return { kind: "continue" };

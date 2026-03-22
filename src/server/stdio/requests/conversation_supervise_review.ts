@@ -27,7 +27,7 @@ import type { BudgetState } from "../supervisor/agent_turn.js";
 import type { RuntimeContext } from "./context.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
-import { applyProcessFrontmatter, processAssignmentForTransition } from "../supervisor/process_runtime.ts";
+import { applyProcessFrontmatter, normalizeTransitionPayloadForMode, processAssignmentForTransition } from "../supervisor/process_runtime.ts";
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 type RunSupervisorReviewAndPersistArgs = {
   ctx: RuntimeContext;
@@ -553,6 +553,11 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
     fullResyncNeeded = true;
   }
 
+  const normalizedTransitionPayload = normalizeTransitionPayloadForMode(
+    args.renderedRunConfig,
+    persistedMode,
+    reviewStep.nextTransitionPayload,
+  );
   const nextDocWithFork = applyProcessFrontmatter(
     updateFrontmatterField(
       updateFrontmatterForkId(nextDocText, args.conversationId, nextForkId),
@@ -562,7 +567,7 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
     processAssignmentForTransition({
       config: args.renderedRunConfig,
       mode: persistedMode,
-      transitionPayload: reviewStep.nextTransitionPayload,
+      transitionPayload: normalizedTransitionPayload,
     }),
   );
   const nextDocWithModePayload = updateFrontmatterModePayload(nextDocWithFork, persistedModePayload);
@@ -621,7 +626,7 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
     nextForkId: nextFork.id,
     nextThreadId,
     nextSupervisorThreadId,
-    activeTransitionPayload: { ...(reviewStep.nextTransitionPayload ?? {}) },
+    activeTransitionPayload: normalizedTransitionPayload,
     nextModel: reviewStep.nextModel,
     review,
     reviewReasons,
