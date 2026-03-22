@@ -34,7 +34,6 @@ import { applySupervisorForkDecision } from "./conversation_supervise_inline_mod
 import { runSupervisorRecoverySummary } from "../supervisor/supervisor_run.js";
 import { persistAgentTurnWithoutSupervisor } from "../supervisor/no_supervisor_finalize.js";
 import {
-  allowedNextModesForProcess,
   isV2ProcessEnabled,
   profileIdForMode,
   renderProcessContractMarkdown,
@@ -259,14 +258,11 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
           cadenceTimeMs,
           cadenceTokensAdjusted,
         };
-    const processAllowedNextModes = allowedNextModesForProcess(renderedRunConfig, documentProcessState.stageId);
-    const allowedNextModes = processAllowedNextModes.length
-      ? processAllowedNextModes
-      : await allowedNextModesFor({
-          renderedRunConfig,
-          activeMode,
-          agentBaseDir: agentWorkspaceRoot,
-        });
+    const allowedNextModes = await allowedNextModesFor({
+      renderedRunConfig,
+      activeMode,
+      agentBaseDir: agentWorkspaceRoot,
+    });
     const modePayloadFields = modePayloadFieldsByMode(renderedRunConfig, allowedNextModes);
     const modeGuidance = modeGuidanceByMode(renderedRunConfig, allowedNextModes, activeMode);
     const shouldBootstrap = !disableSupervision
