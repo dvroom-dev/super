@@ -9,9 +9,9 @@ export type ProviderToolInterceptionEvent = {
   outputText?: string;
 };
 
-const RUNTIME_INLINE_PROVIDER_TOOLS = new Set(["switch_mode", "check_supervisor", "check_rules", "certify_wrapup", "report_process_result"]);
+const RUNTIME_INLINE_PROVIDER_TOOLS = new Set(["switch_mode", "check_supervisor", "check_rules", "report_process_result"]);
 const SWITCH_MODE_BASH_TOOL_NAMES = new Set(["bash", "shell"]);
-const RUNTIME_SHELL_COMMANDS = new Set(["switch_mode", "check_supervisor", "certify_wrapup", "report_process_result"]);
+const RUNTIME_SHELL_COMMANDS = new Set(["switch_mode", "check_supervisor", "report_process_result"]);
 
 function normalizeRuntimeInlineToolName(name: string): string {
   const trimmed = String(name ?? "").trim();
@@ -176,23 +176,6 @@ function parseReportProcessResultShellArgs(commandText: string): Record<string, 
   return args;
 }
 
-function parseCertifyWrapupShellArgs(commandText: string): Record<string, unknown> | null {
-  const tokens = tokenizeShellCommand(commandText);
-  if (!tokens.length || tokens[0] !== "certify_wrapup") return null;
-  const args: Record<string, unknown> = {};
-  for (let i = 1; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    const next = tokens[i + 1];
-    if (!token.startsWith("--") || !next) continue;
-    if (token === "--wrapup-level") args.wrapup_level = next;
-    else if (token === "--reason") args.reason = next;
-    else if (token === "--user-message") args.user_message = next;
-    else continue;
-    i += 1;
-  }
-  return args;
-}
-
 function parseRuntimeShellCommand(commandText: string): { name: string; args: Record<string, unknown> } | null {
   const tokens = tokenizeShellCommand(commandText);
   if (!tokens.length) return null;
@@ -208,7 +191,7 @@ function parseRuntimeShellCommand(commandText: string): { name: string; args: Re
   if (commandName === "report_process_result") {
     return { name: "report_process_result", args: parseReportProcessResultShellArgs(commandText) ?? {} };
   }
-  return { name: "certify_wrapup", args: parseCertifyWrapupShellArgs(commandText) ?? {} };
+  return null;
 }
 
 type ProviderToolSignal =

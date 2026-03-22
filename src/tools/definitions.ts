@@ -9,7 +9,6 @@ export type BuiltinToolName =
   | "paginate_tool_response"
   | "check_supervisor"
   | "report_process_result"
-  | "certify_wrapup"
   | "switch_mode";
 
 export type ToolPolicyMode = "allow" | "deny";
@@ -40,7 +39,6 @@ const BUILTIN_DEFINITIONS: Record<BuiltinToolName, string> = {
   paginate_tool_response: "{ id: string, page?: number }",
   check_supervisor: "{ mode?: \"hard\" | \"soft\" }",
   report_process_result: "{ outcome: string, summary: string, evidence?: string, blocker?: string, requested_profile?: string, user_message?: string }",
-  certify_wrapup: "{ wrapup_level: number, reason: string, user_message?: string }",
   switch_mode: "{ target_mode: string, reason: string, mode_payload?: object, terminal?: boolean }",
 };
 
@@ -53,7 +51,6 @@ const BUILTIN_TOOL_ORDER: BuiltinToolName[] = [
   "paginate_tool_response",
   "check_supervisor",
   "report_process_result",
-  "certify_wrapup",
   "switch_mode",
 ];
 

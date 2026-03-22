@@ -121,48 +121,6 @@ export async function executeInlineToolCall(args: {
       ok = true;
       supervisorReview = outcome.review;
       supervisorThreadId = outcome.threadId;
-    } else if (toolName === "certify_wrapup") {
-      if (!args.rulesCheck) {
-        throw new Error("certify_wrapup requires rulesCheck context");
-      }
-      const wrapupLevelRaw = args.call.args?.wrapup_level;
-      const wrapupLevel = Number(wrapupLevelRaw);
-      if (!Number.isFinite(wrapupLevel) || wrapupLevel <= 0) {
-        throw new Error("certify_wrapup requires a positive numeric wrapup_level");
-      }
-      const reason = typeof args.call.args?.reason === "string" ? String(args.call.args.reason).trim() : "";
-      if (!reason) {
-        throw new Error("certify_wrapup requires reason");
-      }
-      const userMessage = typeof args.call.args?.user_message === "string"
-        ? String(args.call.args.user_message).trim()
-        : "";
-      const requestText = [
-        "<agent-wrapup-certification-request>",
-        `wrapup_level: ${Math.floor(wrapupLevel)}`,
-        `reason: ${reason}`,
-        userMessage ? `user_message: ${userMessage}` : "",
-        "</agent-wrapup-certification-request>",
-        "Decide whether to certify wrap-up, reject it with guidance, continue, or route to another mode.",
-      ].filter(Boolean).join("\n");
-      const outcome = await runSupervisorReview({
-        ...args.rulesCheck,
-        assistantText: requestText,
-        trigger: "agent_wrapup_certification_request",
-        mode: "hard",
-      });
-      output = formatSupervisorCheckOutput({
-        review: outcome.review,
-        promptLogRel: outcome.promptLogRel,
-        responseLogRel: outcome.responseLogRel,
-        source: "certify_wrapup",
-        trigger: "agent_wrapup_certification_request",
-        mode: "hard",
-        reasons: ["certify_wrapup"],
-      });
-      ok = true;
-      supervisorReview = outcome.review;
-      supervisorThreadId = outcome.threadId;
     } else {
       const result = await executeTool(
         args.toolWorkspaceRoot ?? args.workspaceRoot,

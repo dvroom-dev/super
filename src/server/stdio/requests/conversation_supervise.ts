@@ -36,7 +36,7 @@ import { persistAgentTurnWithoutSupervisor } from "../supervisor/no_supervisor_f
 import {
   isV2ProcessEnabled,
   profileIdForMode,
-  renderProcessContractMarkdown,
+  renderProcessContractMarkdownWithTransition,
   resolveDocumentWorkerMode,
   resolveActiveProcessState,
   resolveTaskProfileMode,
@@ -461,7 +461,11 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         configuredSystemMessage: effectiveAgentConfiguredSystemMessage,
         defaultSystemMessage: disableSupervision ? undefined : renderedRunConfig?.supervisor?.agentDefaultSystemMessage,
         activeProcessState: documentProcessState,
-        processContractText: renderProcessContractMarkdown(renderedRunConfig, documentProcessState),
+        processContractText: renderProcessContractMarkdownWithTransition(
+          renderedRunConfig,
+          documentProcessState,
+          currentTransitionPayload,
+        ),
       };
       const compile = compileMode === "recovery"
         ? compileRecoveryPrompt(compileArgs)

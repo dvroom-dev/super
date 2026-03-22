@@ -149,9 +149,24 @@ export function applyProcessFrontmatter(
 }
 
 export function renderProcessContractMarkdown(config: RenderedRunConfig | null | undefined, state: ActiveProcessState): string {
+  return renderProcessContractMarkdownWithTransition(config, state, {});
+}
+
+export function renderProcessContractMarkdownWithTransition(
+  config: RenderedRunConfig | null | undefined,
+  state: ActiveProcessState,
+  transitionPayload: Record<string, string> | null | undefined,
+): string {
   if (!isV2ProcessEnabled(config) || !state.stageId || !state.profileId) return "";
   const stage = config?.process?.stages?.[state.stageId];
   const profile = config?.taskProfiles?.[state.profileId];
+  const transition = transitionPayload && typeof transitionPayload === "object" ? transitionPayload : {};
+  const transitionEntries = Object.entries(transition)
+    .map(([key, value]) => [String(key ?? "").trim(), String(value ?? "").trim()] as const)
+    .filter(([key, value]) => key && value);
+  const analysisScope = String(transition.analysis_scope ?? "").trim();
+  const analysisLevel = String(transition.analysis_level ?? "").trim();
+  const frontierLevel = String(transition.frontier_level ?? "").trim();
   const lines = [
     "Process Task Packet (supervisor-owned):",
     "",
@@ -165,6 +180,12 @@ export function renderProcessContractMarkdown(config: RenderedRunConfig | null |
     profile?.resumeStrategy ? `- Resume strategy: ${profile.resumeStrategy}` : "",
     profile?.validators?.length || stage?.validators?.length
       ? `- Validators after turn: ${validatorsForActiveProcessState(config, state.stageId, state.profileId).join(", ")}`
+      : "",
+    transitionEntries.length
+      ? ["- Transition payload:", ...transitionEntries.map(([key, value]) => `  - ${key}: ${value}`)].join("\n")
+      : "",
+    analysisLevel && frontierLevel
+      ? `- Explicit level state: analysis_scope=${analysisScope || "frontier"}, analysis_level=${analysisLevel}, frontier_level=${frontierLevel}`
       : "",
     profile?.contextRules?.length
       ? ["- Context rules:", ...profile.contextRules.map((rule) => `  - ${rule}`)].join("\n")
