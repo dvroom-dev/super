@@ -217,6 +217,50 @@ describe("ClaudeProvider", () => {
     expect(options.resume).toBe("sess_old");
   });
 
+  it("interrupts an active Claude stream by aborting and closing it", async () => {
+    const capture: {
+      invocation?: QueryInvocation;
+      closed?: boolean;
+      streamInputs: any[];
+      abortController?: AbortController;
+    } = { streamInputs: [] };
+    const query = (invocation: QueryInvocation) => {
+      capture.invocation = invocation;
+      const options = invocation.options as Record<string, unknown> | undefined;
+      capture.abortController = options?.abortController instanceof AbortController
+        ? options.abortController
+        : undefined;
+      return {
+        async *[Symbol.asyncIterator]() {
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "working" }] },
+          session_id: "sess_live",
+        };
+        while (!capture.closed && !capture.abortController?.signal.aborted) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      },
+        close() {
+          capture.closed = true;
+        },
+      };
+    };
+    const provider = new ClaudeProvider(baseConfig, { query });
+    const iterator = provider.runStreamed(promptContentFromText("keep working"));
+    await iterator.next();
+    await iterator.next();
+    const interrupted = await provider.interruptActiveTurn?.({ reason: "provider_compaction" });
+    expect(interrupted).toEqual({
+      interrupted: true,
+      reason: "provider_compaction",
+      threadId: "sess_live",
+      turnId: "claude_turn_1",
+    });
+    expect(capture.closed).toBe(true);
+    await iterator.return?.(undefined);
+  });
+
   it("skips Claude compaction when no session is active", async () => {
     const query = () => {
       throw new Error("unexpected query call");

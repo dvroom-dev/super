@@ -3,6 +3,7 @@ import type {
   ProviderCompactionResult,
   ProviderConfig,
   ProviderEvent,
+  ProviderInterruptResult,
   ProviderSteerResult,
 } from "./types.js";
 import {
@@ -57,6 +58,7 @@ export class ClaudeProvider implements AgentProvider {
   private createSdkMcpServer?: ClaudeCreateSdkMcpServerFn;
   private customToolMcpServer?: Record<string, unknown>;
   private activeStream?: ClaudeQueryStream;
+  private activeAbortController?: AbortController;
   private activeSessionId?: string;
   private activeTurnId?: string;
   private activeTurnCounter = 0;
@@ -302,6 +304,50 @@ export class ClaudeProvider implements AgentProvider {
     }
   }
 
+  async interruptActiveTurn(
+    options?: { signal?: AbortSignal; reason?: string },
+  ): Promise<ProviderInterruptResult> {
+    const threadId = this.activeSessionId ?? this.config.threadId;
+    const turnId = this.activeTurnId;
+    if (!this.activeStream && !this.activeAbortController) {
+      return {
+        interrupted: false,
+        reason: "no active turn",
+        threadId,
+        turnId,
+      };
+    }
+    if (options?.signal?.aborted) {
+      return {
+        interrupted: false,
+        reason: "interrupt signal already aborted",
+        threadId,
+        turnId,
+      };
+    }
+    try {
+      this.activeAbortController?.abort();
+      try {
+        this.activeStream?.close?.();
+      } catch {
+        // best-effort close for SDK stream teardown
+      }
+      return {
+        interrupted: true,
+        reason: options?.reason,
+        threadId,
+        turnId,
+      };
+    } catch (err: any) {
+      return {
+        interrupted: false,
+        reason: err?.message ?? String(err),
+        threadId,
+        turnId,
+      };
+    }
+  }
+
   async *runStreamed(
     prompt: PromptContent,
     options?: { outputSchema?: any; signal?: AbortSignal },
@@ -316,7 +362,11 @@ export class ClaudeProvider implements AgentProvider {
 
     try {
       const queryPrompt = await this.buildQueryPrompt(prompt);
-      stream = query({ prompt: queryPrompt, options: await this.buildQueryOptions(options) });
+      const queryOptions = await this.buildQueryOptions(options);
+      this.activeAbortController = queryOptions.abortController instanceof AbortController
+        ? queryOptions.abortController
+        : undefined;
+      stream = query({ prompt: queryPrompt, options: queryOptions });
       this.activeStream = stream;
       this.activeSessionId = threadId;
       this.activeTurnId = activeTurnId;
@@ -394,6 +444,7 @@ export class ClaudeProvider implements AgentProvider {
       }
     } finally {
       this.activeStream = undefined;
+      this.activeAbortController = undefined;
       this.activeTurnId = undefined;
       this.activeSessionId = undefined;
       try {

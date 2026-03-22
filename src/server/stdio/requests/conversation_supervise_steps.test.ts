@@ -436,4 +436,113 @@ describe("runAgentTurnWithHooks", () => {
     expect(createdConfigs[0]?.threadId).toBe("claude_stale_session");
     expect(createdConfigs[1]?.threadId).toBeUndefined();
   });
+
+  it("recovers when Claude compaction leaves the stream hung until explicitly interrupted", async () => {
+    const workspaceRoot = await makeTempRoot("agent-turn-claude-compaction-stuck-");
+    const agentWorkspaceRoot = path.join(workspaceRoot, "agent");
+    await fs.mkdir(agentWorkspaceRoot, { recursive: true });
+
+    let createCount = 0;
+    let interruptCalls = 0;
+    let releaseFirstTurn!: () => void;
+    const firstTurnReleased = new Promise<void>((resolve) => {
+      releaseFirstTurn = resolve;
+    });
+
+    const providerOne: AgentProvider = {
+      async *runStreamed() {
+        yield {
+          type: "provider_item",
+          item: {
+            provider: "claude",
+            kind: "system",
+            summary: "compacting",
+          },
+          raw: {
+            type: "system",
+            subtype: "status",
+            status: "compacting",
+          },
+        } as ProviderEvent;
+        await firstTurnReleased;
+        throw new Error("Claude Code process aborted by user");
+      },
+      async runOnce() {
+        return { text: "", threadId: undefined, items: [] };
+      },
+      async interruptActiveTurn() {
+        interruptCalls += 1;
+        releaseFirstTurn();
+        return { interrupted: true, reason: "provider_compaction", threadId: "claude_stuck", turnId: "turn_1" };
+      },
+      async close() {},
+    };
+    const providerTwo: AgentProvider = {
+      async *runStreamed() {
+        yield { type: "assistant_message", text: "Recovered after explicit interrupt." };
+        yield { type: "done", threadId: "claude_after_interrupt" };
+      },
+      async runOnce() {
+        return { text: "", threadId: undefined, items: [] };
+      },
+      async close() {},
+    };
+
+    const result = await runAgentTurnWithHooks({
+      ctx: {
+        store: {} as any,
+        state: {} as any,
+        sendNotification: () => {},
+        requireWorkspaceRoot: () => workspaceRoot,
+      },
+      workspaceRoot,
+      agentWorkspaceRoot,
+      docPath: path.join(agentWorkspaceRoot, "session.md"),
+      conversationId: "conv_claude_retry_stuck",
+      providerName: "claude",
+      currentModel: "claude-opus-4-6",
+      sandboxMode: "workspace-write",
+      permissionProfile: "workspace_no_network",
+      skipGitRepoCheck: true,
+      shouldUseFullPrompt: false,
+      currentThreadId: "claude_stale_session",
+      customTools: undefined,
+      compilePrompt: promptContentFromText("continue"),
+      outputSchema: undefined,
+      effectiveSupervisor: {} as any,
+      budget: {
+        startedAt: Date.now(),
+        timeBudgetMs: 60_000,
+        tokenBudgetAdjusted: 0,
+        cadenceTimeMs: 0,
+        cadenceTokensAdjusted: 0,
+        adjustedTokensUsed: 0,
+        budgetMultiplier: 1,
+        cadenceAnchorAt: Date.now(),
+        cadenceTokensAnchor: 0,
+        timeBudgetHit: false,
+        tokenBudgetHit: false,
+      },
+      pricing: undefined,
+      sendBudgetUpdate: () => {},
+      toolOutput: undefined,
+      activeRuns: {},
+      activeRunsByForkId: {},
+      activeForkId: "fork_claude_retry_stuck",
+      currentDocText: "",
+      fullResyncNeeded: false,
+      hooks: [],
+      turn: 1,
+      rebuildPromptForOverflow: async () => promptContentFromText("rebuilt prompt"),
+      createProviderOverride: () => {
+        createCount += 1;
+        return createCount === 1 ? providerOne : providerTwo;
+      },
+    });
+
+    expect(interruptCalls).toBe(1);
+    expect(result.result.hadError).toBe(false);
+    expect(result.result.newThreadId).toBe("claude_after_interrupt");
+    expect(result.nextDocText).toContain("Recovered after explicit interrupt.");
+  });
 });

@@ -133,6 +133,7 @@ export async function runAgentTurn(args: {
   const providerToolCollector = createProviderToolInterceptionEventCollector();
 
   const requestInterrupt = (reason: string) => {
+    void provider.interruptActiveTurn?.({ reason }).catch(() => {});
     if (!interrupted) {
       interrupted = true;
       interruptionReason = reason;
