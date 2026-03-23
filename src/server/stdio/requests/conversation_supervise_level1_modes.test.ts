@@ -139,7 +139,7 @@ function setRuntimeSwitchProviderEvents(command: string): void {
 }
 
 describe("level-1 mode gating", () => {
-  it.serial("restricts unsolved level 1 theory to explore_and_solve only", async () => {
+  it.serial("allows unsolved level 1 workers to route among explore_and_solve, code_model, and recover", async () => {
     const agentBaseDir = await makeTempRoot("conv-supervise-level1-agent-");
     await fs.mkdir(path.join(agentBaseDir, "level_current"), { recursive: true });
     await fs.writeFile(
@@ -152,25 +152,24 @@ describe("level-1 mode gating", () => {
       renderedRunConfig: {
         modesEnabled: true,
         modes: {
-          theory: {},
           explore_and_solve: {},
           code_model: {},
           recover: {},
         },
         modeStateMachine: {
           transitions: {
-            theory: ["explore_and_solve", "code_model", "recover"],
+            explore_and_solve: ["explore_and_solve", "code_model", "recover"],
           },
         },
       } as any,
-      activeMode: "theory",
+      activeMode: "explore_and_solve",
       agentBaseDir,
     });
 
-    expect(modes).toEqual(["explore_and_solve"]);
+    expect(modes).toEqual(["explore_and_solve", "code_model", "recover"]);
   });
 
-  it.serial("lets unsolved level 1 explore return only to theory", async () => {
+  it.serial("lets unsolved level 1 explore return to code_model when component or model work is next", async () => {
     const agentBaseDir = await makeTempRoot("conv-supervise-level1-explore-agent-");
     await fs.mkdir(path.join(agentBaseDir, "level_current"), { recursive: true });
     await fs.writeFile(
@@ -183,13 +182,12 @@ describe("level-1 mode gating", () => {
       renderedRunConfig: {
         modesEnabled: true,
         modes: {
-          theory: {},
           explore_and_solve: {},
           code_model: {},
         },
         modeStateMachine: {
           transitions: {
-            explore_and_solve: ["theory", "code_model"],
+            explore_and_solve: ["code_model"],
           },
         },
       } as any,
@@ -197,7 +195,7 @@ describe("level-1 mode gating", () => {
       agentBaseDir,
     });
 
-    expect(modes).toEqual(["theory"]);
+    expect(modes).toEqual(["code_model"]);
   });
 
   it.serial("keeps configured later-level or wrap-up transitions", async () => {
@@ -230,7 +228,7 @@ describe("level-1 mode gating", () => {
     expect(modes).toEqual(["explore_and_solve", "code_model"]);
   });
 
-  it.serial("rejects runtime-captured code_model switches on unsolved level 1", async () => {
+  it.serial("allows runtime-captured code_model switches on unsolved level 1", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-switch-level1-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
     await fs.mkdir(path.join(workspaceRoot, "agent", "game_ls20", "level_current"), { recursive: true });
@@ -240,11 +238,6 @@ describe("level-1 mode gating", () => {
         "supervisor:",
         "  stop_condition: task complete",
         "modes:",
-        "  theory:",
-        "    user_message:",
-        "      operation: append",
-        "      parts:",
-        "        - literal: theory seed",
         "  explore_and_solve:",
         "    user_message:",
         "      operation: append",
@@ -256,11 +249,10 @@ describe("level-1 mode gating", () => {
         "      parts:",
         "        - literal: code seed",
         "mode_state_machine:",
-        "  initial_mode: theory",
+        "  initial_mode: explore_and_solve",
         "  transitions:",
-        "    theory: [explore_and_solve, code_model]",
-        "    explore_and_solve: [theory, code_model]",
-        "    code_model: [theory]",
+        "    explore_and_solve: [code_model]",
+        "    code_model: [explore_and_solve]",
       ].join("\n"),
       "utf8",
     );
@@ -288,11 +280,6 @@ describe("level-1 mode gating", () => {
     });
 
     expect(result.stopReasons).toEqual(["cycle_limit"]);
-    expect(createForkCalls.some((call) => call.actionSummary === "agent:switch_mode theory->code_model")).toBe(false);
-    const appended = notifications
-      .filter((note) => note.method === "conversation.append")
-      .map((note) => String(note.params?.markdown ?? ""))
-      .join("\n");
-    expect(appended).toContain("switch_mode target_mode 'code_model' is not an allowed transition from 'theory'");
+    expect(createForkCalls.some((call) => call.actionSummary === "agent:switch_mode explore_and_solve->code_model")).toBe(true);
   });
 });

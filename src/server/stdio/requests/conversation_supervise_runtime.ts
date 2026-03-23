@@ -79,7 +79,7 @@ export async function allowedNextModesFor(args: {
     const levelMeta = await readLevelCurrentMeta(args.agentBaseDir);
     const level = Number(levelMeta?.level);
     if (level === 1 && levelMeta?.analysis_level_pinned !== true) {
-      const allowedDuringLevelOne = new Set(["theory", "explore_and_solve"]);
+      const allowedDuringLevelOne = new Set(["explore_and_solve", "code_model", "recover"]);
       if (Array.isArray(explicit) && explicit.length) {
         return explicit.filter((mode) => allowedDuringLevelOne.has(String(mode ?? "").trim()));
       }
