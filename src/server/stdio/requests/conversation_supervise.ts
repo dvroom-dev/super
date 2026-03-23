@@ -134,6 +134,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   let currentProviderName = initialProviderName;
   let currentAgentProviderOptions = agentProviderOptionsByProvider[String(currentProviderName)] ?? agentProviderOptions;
   let currentModel = model;
+  let currentSandboxMode = sandboxMode;
   let turnIndex = await loadLastTurnTelemetryTurn(workspaceRoot, conversationId);
   let cycleTurnCount = 0;
   const startedAt = Date.now();
@@ -212,10 +213,16 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     const selectedModelKey = selectedModelKeyForTaskProfile(renderedRunConfig, documentProcessState.profileId);
     const selectedModel = selectedModelKey ? renderedRunConfig?.models?.[selectedModelKey] : undefined;
     const selectedProviderName = String(selectedModel?.provider ?? "").trim() || currentProviderName;
-    if ((selectedModel?.model && selectedModel.model !== currentModel) || selectedProviderName !== currentProviderName) {
+    const selectedSandboxMode = String(selectedModel?.sandboxMode ?? "").trim() || currentSandboxMode;
+    if (
+      (selectedModel?.model && selectedModel.model !== currentModel)
+      || selectedProviderName !== currentProviderName
+      || selectedSandboxMode !== currentSandboxMode
+    ) {
       currentProviderName = selectedProviderName as typeof currentProviderName;
       currentAgentProviderOptions = agentProviderOptionsByProvider[String(currentProviderName)] ?? agentProviderOptions;
       currentModel = String(selectedModel?.model ?? currentModel);
+      currentSandboxMode = selectedSandboxMode;
       if (currentThreadId) {
         currentThreadId = undefined;
         fullResyncNeeded = true;
@@ -509,7 +516,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       conversationId,
       providerName: currentProviderName,
       currentModel,
-      sandboxMode,
+      sandboxMode: currentSandboxMode,
       permissionProfile,
       skipGitRepoCheck: Boolean((params as any)?.skipGitRepoCheck ?? true),
       shouldUseFullPrompt,

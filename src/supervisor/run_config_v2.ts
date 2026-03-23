@@ -32,6 +32,7 @@ export type RunConfigModelCatalogEntry = {
   provider: string;
   model: string;
   reasoningEffort?: ReasoningEffort;
+  sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
   providerOptions?: Record<string, unknown>;
 };
 
@@ -92,10 +93,15 @@ export function normalizeModelCatalog(raw: unknown, sourcePath: string): Record<
     const providerOptions = entry.provider_options == null
       ? undefined
       : asRecord(entry.provider_options) ?? (() => { throw new Error(`${sourcePath}: models.${key}.provider_options must be a mapping`); })();
+    const sandboxMode = entry.sandbox_mode == null ? undefined : normalizeString(entry.sandbox_mode, sourcePath, `models.${key}.sandbox_mode`);
+    if (sandboxMode && !["read-only", "workspace-write", "danger-full-access"].includes(sandboxMode)) {
+      throw new Error(`${sourcePath}: models.${key}.sandbox_mode must be read-only|workspace-write|danger-full-access`);
+    }
     out[key] = {
       provider: normalizeString(entry.provider, sourcePath, `models.${key}.provider`),
       model: normalizeString(entry.model, sourcePath, `models.${key}.model`),
       reasoningEffort: normalizeReasoningEffort(entry.reasoning_effort, `${sourcePath}: models.${key}.reasoning_effort`),
+      sandboxMode: sandboxMode as RunConfigModelCatalogEntry["sandboxMode"],
       providerOptions: providerOptions ? { ...providerOptions } : undefined,
     };
   }

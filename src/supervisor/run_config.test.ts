@@ -760,6 +760,7 @@ describe("run_config", () => {
         "    provider: mock",
         "    model: mock-fast",
         "    reasoning_effort: low",
+        "    sandbox_mode: danger-full-access",
         "validators:",
         "  compare_clean:",
         "    command: |",
@@ -801,6 +802,7 @@ describe("run_config", () => {
     });
     expect(rendered?.schemaVersion).toBe(2);
     expect(rendered?.models?.fast_reader?.model).toBe("mock-fast");
+    expect(rendered?.models?.fast_reader?.sandboxMode).toBe("danger-full-access");
     expect(rendered?.validators?.compare_clean?.success?.type).toBe("json_field_truthy");
     expect(rendered?.taskProfiles?.spatial_analysis?.mode).toBe("theory");
     expect(rendered?.process?.initialStage).toBe("feature_inventory");
