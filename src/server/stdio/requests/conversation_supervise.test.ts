@@ -1768,7 +1768,7 @@ describe("handleConversationSupervise", () => {
     }
   });
 
-  it("does not switch the agent model to a task-profile model from a different provider", async () => {
+  it("switches the agent model to the task-profile preferred model on the active path", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-v2-provider-compat-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
     await fs.writeFile(
@@ -1780,8 +1780,8 @@ describe("handleConversationSupervise", () => {
         "  agent_model: mock-model",
         "models:",
         "  code_repair:",
-        "    provider: codex",
-        "    model: gpt-5.4",
+        "    provider: mock",
+        "    model: mock-code-model",
         "task_profiles:",
         "  model_repair:",
         "    mode: code_model",
@@ -1808,7 +1808,7 @@ describe("handleConversationSupervise", () => {
     const { ctx, notifications, createForkCalls } = makeCtx({ conversationId: "conversation_v2_provider_compat" });
     process.env.MOCK_PROVIDER_STREAMED_TEXT = "provider compatibility turn";
     try {
-      await handleConversationSupervise(ctx, {
+      const result = await handleConversationSupervise(ctx, {
         workspaceRoot,
         docPath: path.join(workspaceRoot, "session.md"),
         documentText: makeModeDoc({
@@ -1824,8 +1824,8 @@ describe("handleConversationSupervise", () => {
         supervisor: { enabled: false },
       });
       const budgetNotice = notifications.find((note) => note.method === "conversation.budget");
-      expect(budgetNotice).toBeUndefined();
-      expect(createForkCalls.every((call) => call.model === "mock-model")).toBe(true);
+      expect(budgetNotice).toBeTruthy();
+      expect(result.agentModel).toBe("mock-code-model");
     } finally {
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
     }

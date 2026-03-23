@@ -51,9 +51,11 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   const documentText = String((params as any)?.documentText ?? "");
   const conversationId = await ctx.store.conversationIdFromDocument(docPath, documentText);
   const models = Array.isArray((params as any)?.models) ? (params as any).models.map((m: any) => String(m)) : [];
-  const providerName = String((params as any)?.provider ?? "codex") as any;
-  const supervisorProviderName = String((params as any)?.supervisorProvider ?? providerName) as any;
-  const agentProviderOptions = (params as any)?.agentProviderOptions as Record<string, unknown> | undefined; const supervisorProviderOptions = (params as any)?.supervisorProviderOptions as Record<string, unknown> | undefined;
+  const initialProviderName = String((params as any)?.provider ?? "codex") as any;
+  const supervisorProviderName = String((params as any)?.supervisorProvider ?? initialProviderName) as any;
+  const agentProviderOptions = (params as any)?.agentProviderOptions as Record<string, unknown> | undefined;
+  const agentProviderOptionsByProvider = ((params as any)?.agentProviderOptionsByProvider as Record<string, Record<string, unknown> | undefined> | undefined) ?? {};
+  const supervisorProviderOptions = (params as any)?.supervisorProviderOptions as Record<string, unknown> | undefined;
   const sandboxMode = String((params as any)?.sandboxMode ?? "workspace-write"); const requestAgentRuleRequirements = normalizeRules((params as any)?.agentRules);
   const legacyReasoningEffort = (params as any)?.modelReasoningEffort ? String((params as any).modelReasoningEffort) : undefined;
   const agentModelReasoningEffort = (params as any)?.agentModelReasoningEffort ? String((params as any).agentModelReasoningEffort) : legacyReasoningEffort;
@@ -111,7 +113,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     documentText,
     forkId: base ? undefined : docForkId,
     agentRules: [...requestAgentRuleRequirements, ...(initialRunConfig?.agentRules.requirements ?? [])],
-    providerName,
+    providerName: initialProviderName,
     supervisorProviderName,
     model,
     providerThreadId: threadIdToReuse,
@@ -129,6 +131,8 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
   let currentSupervisorThreadId: string | undefined = supervisorThreadIdToReuse;
   let currentTransitionPayload: Record<string, string> = {};
   let fullResyncNeeded = historyEdited;
+  let currentProviderName = initialProviderName;
+  let currentAgentProviderOptions = agentProviderOptionsByProvider[String(currentProviderName)] ?? agentProviderOptions;
   let currentModel = model;
   let turnIndex = await loadLastTurnTelemetryTurn(workspaceRoot, conversationId);
   let cycleTurnCount = 0;
@@ -161,6 +165,8 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     activeTaskProfile: resolveActiveProcessState(docText, renderedRunConfig).profileId ?? undefined,
     activeModePayload: resolveModePayload(docText),
     activeTransitionPayload: { ...currentTransitionPayload },
+    agentProvider: currentProviderName,
+    agentModel: currentModel,
   });
   let supervisorSchemaPreflightDone = false;
   const bootstrapTurnResult = {
@@ -203,10 +209,13 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         : null)
       ?? resolveActiveMode(currentDocText, renderedRunConfig);
     const modeConfig = resolveModeConfig(renderedRunConfig, activeMode);
-    const selectedModelKey = selectedModelKeyForTaskProfile(renderedRunConfig, documentProcessState.profileId, providerName);
+    const selectedModelKey = selectedModelKeyForTaskProfile(renderedRunConfig, documentProcessState.profileId);
     const selectedModel = selectedModelKey ? renderedRunConfig?.models?.[selectedModelKey] : undefined;
-    if (selectedModel?.model && selectedModel.model !== currentModel) {
-      currentModel = selectedModel.model;
+    const selectedProviderName = String(selectedModel?.provider ?? "").trim() || currentProviderName;
+    if ((selectedModel?.model && selectedModel.model !== currentModel) || selectedProviderName !== currentProviderName) {
+      currentProviderName = selectedProviderName as typeof currentProviderName;
+      currentAgentProviderOptions = agentProviderOptionsByProvider[String(currentProviderName)] ?? agentProviderOptions;
+      currentModel = String(selectedModel?.model ?? currentModel);
       if (currentThreadId) {
         currentThreadId = undefined;
         fullResyncNeeded = true;
@@ -236,16 +245,16 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       renderedRunConfig?.sdkBuiltinTools,
       effectiveToolConfig?.providerBuiltinTools,
     );
-    const effectiveProviderBuiltinTools = effectiveSdkBuiltinTools?.[providerName as keyof typeof effectiveSdkBuiltinTools]?.names;
+    const effectiveProviderBuiltinTools = effectiveSdkBuiltinTools?.[currentProviderName as keyof typeof effectiveSdkBuiltinTools]?.names;
     const effectiveAgentProviderOptions = applySdkBuiltinToolsToProviderOptions({
-      provider: providerName,
-      providerOptions: agentProviderOptions,
+      provider: currentProviderName,
+      providerOptions: currentAgentProviderOptions,
       sdkBuiltinTools: effectiveSdkBuiltinTools,
       label: "tools.provider_builtin_tools",
     });
     const effectiveSupervisorProviderOptions = supervisorProviderOptions;
     const effectiveAgentFilesystemPolicy = resolveProviderFilesystemPolicy({
-      provider: providerName,
+      provider: currentProviderName,
       policies: effectiveToolConfig?.providerFilesystem,
       label: "tools.provider_filesystem",
     });
@@ -364,7 +373,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         detailLabel: "initial supervisor bootstrap",
         startedAt,
         budget,
-        providerName,
+        providerName: currentProviderName,
         supervisorProviderName,
         currentModel,
         supervisorModel,
@@ -439,7 +448,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         documentText: compileMode === "recovery" ? sourceDocumentText : managedContext.documentText,
         workspaceRoot,
         supervisorRecoveryPacket,
-        provider: providerName,
+        provider: currentProviderName,
         agentRules: effectiveAgentRequirements,
         currentMode: activeMode,
         allowedNextModes,
@@ -498,7 +507,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       agentWorkspaceRoot,
       docPath,
       conversationId,
-      providerName,
+      providerName: currentProviderName,
       currentModel,
       sandboxMode,
       permissionProfile,
@@ -561,7 +570,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     currentDocText = turnResult.nextDocText;
     fullResyncNeeded = turnResult.fullResyncNeeded;
     if (result.newThreadId && result.newThreadId !== currentThreadId) currentThreadId = result.newThreadId;
-    if (providerName === "claude" && turnResult.discardCurrentThreadId) {
+    if (currentProviderName === "claude" && turnResult.discardCurrentThreadId) {
       currentThreadId = undefined;
       fullResyncNeeded = true;
     }
@@ -618,7 +627,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         skillInstructions,
         startedAt,
         budget,
-        providerName,
+        providerName: currentProviderName,
       });
       inlineToolMs = Date.now() - inlineToolStartedAt;
       if (toolOutcome.kind === "stop") {
@@ -641,7 +650,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         currentForkId: lifecycle.currentForkId(),
         docPath,
         agentRules: effectiveAgentRequirements,
-        providerName,
+        providerName: currentProviderName,
         currentModel,
         supervisorModel,
         currentThreadId,
@@ -702,7 +711,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       skillInstructions,
       startedAt,
       budget,
-      providerName,
+      providerName: currentProviderName,
     });
     const transitionMs = Date.now() - transitionStartedAt;
     if (transitionOutcome.kind === "stop") { stopReasons = transitionOutcome.stopReasons; stopDetails = transitionOutcome.stopDetails; currentDocText = transitionOutcome.currentDocText; lifecycle.finishRun("stopped"); return { conversationId, forkId: transitionOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) }; }
@@ -720,7 +729,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         currentForkId: lifecycle.currentForkId(),
         docPath,
         agentRules: effectiveAgentRequirements,
-        providerName,
+        providerName: currentProviderName,
         currentModel,
         supervisorModel,
         currentThreadId,
@@ -768,7 +777,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         currentForkId: lifecycle.currentForkId(),
         docPath,
         agentRules: effectiveAgentRequirements,
-        providerName,
+        providerName: currentProviderName,
         currentModel,
         supervisorModel,
         currentThreadId,
@@ -807,7 +816,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       startedAt,
       turnStartedAt,
       budget,
-      providerName,
+      providerName: currentProviderName,
       turnAgentModel,
       supervisorModel,
       shouldUseFullPrompt,

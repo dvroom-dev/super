@@ -211,8 +211,15 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
   );
   const renderedConfig = await renderRunConfig(runConfig, { configBaseDir, agentBaseDir, supervisorBaseDir });
   const runtimeDefaults = renderedConfig?.runtimeDefaults;
-  const { agentProvider, agentModel, supervisorProvider, supervisorModel } =
-    resolveRuntimeProvidersAndModels(options, renderedConfig);
+  const resolvedRuntime = resolveRuntimeProvidersAndModels(options, renderedConfig);
+  const agentProvider = options.mode === "resume" && prior && !options.providerExplicit
+    ? prior.agentProvider
+    : resolvedRuntime.agentProvider;
+  const agentModel = options.mode === "resume" && prior && !options.modelExplicit
+    ? prior.agentModel
+    : resolvedRuntime.agentModel;
+  const supervisorProvider = resolvedRuntime.supervisorProvider;
+  const supervisorModel = resolvedRuntime.supervisorModel;
 
   const initialState: SuperState = {
     version: 1,
@@ -247,6 +254,7 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     supervisorProvider,
     supervisorModel,
     agentProviderOptions: providerOptions?.[String(agentProvider)],
+    agentProviderOptionsByProvider: providerOptions,
     supervisorProviderOptions: providerOptions?.[String(supervisorProvider)],
     agentModelReasoningEffort: runtimeDefaults?.agentModelReasoningEffort ?? runtimeDefaults?.modelReasoningEffort,
     supervisorModelReasoningEffort: runtimeDefaults?.supervisorModelReasoningEffort ?? runtimeDefaults?.agentModelReasoningEffort ?? runtimeDefaults?.modelReasoningEffort,
@@ -291,8 +299,8 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     activeTaskProfile: (result as any).activeTaskProfile || prior?.activeTaskProfile,
     activeModePayload: result.activeModePayload ?? prior?.activeModePayload,
     activeTransitionPayload: result.activeTransitionPayload,
-    agentProvider,
-    agentModel,
+    agentProvider: (result as any).agentProvider ?? agentProvider,
+    agentModel: (result as any).agentModel ?? agentModel,
     supervisorProvider,
     supervisorModel,
     cycleCount: (prior?.cycleCount ?? 0) + 1,

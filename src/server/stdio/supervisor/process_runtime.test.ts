@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { processAssignmentForTransition } from "./process_runtime.js";
+import { processAssignmentForTransition, selectedModelKeyForTaskProfile } from "./process_runtime.js";
 
 describe("processAssignmentForTransition", () => {
   it("ignores stale transition task_profile/process_stage when they do not match the requested mode", () => {
@@ -28,5 +28,18 @@ describe("processAssignmentForTransition", () => {
     expect(assignment.mode).toBe("code_model");
     expect(assignment.profileId).toBe("model_repair");
     expect(assignment.stageId).toBe("model_repair");
+  });
+
+  it("selects the first preferred model even when it belongs to a different provider", () => {
+    const config: any = {
+      taskProfiles: {
+        model_repair: { mode: "code_model", preferredModels: ["code_repair"] },
+      },
+      models: {
+        code_repair: { provider: "codex", model: "gpt-5.3-codex-spark" },
+      },
+    };
+
+    expect(selectedModelKeyForTaskProfile(config, "model_repair")).toBe("code_repair");
   });
 });
