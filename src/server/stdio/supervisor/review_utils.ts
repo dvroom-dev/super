@@ -207,7 +207,21 @@ function normalizeDecisionPayload(args: {
     return { reason: normalizeString(payload.reason) };
   }
   if (args.decision === "continue") {
-    return {};
+    const rawMessage = normalizeString(payload.message);
+    const rawTemplate = normalizeString(payload.message_template);
+    const rawMessageType = normalizeString(payload.message_type);
+    if (!rawMessage && !rawTemplate && !rawMessageType) {
+      return {
+        message: "",
+        message_template: "",
+        message_type: "user",
+      };
+    }
+    return {
+      message: rawMessage,
+      message_template: normalizeMessageTemplateName(payload.message_template),
+      message_type: normalizeSupervisorMessageType(payload.message_type),
+    };
   }
   return {
     advice: normalizeString(payload.advice),
@@ -348,8 +362,29 @@ export function validateReviewSemantic(args: {
   }
 
   if (args.review.decision === "continue") {
-    if (Object.keys(args.review.payload).length > 0) {
-      return "continue payload must be empty";
+    const message = normalizeString((args.review.payload as any).message);
+    const rawTemplateName = normalizeString((args.review.payload as any).message_template);
+    if (!message && !rawTemplateName) {
+      return undefined;
+    }
+    const messageTemplateName = normalizeMessageTemplateName(rawTemplateName);
+    const options = args.appendMessageTemplates ?? [];
+    const optionByName = new Map(options.map((entry) => [entry.name, entry]));
+    if (
+      messageTemplateName !== CUSTOM_MESSAGE_TEMPLATE_NAME &&
+      !optionByName.has(messageTemplateName)
+    ) {
+      return `continue.message_template '${messageTemplateName}' is not allowed`;
+    }
+    if (messageTemplateName === CUSTOM_MESSAGE_TEMPLATE_NAME && !message && Object.keys(args.review.payload).length > 0) {
+      return "continue.message is required for message_template 'custom'";
+    }
+    const selected = optionByName.get(messageTemplateName);
+    if (selected?.acceptsMessage && !message) {
+      return `continue.message is required for message_template '${messageTemplateName}'`;
+    }
+    if (selected && !selected.acceptsMessage && message) {
+      return `continue.message must be empty for message_template '${messageTemplateName}'`;
     }
     return undefined;
   }

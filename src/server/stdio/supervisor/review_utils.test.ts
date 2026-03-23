@@ -19,6 +19,24 @@ function appendReview(messageTemplate: string, message: string): SupervisorRevie
   };
 }
 
+function continueReview(messageTemplate: string, message: string): SupervisorReviewResult {
+  return {
+    decision: "continue",
+    payload: {
+      message,
+      message_template: messageTemplate,
+      message_type: "supervisor",
+    },
+    mode_assessment: {
+      current_mode_stop_satisfied: false,
+      candidate_modes_ranked: [{ mode: "default", confidence: "medium", evidence: "default evidence" }],
+      recommended_action: "continue",
+    },
+    reasoning: null,
+    agent_model: null,
+  };
+}
+
 describe("review_utils append message template semantics", () => {
   it("requires mode_assessment when mode switching is enabled", () => {
     const review = appendReview("custom", "ok");
@@ -122,6 +140,18 @@ describe("review_utils append message template semantics", () => {
       appendMessageTemplates: [{ name: "static_template", acceptsMessage: false }],
     });
     expect(error).toContain("must be empty for message_template 'static_template'");
+  });
+
+  it("allows continue to carry templated in-place guidance", () => {
+    const error = validateReviewSemantic({
+      review: continueReview("templated", "new bounded probe"),
+      trigger: "agent_process_result_report",
+      mode: "hard",
+      agentRules: [],
+      allowedNextModes: ["default"],
+      appendMessageTemplates: [{ name: "templated", acceptsMessage: true }],
+    });
+    expect(error).toBeUndefined();
   });
 
   it("allows fork decisions with empty mode payload", () => {

@@ -5,6 +5,10 @@ import { persistAgentTurnWithoutSupervisor } from "../supervisor/no_supervisor_f
 import { applySupervisorForkDecision } from "./conversation_supervise_inline_mode_helpers.js";
 import type { RuntimeContext } from "./context.js";
 import { normalizeTransitionPayloadForMode } from "../supervisor/process_runtime.ts";
+import { buildSupervisorInjectedMessage } from "../supervisor/supervisor_interjections.js";
+import { resolveModePayload, updateFrontmatterModePayload } from "../supervisor/mode_runtime.js";
+import { combineTranscript } from "../helpers.js";
+import { renderChat } from "../../../markdown/render.js";
 
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 
@@ -95,6 +99,34 @@ export async function applyInlineCheckSupervisorOutcome(args: {
         args.review.transition_payload,
       );
       args.state.fullResyncNeeded = true;
+    }
+    if (args.review.decision === "continue") {
+      const guidanceText = String((args.review as any)?.payload?.message ?? "").trim();
+      const messageTemplateName = String((args.review as any)?.payload?.message_template ?? "").trim() || undefined;
+      if (guidanceText || messageTemplateName) {
+        const injected = buildSupervisorInjectedMessage({
+          supervisorMode: "hard",
+          reviewTrigger,
+          review: args.review,
+          guidanceText,
+          messageTemplateName,
+          reasons: [stopReason],
+          stopDetails: [],
+          supervisorTriggers: args.renderedRunConfig?.supervisorTriggers,
+        });
+        if (injected) {
+          args.state.currentDocText = combineTranscript(
+            args.state.currentDocText,
+            [renderChat(injected.messageType, injected.text)],
+          );
+          const nextModePayload = {
+            ...resolveModePayload(args.state.currentDocText),
+            user_message: guidanceText || injected.text,
+          };
+          args.state.currentDocText = updateFrontmatterModePayload(args.state.currentDocText, nextModePayload);
+          args.state.fullResyncNeeded = true;
+        }
+      }
     }
     return { kind: "continue" };
   }

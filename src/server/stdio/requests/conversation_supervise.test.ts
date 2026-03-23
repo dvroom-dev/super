@@ -1927,6 +1927,97 @@ describe("handleConversationSupervise", () => {
     }
   });
 
+  it("replaces an exhausted probe handoff when report_process_result returns continue with new guidance", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-process-guidance-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "  supervisor_provider: mock",
+        "  supervisor_model: mock-supervisor",
+        "task_profiles:",
+        "  action_vocabulary:",
+        "    mode: explore_and_solve",
+        "process:",
+        "  initial_stage: action_vocabulary",
+        "  stages:",
+        "    action_vocabulary:",
+        "      profile: action_vocabulary",
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: explore seed",
+        "mode_state_machine:",
+        "  initial_mode: explore_and_solve",
+        "  transitions:",
+        "    explore_and_solve: [explore_and_solve]",
+      ].join("\n"),
+      "utf8",
+    );
+    const { ctx, createForkCalls } = makeCtx({ conversationId: "conversation_v2_process_guidance" });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```tool_call name=report_process_result",
+      '{"outcome":"complete","summary":"old probe exhausted","evidence":"band unchanged","user_message":"stale probe packet"}',
+      "```",
+    ].join("\n");
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "continue",
+      payload: strictSupervisorPayload({
+        message: "Do not repeat the old probe. New target only: test the boxed region next.",
+        message_template: "custom",
+      }),
+      transition_payload: {
+        analysis_scope: "frontier",
+        analysis_level: "1",
+        frontier_level: "1",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [
+          { mode: "explore_and_solve", confidence: "medium", evidence: "stay in the same worker mode with a new bounded target" },
+        ],
+        recommended_action: "continue",
+      },
+      reasoning: "replace stale handoff in-place",
+      agent_model: null,
+    });
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_v2_process_guidance",
+          forkId: "fork_doc",
+          mode: "explore_and_solve",
+          userMessage: "stale probe packet",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+      });
+      const persistedDocText = String(createForkCalls.at(-1)?.documentText ?? "");
+      expect(persistedDocText).toContain("mode_payload_b64");
+      expect(persistedDocText).toContain("New target only: test the boxed region next.");
+      expect(result.activeMode).toBe("explore_and_solve");
+      const handoffText = JSON.stringify(result.activeModePayload ?? {});
+      expect(handoffText).toContain("New target only: test the boxed region next.");
+      expect(handoffText).not.toContain("stale probe packet");
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+    }
+  });
+
   it("normalizes stale process transition payload to the chosen mode on the v2 path", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-v2-normalize-transition-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });

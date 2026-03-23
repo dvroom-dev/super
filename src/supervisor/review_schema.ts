@@ -72,7 +72,11 @@ export type ResumeModeHeadPayload = {
   wait_for_boundary: boolean;
 };
 export type RetryPayload = { reason: string };
-export type ContinuePayload = Record<string, never>;
+export type ContinuePayload = {
+  message: string;
+  message_template: string;
+  message_type: SupervisorMessageType;
+};
 
 export type DecisionPayloadByDecision = {
   stop_and_return: StopAndReturnPayload;
