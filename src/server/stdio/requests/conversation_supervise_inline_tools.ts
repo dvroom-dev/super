@@ -462,6 +462,53 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
       else if (toolName === "report_process_result") processResultReview = execution.supervisorReview;
       else checkSupervisorReview = execution.supervisorReview;
     }
+    if (toolName === "report_process_result" && execution.supervisorReview) {
+      const processResultState = {
+        currentDocText: nextDocText,
+        currentThreadId: nextThreadId,
+        currentSupervisorThreadId: nextSupervisorThreadId,
+        activeTransitionPayload: nextTransitionPayload,
+        fullResyncNeeded: nextResync,
+      };
+      const processResultOutcome = await applyInlineCheckSupervisorOutcome({
+        review: execution.supervisorReview,
+        reviewTrigger: "agent_process_result_report",
+        stopReason: "process_result_report",
+        reasonLabel: "process_result_report",
+        detailLabel: "report_process_result requested progression",
+        state: processResultState,
+        ctx: args.ctx,
+        workspaceRoot: args.workspaceRoot,
+        docPath: args.docPath,
+        conversationId: args.conversationId,
+        activeForkId: args.activeForkId,
+        switchActiveFork: args.switchActiveFork,
+        renderedRunConfig: args.renderedRunConfig,
+        runConfigPath: args.runConfigPath,
+        configBaseDir: args.configBaseDir,
+        agentBaseDir: args.agentBaseDir,
+        supervisorBaseDir: args.supervisorBaseDir,
+        requestAgentRuleRequirements: args.requestAgentRuleRequirements,
+        activeMode: args.activeMode,
+        allowedNextModes: args.allowedNextModes,
+        startedAt: args.startedAt,
+        budget: args.budget,
+        providerName: args.providerName,
+        supervisorProviderName: args.supervisorProviderName,
+        currentModel: args.currentModel,
+        supervisorModel: args.supervisorModel,
+        effectiveAgentRequirements: args.effectiveAgentRequirements,
+      });
+      nextDocText = processResultState.currentDocText;
+      nextThreadId = processResultState.currentThreadId;
+      nextSupervisorThreadId = processResultState.currentSupervisorThreadId;
+      nextTransitionPayload = processResultState.activeTransitionPayload;
+      nextResync = processResultState.fullResyncNeeded;
+      if (processResultOutcome.kind === "stop") {
+        return processResultOutcome;
+      }
+      return continueAfterInlineTermination();
+    }
     const responseOutputText = [String(execution.output ?? "").trim(), execution.error ? `[error]\n${execution.error}` : ""].filter(Boolean).join("\n\n").trim();
     const responseMatch = toolInterceptionEnabled ? matchInlineToolInterceptionResponse({ context: interceptContext, rules: toolInterceptionRules, outputText: responseOutputText }) : undefined;
     if (responseMatch) {

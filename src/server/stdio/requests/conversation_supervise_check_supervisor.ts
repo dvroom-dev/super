@@ -62,12 +62,39 @@ export async function applyInlineCheckSupervisorOutcome(args: {
   effectiveAgentRequirements: string[];
 }): Promise<InlineCheckSupervisorOutcome> {
   if (!args.review) return { kind: "continue" };
+  const review = args.review;
   const reviewTrigger = args.reviewTrigger ?? "agent_check_supervisor";
   const stopReason = args.stopReason ?? "check_supervisor";
   const reasonLabel = args.reasonLabel ?? "check_supervisor";
   const detailLabel = args.detailLabel ?? "check_supervisor requested fork";
-  if (args.review.decision === "stop_and_return") {
-    const reason = args.review.payload.reason || `${stopReason} requested stop`;
+  const applyInPlaceGuidance = () => {
+    const guidanceText = String((review as any)?.payload?.message ?? "").trim();
+    const messageTemplateName = String((review as any)?.payload?.message_template ?? "").trim() || undefined;
+    if (!guidanceText && !messageTemplateName) return;
+    const injected = buildSupervisorInjectedMessage({
+      supervisorMode: "hard",
+      reviewTrigger,
+      review,
+      guidanceText,
+      messageTemplateName,
+      reasons: [stopReason],
+      stopDetails: [],
+      supervisorTriggers: args.renderedRunConfig?.supervisorTriggers,
+    });
+    if (!injected) return;
+    args.state.currentDocText = combineTranscript(
+      args.state.currentDocText,
+      [renderChat(injected.messageType, injected.text)],
+    );
+    const nextModePayload = {
+      ...resolveModePayload(args.state.currentDocText),
+      user_message: guidanceText || injected.text,
+    };
+    args.state.currentDocText = updateFrontmatterModePayload(args.state.currentDocText, nextModePayload);
+    args.state.fullResyncNeeded = true;
+  };
+  if (review.decision === "stop_and_return") {
+    const reason = review.payload.reason || `${stopReason} requested stop`;
     const persisted = await persistAgentTurnWithoutSupervisor({
       ctx: args.ctx,
       workspaceRoot: args.workspaceRoot,
@@ -91,42 +118,17 @@ export async function applyInlineCheckSupervisorOutcome(args: {
       stopDetails: [reason],
     };
   }
-  if (args.review.decision !== "fork_new_conversation" && args.review.decision !== "resume_mode_head") {
-    if (args.review.decision === "continue" && args.review.transition_payload) {
+  if (review.decision !== "fork_new_conversation" && review.decision !== "resume_mode_head") {
+    if (review.decision === "continue" && review.transition_payload) {
       args.state.activeTransitionPayload = normalizeTransitionPayloadForMode(
         args.renderedRunConfig,
         args.activeMode,
-        args.review.transition_payload,
+        review.transition_payload,
       );
       args.state.fullResyncNeeded = true;
     }
-    if (args.review.decision === "continue") {
-      const guidanceText = String((args.review as any)?.payload?.message ?? "").trim();
-      const messageTemplateName = String((args.review as any)?.payload?.message_template ?? "").trim() || undefined;
-      if (guidanceText || messageTemplateName) {
-        const injected = buildSupervisorInjectedMessage({
-          supervisorMode: "hard",
-          reviewTrigger,
-          review: args.review,
-          guidanceText,
-          messageTemplateName,
-          reasons: [stopReason],
-          stopDetails: [],
-          supervisorTriggers: args.renderedRunConfig?.supervisorTriggers,
-        });
-        if (injected) {
-          args.state.currentDocText = combineTranscript(
-            args.state.currentDocText,
-            [renderChat(injected.messageType, injected.text)],
-          );
-          const nextModePayload = {
-            ...resolveModePayload(args.state.currentDocText),
-            user_message: guidanceText || injected.text,
-          };
-          args.state.currentDocText = updateFrontmatterModePayload(args.state.currentDocText, nextModePayload);
-          args.state.fullResyncNeeded = true;
-        }
-      }
+    if (review.decision === "continue" || review.decision === "append_message_and_continue") {
+      applyInPlaceGuidance();
     }
     return { kind: "continue" };
   }
@@ -145,7 +147,7 @@ export async function applyInlineCheckSupervisorOutcome(args: {
     requestAgentRuleRequirements: args.requestAgentRuleRequirements,
     activeMode: args.activeMode,
     allowedNextModes: args.allowedNextModes,
-    review: args.review,
+    review,
     reasonLabel,
     detailLabel,
     startedAt: args.startedAt,
