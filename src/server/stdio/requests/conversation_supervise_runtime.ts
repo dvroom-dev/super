@@ -60,7 +60,9 @@ export async function initialBootstrapModesFor(args: {
       ? String(args.renderedRunConfig?.process?.stages?.[initialStage]?.profile ?? "").trim()
       : "";
     const initialMode = resolveTaskProfileMode(args.renderedRunConfig, initialProfile || null);
-    return initialMode ? [initialMode] : [];
+    const configuredModes = Object.keys(args.renderedRunConfig?.modes ?? {});
+    if (!initialMode) return configuredModes;
+    return [initialMode, ...configuredModes.filter((mode) => mode !== initialMode)];
   }
   const initialMode = resolveInitialMode(args.renderedRunConfig);
   if (!initialMode) return [];
@@ -74,6 +76,9 @@ export async function allowedNextModesFor(args: {
 }): Promise<string[]> {
   const modesEnabled = args.renderedRunConfig?.modesEnabled ?? true;
   if (!modesEnabled) return [];
+  if (isV2ProcessEnabled(args.renderedRunConfig)) {
+    return Object.keys(args.renderedRunConfig?.modes ?? {});
+  }
   const explicit = args.renderedRunConfig?.modeStateMachine?.transitions?.[args.activeMode];
   if (Array.isArray(explicit) && explicit.length) return [...explicit];
   const configuredModes = Object.keys(args.renderedRunConfig?.modes ?? {});

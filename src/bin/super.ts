@@ -115,15 +115,13 @@ async function buildNewDocument(options: CliOptions) {
     const documentText = buildInitialProcessDocument({
       conversationId,
       forkId,
-      processStage: initialStage ?? undefined,
-      taskProfile: initialTaskProfile ?? undefined,
     });
     return {
       documentText,
       conversationId,
       activeForkId: forkId,
-      activeProcessStage: initialStage ?? undefined,
-      activeTaskProfile: initialTaskProfile ?? undefined,
+      activeProcessStage: undefined,
+      activeTaskProfile: undefined,
       activeModePayload: {},
       renderedConfig,
     };

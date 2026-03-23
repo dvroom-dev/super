@@ -2457,7 +2457,7 @@ describe("handleConversationSupervise", () => {
     }
   });
 
-  it("enforces fork_fresh resume_strategy for v2 task profiles even when supervisor asks to resume_mode_head", async () => {
+  it("lets supervisor override fork_fresh resume_strategy on v2 runs", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-v2-fork-fresh-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
     await fs.writeFile(
@@ -2534,6 +2534,7 @@ describe("handleConversationSupervise", () => {
       transition_payload: {
         process_stage: "feature_inventory",
         task_profile: "spatial_analysis",
+        resume_strategy: "same_conversation",
       },
       mode_assessment: {
         current_mode_stop_satisfied: true,
@@ -2562,7 +2563,7 @@ describe("handleConversationSupervise", () => {
       });
       expect(createForkCalls.length).toBeGreaterThanOrEqual(2);
       expect(String(createForkCalls.at(-1)?.documentText ?? "")).toContain("Fresh theory packet.");
-      expect(createForkCalls.at(-1)?.providerThreadId).toBeUndefined();
+      expect(createForkCalls.at(-1)?.providerThreadId).toBe("thread_existing_theory");
       expect(result.activeMode).toBe("theory");
     } finally {
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
@@ -2658,6 +2659,195 @@ describe("handleConversationSupervise", () => {
       expect(result.activeMode).toBe("explore_and_solve");
       expect((result as any).activeProcessStage).toBe("action_vocabulary");
       expect((result as any).activeTaskProfile).toBe("action_vocabulary");
+    } finally {
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  });
+
+  it("lets v2 bootstrap choose a worker mode outside legacy mode_state_machine defaults", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-bootstrap-advisory-modes-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "  supervisor_provider: mock",
+        "  supervisor_model: mock-supervisor",
+        "task_profiles:",
+        "  action_vocabulary:",
+        "    mode: explore_and_solve",
+        "  component_coding:",
+        "    mode: code_model",
+        "process:",
+        "  initial_stage: action_vocabulary",
+        "  stages:",
+        "    action_vocabulary:",
+        "      profile: action_vocabulary",
+        "    component_coding:",
+        "      profile: component_coding",
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: explore seed",
+        "  code_model:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: code seed",
+        "mode_state_machine:",
+        "  initial_mode: explore_and_solve",
+        "  transitions:",
+        "    explore_and_solve: [explore_and_solve]",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const bootstrapDoc = [
+      "---",
+      "conversation_id: conversation_v2_bootstrap_advisory_modes",
+      "fork_id: fork_doc",
+      "---",
+      "",
+      "<!-- supervisor-owned process bootstrap: no worker conversation has started yet -->",
+    ].join("\n");
+    const { ctx, createForkCalls } = makeCtx({ conversationId: "conversation_v2_bootstrap_advisory_modes" });
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "fork_new_conversation",
+      payload: strictSupervisorPayload({
+        mode: "code_model",
+        mode_payload: { code_model: {} },
+        wait_for_boundary: false,
+      }),
+      transition_payload: {
+        process_stage: "component_coding",
+        task_profile: "component_coding",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [
+          { mode: "code_model", confidence: "high", evidence: "bootstrap may choose any configured worker mode on v2" },
+        ],
+        recommended_action: "fork_new_conversation",
+      },
+      reasoning: "bootstrap directly into code_model",
+      agent_model: null,
+    });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "code bootstrap worker turn";
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: bootstrapDoc,
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+      });
+      expect(String(createForkCalls[1]?.documentText ?? "")).toContain("mode: code_model");
+      expect(result.activeMode).toBe("code_model");
+      expect((result as any).activeProcessStage).toBe("component_coding");
+      expect((result as any).activeTaskProfile).toBe("component_coding");
+    } finally {
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  });
+
+  it("lets v2 supervisor transition payload override the worker model directly", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-bootstrap-model-override-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "  supervisor_provider: mock",
+        "  supervisor_model: mock-supervisor",
+        "models:",
+        "  component_default:",
+        "    provider: mock",
+        "    model: mock-component-default",
+        "task_profiles:",
+        "  component_coding:",
+        "    mode: code_model",
+        "    preferred_models: [component_default]",
+        "process:",
+        "  initial_stage: component_coding",
+        "  stages:",
+        "    component_coding:",
+        "      profile: component_coding",
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  code_model:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: code seed",
+        "mode_state_machine:",
+        "  initial_mode: code_model",
+      ].join("\n"),
+      "utf8",
+    );
+    const bootstrapDoc = [
+      "---",
+      "conversation_id: conversation_v2_bootstrap_model_override",
+      "fork_id: fork_doc",
+      "---",
+      "",
+      "<!-- supervisor-owned process bootstrap: no worker conversation has started yet -->",
+    ].join("\n");
+    const { ctx } = makeCtx({ conversationId: "conversation_v2_bootstrap_model_override" });
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "fork_new_conversation",
+      payload: strictSupervisorPayload({
+        mode: "code_model",
+        mode_payload: { code_model: {} },
+        wait_for_boundary: false,
+      }),
+      transition_payload: {
+        process_stage: "component_coding",
+        task_profile: "component_coding",
+        agent_provider: "mock",
+        agent_model: "mock-supervisor-picked",
+        agent_reasoning_effort: "low",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [
+          { mode: "code_model", confidence: "high", evidence: "bootstrap should honor supervisor-selected worker invocation" },
+        ],
+        recommended_action: "fork_new_conversation",
+      },
+      reasoning: "bootstrap directly into code_model with a supervisor-selected model",
+      agent_model: null,
+    });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "override-model worker turn";
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: bootstrapDoc,
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+      });
+      expect((result as any).agentProvider).toBe("mock");
+      expect((result as any).agentModel).toBe("mock-supervisor-picked");
+      expect(result.activeMode).toBe("code_model");
     } finally {
       delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;

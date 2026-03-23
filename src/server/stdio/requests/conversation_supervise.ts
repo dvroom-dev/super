@@ -44,7 +44,12 @@ import {
   validatorsForActiveProcessState,
 } from "../supervisor/process_runtime.js";
 import { buildValidatorFailureUserMessage, runConfiguredValidators } from "../supervisor/validator_runtime.js";
-export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtime.js"; export async function handleConversationSupervise(ctx: RuntimeContext, params: any) {
+import {
+  applyTransitionToolOverrides,
+  resolveTransitionInvocationOverrides,
+} from "./conversation_supervise_invocation_overrides.js";
+export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtime.js";
+export async function handleConversationSupervise(ctx: RuntimeContext, params: any) {
   const workspaceRoot = ctx.requireWorkspaceRoot(params);
   const agentWorkspaceRoot = path.resolve(workspaceRoot, String((params as any)?.agentBaseDir ?? workspaceRoot));
   const docPath = String((params as any)?.docPath ?? "untitled");
@@ -209,19 +214,29 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         ? resolveTaskProfileMode(renderedRunConfig, documentProcessState.profileId)
         : null)
       ?? resolveActiveMode(currentDocText, renderedRunConfig);
+    const invocationOverrides = resolveTransitionInvocationOverrides(currentTransitionPayload);
     const modeConfig = resolveModeConfig(renderedRunConfig, activeMode);
     const selectedModelKey = selectedModelKeyForTaskProfile(renderedRunConfig, documentProcessState.profileId);
     const selectedModel = selectedModelKey ? renderedRunConfig?.models?.[selectedModelKey] : undefined;
-    const selectedProviderName = String(selectedModel?.provider ?? "").trim() || currentProviderName;
+    const selectedProviderName =
+      invocationOverrides.provider
+      ?? (String(selectedModel?.provider ?? "").trim() || currentProviderName);
     const selectedSandboxMode = String(selectedModel?.sandboxMode ?? "").trim() || currentSandboxMode;
     if (
-      (selectedModel?.model && selectedModel.model !== currentModel)
+      ((invocationOverrides.model ?? selectedModel?.model) && (invocationOverrides.model ?? selectedModel?.model) !== currentModel)
       || selectedProviderName !== currentProviderName
       || selectedSandboxMode !== currentSandboxMode
     ) {
       currentProviderName = selectedProviderName as typeof currentProviderName;
-      currentAgentProviderOptions = agentProviderOptionsByProvider[String(currentProviderName)] ?? agentProviderOptions;
-      currentModel = String(selectedModel?.model ?? currentModel);
+      const selectedModelProviderOptions =
+        invocationOverrides.provider || invocationOverrides.model
+          ? {}
+          : (selectedModel?.providerOptions ?? {});
+      currentAgentProviderOptions = {
+        ...((agentProviderOptionsByProvider[String(currentProviderName)] ?? agentProviderOptions) ?? {}),
+        ...selectedModelProviderOptions,
+      };
+      currentModel = String(invocationOverrides.model ?? selectedModel?.model ?? currentModel);
       currentSandboxMode = selectedSandboxMode;
       if (currentThreadId) {
         currentThreadId = undefined;
@@ -229,8 +244,13 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       }
       sendBudgetUpdate();
     }
-    const { agentModelReasoningEffort: effectiveAgentModelReasoningEffort, supervisorModelReasoningEffort: effectiveSupervisorModelReasoningEffort } = resolveModeReasoningEfforts({ modeConfig, defaultAgentReasoningEffort: agentModelReasoningEffort, defaultSupervisorReasoningEffort: supervisorModelReasoningEffort });
-    const effectiveToolConfig = modeConfig?.tools ?? renderedRunConfig?.tools;
+    const { agentModelReasoningEffort: configuredAgentModelReasoningEffort, supervisorModelReasoningEffort: effectiveSupervisorModelReasoningEffort } = resolveModeReasoningEfforts({ modeConfig, defaultAgentReasoningEffort: agentModelReasoningEffort, defaultSupervisorReasoningEffort: supervisorModelReasoningEffort });
+    const effectiveAgentModelReasoningEffort = invocationOverrides.reasoningEffort ?? configuredAgentModelReasoningEffort;
+    const effectiveToolConfig = applyTransitionToolOverrides({
+      baseTools: modeConfig?.tools ?? renderedRunConfig?.tools,
+      providerName: currentProviderName,
+      transitionPayload: currentTransitionPayload,
+    });
     const activeModePayload = resolveModePayload(currentDocText);
     const effectiveAgentConfiguredSystemMessage = resolveConfiguredSystemMessage({
       configuredSystemMessage: modeConfig?.systemMessage ?? renderedRunConfig?.systemMessage,
@@ -754,7 +774,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       agentWorkspaceRoot,
       supervisorWorkspaceRoot,
       renderedRunConfig,
-      validatorKeys: validatorsForActiveProcessState(renderedRunConfig, documentProcessState.stageId, documentProcessState.profileId),
+      validatorKeys: invocationOverrides.validatorKeys ?? validatorsForActiveProcessState(renderedRunConfig, documentProcessState.stageId, documentProcessState.profileId),
     });
     const validatorFailureMessage = buildValidatorFailureUserMessage(validatorResults);
     if (validatorFailureMessage) {

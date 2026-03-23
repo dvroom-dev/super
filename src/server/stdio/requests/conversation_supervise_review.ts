@@ -25,7 +25,7 @@ import type { BudgetState } from "../supervisor/agent_turn.js";
 import type { RuntimeContext } from "./context.js";
 import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_run_config_refresh.js";
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
-import { applyProcessFrontmatter, normalizeTransitionPayloadForMode, processAssignmentForTransition } from "../supervisor/process_runtime.ts";
+import { applyProcessFrontmatter, isV2ProcessEnabled, normalizeTransitionPayloadForMode, processAssignmentForTransition } from "../supervisor/process_runtime.ts";
 type RenderedRunConfig = Awaited<ReturnType<typeof renderRunConfig>>;
 type RunSupervisorReviewAndPersistArgs = {
   ctx: RuntimeContext;
@@ -266,11 +266,13 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
       supervisorBaseDir: args.supervisorBaseDir,
     });
     const effectiveRenderedRunConfig = refreshedRunConfig ?? args.renderedRunConfig;
-    const transitionAllowed = modeTransitionAllowed({
-      config: effectiveRenderedRunConfig,
-      fromMode: args.activeMode,
-      toMode: reviewStep.nextMode,
-    });
+    const transitionAllowed = isV2ProcessEnabled(effectiveRenderedRunConfig)
+      ? true
+      : modeTransitionAllowed({
+          config: effectiveRenderedRunConfig,
+          fromMode: args.activeMode,
+          toMode: reviewStep.nextMode,
+        });
     const nextMode = transitionAllowed ? reviewStep.nextMode : args.activeMode;
     const nextModeConfig = resolveModeConfig(effectiveRenderedRunConfig, nextMode);
     const nextModeRuleSet = mergeAgentRuleSet({
@@ -307,11 +309,13 @@ export async function runSupervisorReviewAndPersist(args: RunSupervisorReviewAnd
       supervisorBaseDir: args.supervisorBaseDir,
     });
     const effectiveRenderedRunConfig = refreshedRunConfig ?? args.renderedRunConfig;
-    const transitionAllowed = modeTransitionAllowed({
-      config: effectiveRenderedRunConfig,
-      fromMode: args.activeMode,
-      toMode: reviewStep.nextMode,
-    });
+    const transitionAllowed = isV2ProcessEnabled(effectiveRenderedRunConfig)
+      ? true
+      : modeTransitionAllowed({
+          config: effectiveRenderedRunConfig,
+          fromMode: args.activeMode,
+          toMode: reviewStep.nextMode,
+        });
     if (!transitionAllowed) {
       throw new Error(`resume_mode_head mode '${reviewStep.nextMode}' is not an allowed transition from '${args.activeMode}'`);
     }

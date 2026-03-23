@@ -24,6 +24,7 @@ import { refreshRenderedRunConfigForModeFork } from "./conversation_supervise_ru
 import { buildSessionSystemPromptForMode } from "../supervisor/session_system_prompt.js";
 import {
   applyProcessFrontmatter,
+  isV2ProcessEnabled,
   normalizeTransitionPayloadForMode,
   processAssignmentForTransition,
   resumeStrategyForTaskProfile,
@@ -191,10 +192,11 @@ export async function applySupervisorForkDecision(args: {
   });
   const effectiveRenderedRunConfig = refreshedRunConfig ?? args.renderedRunConfig;
   const requestedMode = String(args.review.payload.mode ?? "").trim();
-  if (!requestedMode || !args.allowedNextModes.includes(requestedMode)) {
+  const v2 = isV2ProcessEnabled(effectiveRenderedRunConfig);
+  if (!requestedMode || (!v2 && !args.allowedNextModes.includes(requestedMode))) {
     return undefined;
   }
-  if (!modeTransitionAllowed({ config: effectiveRenderedRunConfig, fromMode: args.activeMode, toMode: requestedMode })) {
+  if (!v2 && !modeTransitionAllowed({ config: effectiveRenderedRunConfig, fromMode: args.activeMode, toMode: requestedMode })) {
     return undefined;
   }
   const handoff = buildResumeHandoffMessage({
@@ -267,10 +269,14 @@ export async function applySupervisorForkDecision(args: {
       mode: requestedMode,
       transitionPayload: activeTransitionPayload,
     });
-    const resumeStrategy = resumeStrategyForTaskProfile(
+    const defaultResumeStrategy = resumeStrategyForTaskProfile(
       effectiveRenderedRunConfig,
       targetAssignment.profileId,
     );
+    const requestedResumeStrategy = String(activeTransitionPayload.resume_strategy ?? "").trim();
+    const resumeStrategy = requestedResumeStrategy === "same_conversation" || requestedResumeStrategy === "fork_fresh"
+      ? requestedResumeStrategy
+      : defaultResumeStrategy;
     const targetModeFork = await loadLatestForkInMode({
       ctx: args.ctx,
       workspaceRoot: args.workspaceRoot,
