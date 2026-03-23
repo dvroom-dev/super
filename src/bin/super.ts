@@ -240,6 +240,7 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     updatedAt: now,
     lastStopReasons: continuingPriorState ? (prior?.lastStopReasons ?? []) : [],
     lastStopDetails: continuingPriorState ? (prior?.lastStopDetails ?? []) : [],
+    resumeAllowed: true,
   };
   await saveSuperState(options.workspaceRoot, initialState);
   await exportSessionDocument(options.workspaceRoot, documentTextRef.value, options.outputPath);
@@ -308,6 +309,7 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     updatedAt: nowIso(),
     lastStopReasons: result.stopReasons ?? [],
     lastStopDetails: result.stopDetails ?? [],
+    resumeAllowed: (result as any).resumeAllowed ?? true,
   };
   await saveSuperState(options.workspaceRoot, nextState);
   await writeProcessLedger({

@@ -17,6 +17,7 @@ export type SuperState = {
   updatedAt: string;
   lastStopReasons: string[];
   lastStopDetails: string[];
+  resumeAllowed: boolean;
 };
 
 export type SuperEvent = {

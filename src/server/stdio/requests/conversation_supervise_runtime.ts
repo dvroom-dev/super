@@ -75,18 +75,6 @@ export async function allowedNextModesFor(args: {
   const modesEnabled = args.renderedRunConfig?.modesEnabled ?? true;
   if (!modesEnabled) return [];
   const explicit = args.renderedRunConfig?.modeStateMachine?.transitions?.[args.activeMode];
-  if (args.agentBaseDir) {
-    const levelMeta = await readLevelCurrentMeta(args.agentBaseDir);
-    const level = Number(levelMeta?.level);
-    if (level === 1 && levelMeta?.analysis_level_pinned !== true) {
-      const allowedDuringLevelOne = new Set(["explore_and_solve", "code_model", "recover"]);
-      if (Array.isArray(explicit) && explicit.length) {
-        return explicit.filter((mode) => allowedDuringLevelOne.has(String(mode ?? "").trim()));
-      }
-      const configuredModes = Object.keys(args.renderedRunConfig?.modes ?? {});
-      return configuredModes.filter((mode) => allowedDuringLevelOne.has(mode));
-    }
-  }
   if (Array.isArray(explicit) && explicit.length) return [...explicit];
   const configuredModes = Object.keys(args.renderedRunConfig?.modes ?? {});
   return configuredModes.length ? configuredModes : [];

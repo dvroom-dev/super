@@ -201,7 +201,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       stopReasons = ["cycle_limit"]; stopDetails = [`cycle limit reached (${effectiveCycleLimit})`];
       ctx.sendNotification({ method: "conversation.status", params: { message: stopDetails[0] } });
       lifecycle.finishRun("stopped");
-      return { conversationId, forkId: lifecycle.currentForkId(), mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
+      return { conversationId, forkId: lifecycle.currentForkId(), mode: "supervise", stopReasons, stopDetails, resumeAllowed: true, ...runtimeStateForDocument(currentDocText) };
     }
     const documentProcessState = resolveActiveProcessState(currentDocText, renderedRunConfig);
     const activeMode = documentProcessState.mode
@@ -355,7 +355,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         stopReasons = bootstrapReview.reviewReasons;
         stopDetails = ["initial supervisor bootstrap stopped the run"];
         lifecycle.finishRun("stopped");
-        return { conversationId, forkId: lifecycle.currentForkId(), mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
+        return { conversationId, forkId: lifecycle.currentForkId(), mode: "supervise", stopReasons, stopDetails, resumeAllowed: false, ...runtimeStateForDocument(currentDocText) };
       }
       if (bootstrapReview.effectiveAction !== "fork" || !bootstrapReview.nextMode || !bootstrapModes.includes(bootstrapReview.nextMode)) {
         throw new Error(`initial supervisor bootstrap must fork into one of the allowed starting modes: ${bootstrapModes.join(", ")}`);
@@ -642,7 +642,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
         stopDetails = toolOutcome.stopDetails;
         currentDocText = toolOutcome.currentDocText;
         lifecycle.finishRun("stopped");
-        return { conversationId, forkId: toolOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
+        return { conversationId, forkId: toolOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, resumeAllowed: false, ...runtimeStateForDocument(currentDocText) };
       }
       currentDocText = toolOutcome.currentDocText;
       currentThreadId = toolOutcome.currentThreadId;
@@ -721,7 +721,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       providerName: currentProviderName,
     });
     const transitionMs = Date.now() - transitionStartedAt;
-    if (transitionOutcome.kind === "stop") { stopReasons = transitionOutcome.stopReasons; stopDetails = transitionOutcome.stopDetails; currentDocText = transitionOutcome.currentDocText; lifecycle.finishRun("stopped"); return { conversationId, forkId: transitionOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) }; }
+    if (transitionOutcome.kind === "stop") { stopReasons = transitionOutcome.stopReasons; stopDetails = transitionOutcome.stopDetails; currentDocText = transitionOutcome.currentDocText; lifecycle.finishRun("stopped"); return { conversationId, forkId: transitionOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, resumeAllowed: false, ...runtimeStateForDocument(currentDocText) }; }
     if (transitionOutcome.kind === "continue") {
       currentDocText = transitionOutcome.currentDocText;
       currentThreadId = transitionOutcome.currentThreadId;
@@ -798,7 +798,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
           `repeated validator failure for stage=${documentProcessState.stageId ?? "(none)"} profile=${documentProcessState.profileId ?? "(none)"}: ${validatorFailureSignature}`,
         ];
         lifecycle.finishRun("stopped");
-        return { conversationId, forkId: persistedValidatorRetry.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
+        return { conversationId, forkId: persistedValidatorRetry.nextForkId, mode: "supervise", stopReasons, stopDetails, resumeAllowed: false, ...runtimeStateForDocument(currentDocText) };
       }
       fullResyncNeeded = true;
       turnIndex += 1;
@@ -885,7 +885,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
     if (finalizeOutcome.kind === "done") {
       currentTransitionPayload = {};
       lifecycle.finishRun(finalizeOutcome.status);
-      return { conversationId, forkId: finalizeOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
+      return { conversationId, forkId: finalizeOutcome.nextForkId, mode: "supervise", stopReasons, stopDetails, resumeAllowed: true, ...runtimeStateForDocument(currentDocText) };
     }
     if (finalizeOutcome.supervisorPersist.nextModel) {
       currentModel = finalizeOutcome.supervisorPersist.nextModel;
@@ -906,7 +906,7 @@ export { shouldUseFullPromptForSupervise } from "./conversation_supervise_runtim
       continue;
     }
     lifecycle.finishRun(result.hadError ? "error" : result.interrupted ? "stopped" : "done");
-    return { conversationId, forkId: finalizeOutcome.supervisorPersist.nextForkId, mode: "supervise", stopReasons, stopDetails, ...runtimeStateForDocument(currentDocText) };
+    return { conversationId, forkId: finalizeOutcome.supervisorPersist.nextForkId, mode: "supervise", stopReasons, stopDetails, resumeAllowed: Boolean(finalizeOutcome.supervisorPersist.resume), ...runtimeStateForDocument(currentDocText) };
     }
   } catch (err: any) { lifecycle.finishRun("error"); throw err; }
 }
