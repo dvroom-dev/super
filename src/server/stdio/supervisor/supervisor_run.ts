@@ -173,6 +173,88 @@ const SUPERVISOR_RECOVERY_PACKET_SCHEMA = {
   },
 } as const;
 
+function normalizeRecoveryLine(line: string): string {
+  return line
+    .replace(/^[-*]\s+/, "")
+    .replace(/^#+\s*/, "")
+    .replace(/^`+|`+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function collectRecoveryLines(section: string, limit: number): string[] {
+  const lines = section
+    .split(/\r?\n/)
+    .map((line) => normalizeRecoveryLine(line))
+    .filter((line) =>
+      Boolean(line)
+      && !line.startsWith("```")
+      && !line.startsWith("conversation_id:")
+      && !line.startsWith("fork_id:")
+      && !line.startsWith("blob_ref:")
+      && !line.startsWith("blob_bytes:")
+      && !line.startsWith("summary:")
+      && !line.startsWith("role=")
+    );
+  return Array.from(new Set(lines)).slice(0, limit);
+}
+
+function buildDeterministicRecoveryPacket(input: {
+  currentMode?: string;
+  currentInstruction?: string;
+  stopCondition?: string;
+  managedSkeletonText: string;
+  priorityText: string;
+  deltaText: string;
+  overviewText: string;
+}): SupervisorRecoveryPacket {
+  const currentMode = String(input.currentMode ?? "").trim() || "(unknown)";
+  const currentInstruction = String(input.currentInstruction ?? "").trim();
+  const stopCondition = String(input.stopCondition ?? "").trim();
+  const priorityFacts = collectRecoveryLines(input.priorityText, 4);
+  const deltaFacts = collectRecoveryLines(input.deltaText, 4);
+  const skeletonFacts = collectRecoveryLines(input.managedSkeletonText, 4);
+  const overviewFacts = collectRecoveryLines(input.overviewText, 3);
+  const relevantFacts = Array.from(
+    new Set([
+      ...priorityFacts,
+      ...deltaFacts,
+      ...skeletonFacts,
+      ...overviewFacts,
+    ]),
+  ).slice(0, 10);
+  const currentExecutionState = Array.from(
+    new Set([
+      `Current mode: ${currentMode}.`,
+      currentInstruction ? `Current instruction: ${currentInstruction}` : "",
+      stopCondition ? `Stop condition: ${stopCondition}` : "",
+      ...deltaFacts,
+      ...skeletonFacts,
+    ].filter(Boolean)),
+  ).slice(0, 8);
+  const doThisNext =
+    currentInstruction
+      || priorityFacts[0]
+      || deltaFacts[0]
+      || "Resume the active task from the latest confirmed execution state.";
+  const focus =
+    currentInstruction
+      || priorityFacts[0]
+      || "Stay on the current task packet and use the latest confirmed evidence only.";
+  return {
+    relevant_facts: relevantFacts,
+    current_execution_state: currentExecutionState,
+    do_this_next: doThisNext,
+    focus,
+    avoid: [
+      "Do not reconstruct older transcript history.",
+      "Do not inspect blob/offload paths unless the current instruction explicitly requires it.",
+      "Do not restart solved work from scratch; continue from the latest confirmed execution cursor.",
+    ],
+    stop_condition: stopCondition || null,
+  };
+}
+
 export async function runSupervisorRecoverySummary(
   input: SupervisorRecoverySummaryInputs,
 ): Promise<{
@@ -249,55 +331,25 @@ export async function runSupervisorRecoverySummary(
 
   await fs.mkdir(baseDir, { recursive: true });
   await fs.writeFile(path.join(input.workspaceRoot, promptLogRel), prompt.promptText, "utf8");
-  await trace(`start current_mode=${input.currentMode ?? "(unknown)"} model=${input.supervisorModel ?? input.model}`);
+  await trace(`start current_mode=${input.currentMode ?? "(unknown)"} recovery_mode=deterministic`);
   await trace(`prompt_bytes=${Buffer.byteLength(prompt.promptText, "utf8")} prompt_log=${promptLogRel}`);
-
-  const reviewer = createProvider({
-    provider: input.providerName as any,
-    model: input.supervisorModel ?? input.model,
-    workingDirectory: supervisorWorkspaceRoot,
-    sandboxMode: "workspace-write",
-    approvalPolicy: "never",
-    permissionProfile: input.permissionProfile ?? "workspace_no_network",
-    skipGitRepoCheck: true,
-    modelReasoningEffort: input.supervisorModelReasoningEffort,
-    providerOptions: input.providerOptions,
-  } as ProviderConfig);
-
-  try {
-    const controller = new AbortController();
-    const timeoutMs = input.timeoutMs ?? 240000;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      const timer = setTimeout(() => {
-        controller.abort();
-        reject(new Error(`Supervisor recovery summary timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
-    });
-    await trace(`run_once timeout_ms=${timeoutMs}`);
-    const review = await Promise.race([
-      reviewer.runOnce(prompt.prompt, { outputSchema: SUPERVISOR_RECOVERY_PACKET_SCHEMA, signal: controller.signal }),
-      timeoutPromise,
-    ]) as { text?: string };
-    const raw = String(review?.text ?? "");
-    await fs.writeFile(path.join(input.workspaceRoot, responseLogRel), raw, "utf8");
-    const parsed = parseJsonSafe(raw);
-    if (!parsed.ok) {
-      throw new Error("Supervisor recovery summary is not valid JSON");
-    }
-    const schemaError = validateSchemaValue(parsed.value, SUPERVISOR_RECOVERY_PACKET_SCHEMA as unknown as JsonSchemaNode);
-    if (schemaError) {
-      throw new Error(`Supervisor recovery summary failed schema validation: ${schemaError}`);
-    }
-    const packet = parsed.value as SupervisorRecoveryPacket;
-    return { packet, raw, promptLogRel, responseLogRel, traceLogRel };
-  } finally {
-    try {
-      await reviewer.close?.();
-    } catch {
-      // best-effort cleanup
-    }
+  const packet = buildDeterministicRecoveryPacket({
+    currentMode: input.currentMode,
+    currentInstruction: input.currentInstruction,
+    stopCondition: input.stopCondition,
+    managedSkeletonText: managedContext.skeletonText,
+    priorityText: runHistory.priorityText,
+    deltaText: runHistory.deltaText,
+    overviewText: runHistory.overviewText,
+  });
+  const schemaError = validateSchemaValue(packet as unknown as Record<string, unknown>, SUPERVISOR_RECOVERY_PACKET_SCHEMA as unknown as JsonSchemaNode);
+  if (schemaError) {
+    throw new Error(`Deterministic recovery summary failed schema validation: ${schemaError}`);
   }
+  const raw = JSON.stringify(packet, null, 2);
+  await fs.writeFile(path.join(input.workspaceRoot, responseLogRel), raw, "utf8");
+  await trace(`recovery_packet_bytes=${Buffer.byteLength(raw, "utf8")} response_log=${responseLogRel}`);
+  return { packet, raw, promptLogRel, responseLogRel, traceLogRel };
 }
 
 export async function runSupervisorReview(input: SupervisorReviewInputs): Promise<SupervisorReviewOutcome> {

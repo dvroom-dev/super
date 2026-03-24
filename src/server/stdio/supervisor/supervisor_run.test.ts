@@ -191,41 +191,39 @@ describe("buildSupervisorReviewDocument", () => {
 describe("runSupervisorReview", () => {
   it("builds a fresh recovery packet without carryover history or transcript copying", async () => {
     const workspaceRoot = await makeTempRoot("supervisor-recovery-");
-    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
-      relevant_facts: ["Only the changed overlap state remains unresolved."],
-      current_execution_state: [
-        "Theory already narrowed the task to one bounded overlap probe.",
-        "No decisive overlap observation has been captured yet.",
-      ],
-      do_this_next: "Update the current theory delta and hand off exactly one bounded overlap probe.",
-      focus: "Continue the current bounded probe only.",
-      avoid: ["Do not reconstruct older transcript history."],
-      stop_condition: "Stop after the bounded probe resolves or a novel event appears.",
+    const outcome = await runSupervisorRecoverySummary({
+      workspaceRoot,
+      conversationId: "conv_recovery",
+      documentText: makeDocumentWithSupervisorActions(),
+      providerName: "mock",
+      model: "mock-model",
+      supervisorModel: "mock-model",
+      currentMode: "explore_only",
+      currentInstruction: "Test the changed overlap state and stop.",
+      stopCondition: "Stop after the bounded probe resolves or a novel event appears.",
     });
-    try {
-      const outcome = await runSupervisorRecoverySummary({
-        workspaceRoot,
-        conversationId: "conv_recovery",
-        documentText: makeDocumentWithSupervisorActions(),
-        providerName: "mock",
-        model: "mock-model",
-        supervisorModel: "mock-model",
-        currentMode: "explore_only",
-        currentInstruction: "Test the changed overlap state and stop.",
-      });
-      expect(outcome.packet.focus).toContain("bounded probe");
-      const promptPath = path.join(workspaceRoot, outcome.promptLogRel);
-      const prompt = await fs.readFile(promptPath, "utf8");
-      expect(prompt).toContain("You are writing a fresh compaction recovery packet for the agent.");
-      expect(prompt).toContain("The agent will NOT receive prior transcript history, tool calls, or tool results.");
-      expect(prompt).toContain("Include a concrete execution cursor");
-      expect(prompt).toContain("Current rendered user-mode instruction:");
-      expect(prompt).toContain("Test the changed overlap state and stop.");
-      expect(outcome.packet.current_execution_state[0]).toContain("Theory already narrowed");
-      expect(outcome.packet.do_this_next).toContain("bounded overlap probe");
-    } finally {
-      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
-    }
+    expect(outcome.packet.focus).toContain("Test the changed overlap state and stop.");
+    const promptPath = path.join(workspaceRoot, outcome.promptLogRel);
+    const responsePath = path.join(workspaceRoot, outcome.responseLogRel);
+    const prompt = await fs.readFile(promptPath, "utf8");
+    const response = JSON.parse(await fs.readFile(responsePath, "utf8")) as {
+      relevant_facts: string[];
+      current_execution_state: string[];
+      do_this_next: string;
+      focus: string;
+      avoid: string[];
+      stop_condition: string | null;
+    };
+    expect(prompt).toContain("You are writing a fresh compaction recovery packet for the agent.");
+    expect(prompt).toContain("The agent will NOT receive prior transcript history, tool calls, or tool results.");
+    expect(prompt).toContain("Include a concrete execution cursor");
+    expect(prompt).toContain("Current rendered user-mode instruction:");
+    expect(prompt).toContain("Test the changed overlap state and stop.");
+    expect(response.current_execution_state[0]).toContain("Current mode: explore_only");
+    expect(response.current_execution_state).toContain("Current instruction: Test the changed overlap state and stop.");
+    expect(response.do_this_next).toContain("Test the changed overlap state and stop.");
+    expect(response.avoid).toContain("Do not reconstruct older transcript history.");
+    expect(response.stop_condition).toBe("Stop after the bounded probe resolves or a novel event appears.");
   });
 
   it("keeps the live tail ahead of persisted summaries while preserving focused review context and blob drill-down", async () => {
