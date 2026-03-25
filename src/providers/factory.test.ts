@@ -20,7 +20,7 @@ describe("createProvider", () => {
   it("creates CodexProvider when provider is codex", () => {
     const config: ProviderConfig = {
       provider: "codex",
-      model: "gpt-4",
+      model: "gpt-5.3-codex",
       workingDirectory: "/tmp",
     };
     const provider = createProvider(config);

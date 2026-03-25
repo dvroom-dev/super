@@ -115,6 +115,7 @@ describe("CodexProvider", () => {
     config: ProviderConfig,
     factoryCapture?: Array<CodexAppServerClientOptions>,
     fakeClient?: FakeAppServerClient,
+    supportedModelSlugs?: Set<string>,
   ): CodexProvider {
     const client = fakeClient ?? new FakeAppServerClient();
     return new CodexProvider(config, {
@@ -122,8 +123,42 @@ describe("CodexProvider", () => {
         factoryCapture?.push(options);
         return client;
       },
+      supportedModelSlugs: supportedModelSlugs ? () => supportedModelSlugs : undefined,
     });
   }
+
+  it("rejects codex models that are not advertised by the local catalog", () => {
+    expect(() => createProvider(
+      { ...baseConfig, model: "gpt-5.3-codex-spark" },
+      undefined,
+      undefined,
+      new Set(["gpt-5.3-codex", "gpt-5.4"]),
+    )).toThrow("unsupported codex model 'gpt-5.3-codex-spark'");
+  });
+
+  it("accepts codex models advertised by the local catalog", async () => {
+    const fakeClient = new FakeAppServerClient();
+    fakeClient.setHandler("thread/start", () => ({ thread: { id: "thread_supported" } }));
+    fakeClient.setHandler("turn/start", () => {
+      queueMicrotask(() => {
+        fakeClient.emit("turn/completed", {
+          threadId: "thread_supported",
+          turn: { id: "turn_supported", status: "completed" },
+        });
+      });
+      return { turn: { id: "turn_supported" } };
+    });
+    const provider = createProvider(
+      baseConfig,
+      undefined,
+      fakeClient,
+      new Set(["gpt-5.3-codex", "gpt-5.4"]),
+    );
+
+    const result = await provider.runOnce(promptContentFromText("supported"));
+
+    expect(result.threadId).toBe("thread_supported");
+  });
 
   it("maps app-server streamed events to provider events", async () => {
     const fakeClient = new FakeAppServerClient();

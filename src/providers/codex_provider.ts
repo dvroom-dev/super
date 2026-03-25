@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AgentProvider,
@@ -32,7 +35,10 @@ import {
 } from "./codex_provider_helpers.js";
 import { extractShellCommandText, shellInvocationPolicyViolation } from "../tools/shell_invocation_policy.js";
 import { firstFilesystemPolicyViolation } from "./filesystem_permissions.js";
-type CodexProviderDeps = { appServerFactory?: (options: CodexAppServerClientOptions) => CodexAppServerClientLike; };
+type CodexProviderDeps = {
+  appServerFactory?: (options: CodexAppServerClientOptions) => CodexAppServerClientLike;
+  supportedModelSlugs?: () => Set<string>;
+};
 const SUPER_CUSTOM_TOOL_MCP_SERVER = "super_custom_tools";
 const CUSTOM_TOOLS_MCP_SERVER_SCRIPT = fileURLToPath(new URL("../bin/custom_tools_mcp_server.ts", import.meta.url));
 const COMPACTION_TIMEOUT_MS = 120000;
@@ -74,6 +80,40 @@ function isErrorStatusMessage(message: string): boolean {
   if (normalized.includes("starting turn")) return false;
   return normalized.includes("error") || normalized.includes("failed") || normalized.includes("exception");
 }
+function defaultSupportedCodexModelSlugs(): Set<string> {
+  const modelsCachePath = path.join(os.homedir(), ".codex", "models_cache.json");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(modelsCachePath, "utf8"));
+  } catch (error: any) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`codex model validation failed: could not read ${modelsCachePath}: ${detail}`);
+  }
+  const modelEntries = Array.isArray(asRecord(parsed)?.models) ? (asRecord(parsed)?.models as unknown[]) : null;
+  if (!modelEntries) {
+    throw new Error(`codex model validation failed: ${modelsCachePath} is missing a models[] catalog`);
+  }
+  const slugs = new Set<string>();
+  for (const entry of modelEntries) {
+    const slug = asString(asRecord(entry)?.slug) ?? asString(asRecord(entry)?.id);
+    if (slug) slugs.add(slug);
+  }
+  if (slugs.size === 0) {
+    throw new Error(`codex model validation failed: ${modelsCachePath} contained no model slugs`);
+  }
+  return slugs;
+}
+function validateConfiguredCodexModel(
+  configuredModel: string,
+  supportedModelSlugs: Set<string>,
+): void {
+  if (supportedModelSlugs.has(configuredModel)) return;
+  const available = Array.from(supportedModelSlugs).sort().join(", ");
+  throw new Error(
+    `unsupported codex model '${configuredModel}'; local Codex catalog does not advertise it. ` +
+    `Available models: ${available}`,
+  );
+}
 export class CodexProvider implements AgentProvider {
   private config: ProviderConfig;
   private deps?: CodexProviderDeps;
@@ -83,8 +123,15 @@ export class CodexProvider implements AgentProvider {
   private currentTurnIdFromResponse(response: unknown): string | undefined {
     return asString(asRecord(response)?.turnId) ?? asString(asRecord(response)?.turn_id) ?? asString(asRecord(asRecord(response)?.turn)?.id);
   }
-
-  constructor(config: ProviderConfig, deps?: CodexProviderDeps) { this.config = { ...config }; this.deps = deps; this.threadId = undefined; }
+  constructor(config: ProviderConfig, deps?: CodexProviderDeps) {
+    this.config = { ...config };
+    this.deps = deps;
+    this.threadId = undefined;
+    validateConfiguredCodexModel(
+      this.config.model,
+      this.deps?.supportedModelSlugs ? this.deps.supportedModelSlugs() : defaultSupportedCodexModelSlugs(),
+    );
+  }
   private shellPolicyEnabled(): boolean {
     return Boolean(
       (this.config.shellInvocationPolicy?.allow?.length ?? 0) > 0
