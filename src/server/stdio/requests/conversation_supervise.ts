@@ -200,7 +200,6 @@ export async function handleConversationSupervise(ctx: RuntimeContext, params: a
       supervisorBaseDir: supervisorWorkspaceRoot,
     });
     const turnForkId = lifecycle.currentForkId();
-    const turnAgentModel = currentModel;
     const effectiveCycleLimit = cycleLimit ?? renderedRunConfig?.cycleLimit;
     if (effectiveCycleLimit && cycleTurnCount >= effectiveCycleLimit) {
       stopReasons = ["cycle_limit"]; stopDetails = [`cycle limit reached (${effectiveCycleLimit})`];
@@ -244,6 +243,7 @@ export async function handleConversationSupervise(ctx: RuntimeContext, params: a
       }
       sendBudgetUpdate();
     }
+    const turnAgentModel = currentModel;
     const { agentModelReasoningEffort: configuredAgentModelReasoningEffort, supervisorModelReasoningEffort: effectiveSupervisorModelReasoningEffort } = resolveModeReasoningEfforts({ modeConfig, defaultAgentReasoningEffort: agentModelReasoningEffort, defaultSupervisorReasoningEffort: supervisorModelReasoningEffort });
     const effectiveAgentModelReasoningEffort = invocationOverrides.reasoningEffort ?? configuredAgentModelReasoningEffort;
     const effectiveToolConfig = applyTransitionToolOverrides({

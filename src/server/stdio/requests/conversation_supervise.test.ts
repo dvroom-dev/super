@@ -1831,6 +1831,82 @@ describe("handleConversationSupervise", () => {
     }
   });
 
+  it("keeps the preferred task-profile model on supervised turns", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-supervised-model-persist-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "  supervisor_provider: mock",
+        "  supervisor_model: mock-supervisor",
+        "models:",
+        "  code_repair:",
+        "    provider: mock",
+        "    model: mock-code-model",
+        "task_profiles:",
+        "  component_coding:",
+        "    mode: code_model",
+        "    preferred_models: [code_repair]",
+        "process:",
+        "  initial_stage: component_coding",
+        "  stages:",
+        "    component_coding:",
+        "      profile: component_coding",
+        "modes:",
+        "  code_model:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: code model seed",
+        "mode_state_machine:",
+        "  initial_mode: code_model",
+        "supervisor:",
+        "  stop_condition: task complete",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { ctx } = makeCtx({ conversationId: "conversation_v2_supervised_model_persist" });
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "stop_and_return",
+      payload: strictSupervisorPayload({ reason: "done" }),
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [{ mode: "code_model", confidence: "high", evidence: "component coding remained active" }],
+        recommended_action: "continue",
+      },
+      reasoning: "done",
+      agent_model: null,
+    });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "supervised preferred model turn";
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_v2_supervised_model_persist",
+          forkId: "fork_doc",
+          mode: "code_model",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+      });
+      expect((result as any).agentProvider).toBe("mock");
+      expect((result as any).agentModel).toBe("mock-code-model");
+      expect(result.activeMode).toBe("code_model");
+    } finally {
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  });
+
   it("lets report_process_result drive stage/profile progression on the v2 path", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-v2-process-result-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
