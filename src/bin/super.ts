@@ -1,7 +1,14 @@
 import path from "node:path";
 import { loadRunConfigForDirectory, renderRunConfig } from "../supervisor/run_config.ts";
 import { resolveModeConfig } from "../server/stdio/supervisor/mode_runtime.ts";
-import { isV2ProcessEnabled, resolveInitialProcessStage, resolveTaskProfileMode } from "../server/stdio/supervisor/process_runtime.ts";
+import {
+  isV2ProcessEnabled,
+  resolveActiveProcessState,
+  resolveInitialProcessStage,
+  resolveTaskProfileMode,
+  selectedModelKeyForTaskProfile,
+} from "../server/stdio/supervisor/process_runtime.ts";
+import { resolveTransitionInvocationOverrides } from "../server/stdio/requests/conversation_supervise_invocation_overrides.ts";
 import { handleConversationSupervise } from "../server/stdio/requests/conversation_supervise.ts";
 import { newId } from "../lib/ids.ts";
 import { buildInitialDocument, buildInitialProcessDocument, normalizeExportedDocumentFrontmatter } from "../lib/document.ts";
@@ -94,6 +101,29 @@ export function resolveRuntimeProvidersAndModels(
     ? options.supervisorModel
     : (runtimeDefaults?.supervisorModel ?? options.supervisorModel ?? agentModel)) ?? agentModel;
   return { agentProvider, agentModel, supervisorProvider, supervisorModel };
+}
+
+export function resolveActiveWorkerRuntime(args: {
+  options: CliOptions;
+  renderedConfig: Awaited<ReturnType<typeof renderRunConfig>> | null;
+  documentText: string;
+  activeTransitionPayload?: Record<string, string> | undefined;
+}) {
+  const resolvedRuntime = resolveRuntimeProvidersAndModels(args.options, args.renderedConfig);
+  const processState = resolveActiveProcessState(args.documentText, args.renderedConfig);
+  const selectedModelKey = selectedModelKeyForTaskProfile(args.renderedConfig, processState.profileId);
+  const selectedModel = selectedModelKey ? args.renderedConfig?.models?.[selectedModelKey] : undefined;
+  const invocationOverrides = resolveTransitionInvocationOverrides(args.activeTransitionPayload ?? {});
+  return {
+    agentProvider: args.options.providerExplicit
+      ? resolvedRuntime.agentProvider
+      : ((invocationOverrides.provider ?? String(selectedModel?.provider ?? "").trim()) || resolvedRuntime.agentProvider),
+    agentModel: args.options.modelExplicit
+      ? resolvedRuntime.agentModel
+      : ((invocationOverrides.model ?? String(selectedModel?.model ?? "").trim()) || resolvedRuntime.agentModel),
+    supervisorProvider: resolvedRuntime.supervisorProvider,
+    supervisorModel: resolvedRuntime.supervisorModel,
+  };
 }
 
 async function buildNewDocument(options: CliOptions) {
@@ -209,13 +239,15 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
   );
   const renderedConfig = await renderRunConfig(runConfig, { configBaseDir, agentBaseDir, supervisorBaseDir });
   const runtimeDefaults = renderedConfig?.runtimeDefaults;
-  const resolvedRuntime = resolveRuntimeProvidersAndModels(options, renderedConfig);
-  const agentProvider = options.mode === "resume" && prior && !options.providerExplicit
-    ? prior.agentProvider
-    : resolvedRuntime.agentProvider;
-  const agentModel = options.mode === "resume" && prior && !options.modelExplicit
-    ? prior.agentModel
-    : resolvedRuntime.agentModel;
+  const activeTransitionPayload = continuingPriorState ? (prior?.activeTransitionPayload ?? {}) : {};
+  const resolvedRuntime = resolveActiveWorkerRuntime({
+    options,
+    renderedConfig,
+    documentText: documentTextRef.value,
+    activeTransitionPayload,
+  });
+  const agentProvider = resolvedRuntime.agentProvider;
+  const agentModel = resolvedRuntime.agentModel;
   const supervisorProvider = resolvedRuntime.supervisorProvider;
   const supervisorModel = resolvedRuntime.supervisorModel;
 
