@@ -89,6 +89,10 @@ export async function finalizeSuperviseTurn(args: {
   transitionMs: number;
 }) {
   const finalizeStartedAt = Date.now();
+  const nonTerminalShellPolicyInterruption =
+    args.result.interrupted
+    && !args.result.hadError
+    && args.result.interruptionReason === "shell_policy_violation";
   const reasons = detectStopReasons({
     assistantText: args.result.assistantText,
     usage: args.result.usage,
@@ -102,9 +106,12 @@ export async function finalizeSuperviseTurn(args: {
   });
   if (args.result.cadenceReason && !reasons.includes(args.result.cadenceReason)) reasons.push(args.result.cadenceReason);
   const hasBudgetReason = reasons.includes("time_budget") || reasons.includes("token_budget") || reasons.includes("cadence_time") || reasons.includes("cadence_tokens");
-  if (args.result.interrupted && !hasBudgetReason && !reasons.includes("interrupted")) reasons.push("interrupted");
+  if (args.result.interrupted && !nonTerminalShellPolicyInterruption && !hasBudgetReason && !reasons.includes("interrupted")) reasons.push("interrupted");
   if (args.result.streamEnded && !reasons.includes("agent_stop")) reasons.push("agent_stop");
   const stopDetails = describeStopReasons({ reasons, usage: args.result.usage, startedAt: args.startedAt, supervisor: args.effectiveSupervisor, hadError: args.result.hadError });
+  if (nonTerminalShellPolicyInterruption && stopDetails.length === 0) {
+    stopDetails.push("Shell policy blocked command");
+  }
   const turnDecision = decideSupervisorTurn({ supervisorEnabled: Boolean(args.effectiveSupervisor.enabled), reasons, cadenceHit: args.result.cadenceHit, streamEnded: args.result.streamEnded, hadError: args.result.hadError, interrupted: args.result.interrupted });
   if (!args.disableSupervision) {
     emitSupervisorTurnDecision(args.ctx, { turn: args.turn, mode: turnDecision.supervisorMode ?? "none", reasons, streamEnded: args.result.streamEnded, cadenceHit: args.result.cadenceHit, hadError: args.result.hadError, interrupted: args.result.interrupted });
@@ -246,7 +253,7 @@ export async function finalizeSuperviseTurn(args: {
       kind: "done" as const,
       reasons,
       stopDetails,
-      status: args.result.hadError ? "error" : args.result.interrupted ? "stopped" : "done",
+      status: args.result.hadError ? "error" : (args.result.interrupted && !nonTerminalShellPolicyInterruption) ? "stopped" : "done",
       nextDocText: persisted.nextDocText,
       nextForkId: persisted.nextForkId,
     };

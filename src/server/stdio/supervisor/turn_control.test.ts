@@ -26,6 +26,18 @@ describe("decideSupervisorTurn", () => {
     expect(decision.supervisorMode).toBe("hard");
   });
 
+  it("does not force hard review for nonterminal shell-policy interruptions when no hard stop reasons exist", () => {
+    const decision = decideSupervisorTurn({
+      supervisorEnabled: true,
+      reasons: [],
+      cadenceHit: false,
+      streamEnded: false,
+      hadError: false,
+      interrupted: true,
+    });
+    expect(decision.supervisorMode).toBeNull();
+  });
+
   it("uses soft mode for cadence checkpoints", () => {
     const decision = decideSupervisorTurn({
       supervisorEnabled: true,
