@@ -114,11 +114,12 @@ export async function runAgentTurnWithHooks(args: RunAgentTurnWithHooksArgs): Pr
         workspaceRoot: args.workspaceRoot,
         conversationId: args.conversationId,
         toolOutput: args.toolOutput,
-        onCadenceHit: args.onCadenceHit,
-        onToolBoundary: args.onToolBoundary,
-        onAppendMarkdown: args.onAppendMarkdown,
-        onAssistantText: args.onAssistantText,
-      });
+      onCadenceHit: args.onCadenceHit,
+      onToolBoundary: args.onToolBoundary,
+      onAppendMarkdown: args.onAppendMarkdown,
+      onAssistantText: args.onAssistantText,
+      shellInvocationPolicy: args.toolConfig?.shellInvocationPolicy,
+    });
       const shouldRetryAfterClaudeCompaction =
         !overflowRetryUsed
         && args.providerName === "claude"

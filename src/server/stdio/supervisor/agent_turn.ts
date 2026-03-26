@@ -1,13 +1,14 @@
 import type { AgentProvider, ProviderEvent } from "../../../providers/types.js";
 import type { SupervisorConfig } from "../types.js";
 import type { RuntimeContext } from "../requests/context.js";
-import { renderChat, renderToolCall } from "../../../markdown/render.js";
+import { renderChat, renderToolCall, renderToolResult } from "../../../markdown/render.js";
 import { adjustedTokenUsage } from "../helpers.js";
 import { maybeCompactProviderItem } from "../tool_output.js";
 import { extractInlineToolCalls, type InlineToolCall } from "./inline_tools.js";
 import { appendRawProviderEvent } from "../raw_event_store.js";
 import { renderProviderItemForTranscript } from "./provider_transcript.js";
 import { promptContentFromText, type PromptContent } from "../../../utils/prompt_content.js";
+import { extractShellCommandText, shellInvocationPolicyViolation, type ShellInvocationPolicy } from "../../../tools/shell_invocation_policy.js";
 import {
   createProviderToolInterceptionEventCollector,
   extractRuntimeInlineCallsFromProviderEvent,
@@ -100,6 +101,7 @@ export async function runAgentTurn(args: {
   onToolBoundary?: () => void | Promise<void>;
   onAppendMarkdown?: (markdown: string) => void;
   onAssistantText?: (text: string) => void;
+  shellInvocationPolicy?: ShellInvocationPolicy;
 }): Promise<TurnResult> {
   const { ctx, docPath, provider, prompt, outputSchema, budget, currentModel, pricing, controller, sendBudgetUpdate, workspaceRoot, conversationId, toolOutput } = args;
 
@@ -356,6 +358,31 @@ export async function runAgentTurn(args: {
         const capturedProviderToolEvents = providerToolCollector.collect(ev);
         if (capturedProviderToolEvents.length > 0) {
           providerToolEvents = [...(providerToolEvents ?? []), ...capturedProviderToolEvents];
+          const violatingInvocation = capturedProviderToolEvents.find((event) => {
+            if (event.when !== "invocation") return false;
+            if (String(event.toolName ?? "").trim().toLowerCase() !== "bash") return false;
+            const commandText = extractShellCommandText(event.args);
+            if (!commandText) return false;
+            return Boolean(shellInvocationPolicyViolation({
+              policy: args.shellInvocationPolicy,
+              commandText,
+            }));
+          });
+          if (violatingInvocation) {
+            const commandText = extractShellCommandText(violatingInvocation.args) ?? "";
+            const violation = shellInvocationPolicyViolation({
+              policy: args.shellInvocationPolicy,
+              commandText,
+            });
+            if (violation) {
+              appendMarkdown(
+                renderToolResult(
+                  ["(ok=false)", "", "[error]", violation].join("\n"),
+                ),
+              );
+              requestInterrupt("shell_policy_violation");
+            }
+          }
           if (capturedProviderToolEvents.some(isSuccessfulSwitchModeResponse)) {
             requestInterrupt("agent_switch_mode_request");
           }

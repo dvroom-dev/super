@@ -382,6 +382,73 @@ describe("runAgentTurn", () => {
     ]);
   });
 
+  it("interrupts forbidden streamed Bash tool calls that violate shell policy", async () => {
+    const notifications: any[] = [];
+    const ctx: any = {
+      sendNotification(note: any) {
+        notifications.push(note);
+      },
+    };
+    const provider = providerFromEvents([
+      {
+        type: "provider_item",
+        item: {
+          provider: "claude",
+          kind: "tool_call",
+          name: "Bash",
+          summary: "tool_call Bash",
+        },
+        raw: {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_blocked_arc_repl",
+                name: "Bash",
+                input: {
+                  command: "arc_repl exec <<'PY'\nfrom arcengine import GameAction\nenv.step(GameAction.ACTION1)\nPY",
+                },
+              },
+            ],
+          },
+        },
+      },
+      { type: "done", threadId: "thread_blocked" },
+    ]);
+    const result = await runAgentTurn({
+      ctx,
+      docPath: "/tmp/session.md",
+      provider,
+      prompt: promptContentFromText("blocked"),
+      supervisor: {},
+      budget: makeBudget(),
+      currentModel: "claude-opus-4-6",
+      controller: new AbortController(),
+      sendBudgetUpdate: () => {},
+      workspaceRoot: "/tmp/work",
+      conversationId: "conversation_1",
+      shellInvocationPolicy: {
+        allow: [
+          { matchType: "regex", pattern: "^(ls|pwd)(\\s|$)", caseSensitive: true },
+        ],
+      },
+    });
+
+    expect(result.interrupted).toBe(true);
+    expect(result.interruptionReason).toBe("shell_policy_violation");
+    expect(result.providerToolEvents).toEqual([
+      {
+        when: "invocation",
+        toolName: "Bash",
+        args: {
+          command: "arc_repl exec <<'PY'\nfrom arcengine import GameAction\nenv.step(GameAction.ACTION1)\nPY",
+        },
+      },
+    ]);
+    expect(result.appended.some((entry) => entry.includes("shell invocation blocked by tools.shell_invocation_policy.allow"))).toBe(true);
+  });
+
   it("captures bash CLI switch_mode calls for runtime handling", async () => {
     const ctx: any = {
       sendNotification() {},
