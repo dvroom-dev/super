@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type {
   AgentProvider,
   ProviderCompactionResult,
@@ -30,6 +32,8 @@ import type { CustomToolDefinition } from "../tools/definitions.js";
 import { type ClaudePermissionResult, makeClaudeCanUseToolWithShellPolicy } from "./claude_tool_permissions.js";
 import { inheritedProcessEnv } from "./provider_runtime.js";
 import { buildClaudeSdkUserMessage } from "./claude_provider_prompt.js";
+import type { ShellInvocationPolicy } from "../tools/shell_invocation_policy.js";
+import type { ProviderFilesystemPolicy } from "./filesystem_permissions.js";
 type ClaudeQueryArgs = { prompt: string | AsyncIterable<any>; options?: Record<string, unknown> };
 type ClaudeQueryStream = AsyncIterable<any> & {
   close?: () => void;
@@ -47,11 +51,48 @@ type ClaudeCreateSdkMcpServerFn = (options: {
   }>;
 }) => Record<string, unknown>;
 type ClaudeProviderDeps = { query?: ClaudeQueryFn; createSdkMcpServer?: ClaudeCreateSdkMcpServerFn };
+type ClaudeSdkReplayRecord = {
+  schemaVersion: 1;
+  provider: "claude";
+  kind: "runStreamed" | "runOnce" | "compactThread";
+  startedAt: string;
+  workingDirectory: string;
+  model: string;
+  threadId?: string;
+  prompt: unknown;
+  options: Record<string, unknown>;
+  replayConfig: {
+    customTools: CustomToolDefinition[];
+    shellInvocationPolicy?: ShellInvocationPolicy;
+    providerFilesystemPolicy?: ProviderFilesystemPolicy;
+    denyNetwork: boolean;
+    toolPolicy?: { allow?: string[]; deny?: string[] };
+  };
+};
 const READ_ONLY_DISALLOWED_TOOLS = ["Bash", "Edit", "MultiEdit", "Write", "FileEdit", "FileWrite", "NotebookEdit"];
 const NETWORK_DISALLOWED_TOOLS = ["WebFetch", "WebSearch", "Browser", "Fetch", "HTTP", "UrlFetch", "Search"];
 const SUPER_CUSTOM_TOOL_MCP_SERVER = "super_custom_tools";
 const SWITCH_MODE_INPUT_SCHEMA = makeSwitchModeToolInputSchema();
 const isStrictProfile = (config: ProviderConfig): boolean => config.permissionProfile !== "yolo";
+
+function sanitizeForJson(value: unknown): unknown {
+  if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeForJson(entry));
+  }
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof entry === "function") continue;
+      out[key] = sanitizeForJson(entry);
+    }
+    return out;
+  }
+  return String(value);
+}
+
 export class ClaudeProvider implements AgentProvider {
   private config: ProviderConfig;
   private query?: ClaudeQueryFn;
@@ -66,6 +107,28 @@ export class ClaudeProvider implements AgentProvider {
     this.config = config;
     this.query = deps?.query;
     this.createSdkMcpServer = deps?.createSdkMcpServer;
+  }
+  private sdkCallLogDir(): string {
+    return path.join(this.config.workingDirectory, ".sdk_calls", "claude");
+  }
+  private async recordSdkCall(record: ClaudeSdkReplayRecord): Promise<void> {
+    const dir = this.sdkCallLogDir();
+    await fs.mkdir(dir, { recursive: true });
+    const filename = `${record.startedAt.replace(/[:.]/g, "-")}-${record.kind}.json`;
+    await fs.writeFile(
+      path.join(dir, filename),
+      JSON.stringify(record, null, 2) + "\n",
+      "utf8",
+    );
+  }
+  private replayConfig(toolPolicy?: { allow?: string[]; deny?: string[] }) {
+    return {
+      customTools: this.customToolsFromConfig(),
+      shellInvocationPolicy: this.config.shellInvocationPolicy,
+      providerFilesystemPolicy: this.config.providerFilesystemPolicy,
+      denyNetwork: isStrictProfile(this.config),
+      toolPolicy,
+    };
   }
   private async ensureQuery(): Promise<ClaudeQueryFn> {
     if (!this.query || !this.createSdkMcpServer) {
@@ -215,6 +278,23 @@ export class ClaudeProvider implements AgentProvider {
       yield message;
     })();
   }
+  private async recordableQueryPrompt(prompt: PromptContent): Promise<{ queryPrompt: string | AsyncIterable<any>; serializedPrompt: unknown }> {
+    const hasImages = prompt.some((part) => part.type === "image");
+    if (!hasImages) {
+      const text = promptContentToPlainText(prompt);
+      return { queryPrompt: text, serializedPrompt: text };
+    }
+    const message = await buildClaudeSdkUserMessage(
+      prompt,
+      this.activeSessionId ?? this.config.threadId ?? `session_${Date.now().toString(36)}`,
+    );
+    return {
+      serializedPrompt: message,
+      queryPrompt: (async function* () {
+        yield message;
+      })(),
+    };
+  }
 
   async steerActiveTurn(
     prompt: PromptContent,
@@ -277,9 +357,25 @@ export class ClaudeProvider implements AgentProvider {
     let stream: ClaudeQueryStream | undefined;
     let threadId: string | undefined = currentThreadId;
     try {
+      const queryOptions = await this.buildQueryOptions({ signal: options?.signal });
+      await this.recordSdkCall({
+        schemaVersion: 1,
+        provider: "claude",
+        kind: "compactThread",
+        startedAt: new Date().toISOString(),
+        workingDirectory: this.config.workingDirectory,
+        model: this.config.model,
+        threadId: currentThreadId,
+        prompt: "/compact",
+        options: sanitizeForJson(queryOptions) as Record<string, unknown>,
+        replayConfig: this.replayConfig({
+          allow: asToolNameList(queryOptions.allowedTools),
+          deny: asToolNameList(queryOptions.disallowedTools),
+        }),
+      });
       stream = query({
         prompt: "/compact",
-        options: await this.buildQueryOptions({ signal: options?.signal }),
+        options: queryOptions,
       });
       for await (const msg of stream) {
         if (typeof msg?.session_id === "string") threadId = msg.session_id;
@@ -361,8 +457,23 @@ export class ClaudeProvider implements AgentProvider {
     yield { type: "status", message: "claude: starting turn" };
 
     try {
-      const queryPrompt = await this.buildQueryPrompt(prompt);
+      const { queryPrompt, serializedPrompt } = await this.recordableQueryPrompt(prompt);
       const queryOptions = await this.buildQueryOptions(options);
+      await this.recordSdkCall({
+        schemaVersion: 1,
+        provider: "claude",
+        kind: "runStreamed",
+        startedAt: new Date().toISOString(),
+        workingDirectory: this.config.workingDirectory,
+        model: this.config.model,
+        threadId: this.activeSessionId ?? this.config.threadId,
+        prompt: sanitizeForJson(serializedPrompt),
+        options: sanitizeForJson(queryOptions) as Record<string, unknown>,
+        replayConfig: this.replayConfig({
+          allow: asToolNameList(queryOptions.allowedTools),
+          deny: asToolNameList(queryOptions.disallowedTools),
+        }),
+      });
       this.activeAbortController = queryOptions.abortController instanceof AbortController
         ? queryOptions.abortController
         : undefined;
@@ -468,8 +579,24 @@ export class ClaudeProvider implements AgentProvider {
     let stream: ClaudeQueryStream | undefined;
 
     try {
-      const queryPrompt = await this.buildQueryPrompt(prompt);
-      stream = query({ prompt: queryPrompt, options: await this.buildQueryOptions(options) });
+      const { queryPrompt, serializedPrompt } = await this.recordableQueryPrompt(prompt);
+      const queryOptions = await this.buildQueryOptions(options);
+      await this.recordSdkCall({
+        schemaVersion: 1,
+        provider: "claude",
+        kind: "runOnce",
+        startedAt: new Date().toISOString(),
+        workingDirectory: this.config.workingDirectory,
+        model: this.config.model,
+        threadId: this.activeSessionId ?? this.config.threadId,
+        prompt: sanitizeForJson(serializedPrompt),
+        options: sanitizeForJson(queryOptions) as Record<string, unknown>,
+        replayConfig: this.replayConfig({
+          allow: asToolNameList(queryOptions.allowedTools),
+          deny: asToolNameList(queryOptions.disallowedTools),
+        }),
+      });
+      stream = query({ prompt: queryPrompt, options: queryOptions });
       this.activeSessionId = threadId;
       for await (const msg of stream) {
         if (!msg || typeof msg !== "object") continue;

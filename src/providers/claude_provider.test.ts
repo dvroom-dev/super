@@ -797,6 +797,47 @@ describe("ClaudeProvider", () => {
     expect(first?.event).toBeUndefined();
   });
 
+  it("records replayable sdk call packets for Claude queries", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "claude-sdk-call-log-"));
+    try {
+      const query = makeQueryStub([
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "record me" }] },
+          session_id: "sess_record",
+        },
+        {
+          type: "result",
+          subtype: "success",
+          result: "record me",
+          session_id: "sess_record",
+        },
+      ]);
+      const provider = new ClaudeProvider(
+        {
+          ...baseConfig,
+          workingDirectory: tempDir,
+        },
+        { query },
+      );
+
+      await provider.runOnce(promptContentFromText("record this call"));
+
+      const recordDir = path.join(tempDir, ".sdk_calls", "claude");
+      const files = await fs.readdir(recordDir);
+      expect(files.length).toBe(1);
+      const payload = JSON.parse(await fs.readFile(path.join(recordDir, files[0]!), "utf8"));
+      expect(payload.provider).toBe("claude");
+      expect(payload.kind).toBe("runOnce");
+      expect(payload.model).toBe(baseConfig.model);
+      expect(payload.prompt).toBe("record this call");
+      expect(payload.options.model).toBe(baseConfig.model);
+      expect(payload.replayConfig.customTools).toEqual([]);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("sends async user-message stream when prompt includes images", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "claude-prompt-"));
     const imagePath = path.join(tempDir, "image.png");
