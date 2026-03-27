@@ -1,7 +1,7 @@
 supervisor:
   cadence_time_ms: 600000
   cadence_interrupt_policy: boundary
-  review_timeout_ms: 240000
+  review_timeout_ms: 480000
   agent_default_system_message: |
     Supervisor channel:
     - The harness may inject supervisor guidance messages between turns.

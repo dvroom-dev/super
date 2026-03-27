@@ -340,7 +340,7 @@ describe("run_config", () => {
           "      - file: ../prompt.txt",
         ],
         extra: [
-          "  review_timeout_ms: 240000",
+          "  review_timeout_ms: 480000",
           "context_management_strategy: aggressive",
           "tool_output:",
           "  max_lines: 15",
@@ -361,8 +361,8 @@ describe("run_config", () => {
       violations: [],
     });
     expect(first?.contextManagementStrategy).toBe("aggressive");
-    expect(first?.reviewTimeoutMs).toBe(240000);
-    expect(first?.supervisor?.reviewTimeoutMs).toBe(240000);
+    expect(first?.reviewTimeoutMs).toBe(480000);
+    expect(first?.supervisor?.reviewTimeoutMs).toBe(480000);
     expect(first?.toolOutput).toEqual({ maxLines: 15, maxBytes: 1500 });
     expect(first?.outputSchema).toEqual({
       type: "object",
@@ -516,7 +516,7 @@ describe("run_config", () => {
     expect(rendered?.supervisorTriggers?.cadence?.supervisorPrompt?.text).not.toContain("Cadence trigger policy");
     expect(rendered?.supervisor?.cadenceTimeMs).toBe(600000);
     expect(rendered?.supervisor?.cadenceInterruptPolicy).toBe("boundary");
-    expect(rendered?.supervisor?.reviewTimeoutMs).toBe(240000);
+    expect(rendered?.supervisor?.reviewTimeoutMs).toBe(480000);
   });
 
   it("allows cadence to be disabled explicitly", async () => {

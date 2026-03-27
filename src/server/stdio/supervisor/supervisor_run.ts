@@ -507,7 +507,7 @@ export async function runSupervisorReview(input: SupervisorReviewInputs): Promis
   } as ProviderConfig);
   const activeReviewPromise = (async () => {
   try {
-    const timeoutMs = input.timeoutMs ?? 240000;
+    const timeoutMs = input.timeoutMs ?? 480000;
     const maxSchemaRetries = 1;
     let reviewPrompt: PromptContent = prompt.prompt;
     let reviewText = "";
