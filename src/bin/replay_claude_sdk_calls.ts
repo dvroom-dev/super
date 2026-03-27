@@ -167,7 +167,18 @@ async function main() {
     .sort();
   for (const name of files) {
     const record = JSON.parse(await fs.readFile(path.join(root, name), "utf8")) as ReplayRecord;
-    await replayRecord(record);
+    try {
+      await replayRecord(record);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(JSON.stringify({
+        file: name.replace(/\.json$/, ""),
+        kind: record.kind,
+        model: record.model,
+        startedAt: record.startedAt,
+        error: message,
+      }));
+    }
   }
 }
 
