@@ -22,6 +22,7 @@ import {
 import { newId } from "../../../utils/ids.js";
 import { type PromptContent } from "../../../utils/prompt_content.js";
 import { parseJsonSafe } from "../helpers.js";
+import { appendRawProviderEvent } from "../raw_event_store.js";
 import {
   failedRuleNames,
   fallbackReview,
@@ -552,7 +553,43 @@ export async function runSupervisorReview(input: SupervisorReviewInputs): Promis
       }
       try {
         await trace(`run_once attempt=${attempt + 1} timeout_ms=${timeoutMs}`);
-        runPromise = reviewer.runOnce(reviewPrompt, { outputSchema: responseSchema, signal: controller.signal });
+        const useStreamedReview =
+          input.providerName !== "mock" || input.providerOptions?.__forceStreamedReview === true;
+        runPromise = useStreamedReview
+          ? (async () => {
+              let streamedText = "";
+              let streamedThreadId = supervisorThreadId;
+              for await (const event of reviewer.runStreamed(reviewPrompt, { outputSchema: responseSchema, signal: controller.signal })) {
+                if (event.type === "assistant_delta") {
+                  streamedText += event.delta;
+                  continue;
+                }
+                if (event.type === "assistant_message") {
+                  streamedText = event.text;
+                  continue;
+                }
+                if (event.type === "status") {
+                  await trace(`stream_status attempt=${attempt + 1} message=${event.message.replace(/\s+/g, " ").trim()}`);
+                  continue;
+                }
+                if (event.type === "provider_item" || event.type === "provider_item_delta") {
+                  await appendRawProviderEvent({
+                    workspaceRoot: input.workspaceRoot,
+                    conversationId: input.conversationId,
+                    provider: input.providerName as ProviderName,
+                    item: event.item,
+                    raw: event.raw,
+                  });
+                  continue;
+                }
+                if (event.type === "done") {
+                  if (typeof event.finalText === "string") streamedText = event.finalText;
+                  if (typeof event.threadId === "string" && event.threadId) streamedThreadId = event.threadId;
+                }
+              }
+              return { text: streamedText, threadId: streamedThreadId };
+            })()
+          : reviewer.runOnce(reviewPrompt, { outputSchema: responseSchema, signal: controller.signal });
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeout = setTimeout(() => {
             controller.abort();

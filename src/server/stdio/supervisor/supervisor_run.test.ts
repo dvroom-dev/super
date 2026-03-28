@@ -365,6 +365,51 @@ describe("runSupervisorReview", () => {
     expect(outcome.threadId).toBe("super_thread_existing");
   });
 
+  it("records streamed supervisor provider events and trace status lines", async () => {
+    const workspaceRoot = await makeTempRoot("supervisor-run-");
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify(makeValidSupervisorReview());
+    process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+      {
+        type: "provider_item",
+        item: {
+          provider: "mock",
+          kind: "status",
+          type: "system",
+          summary: "mock provider intermediate status",
+        },
+        raw: { type: "system", subtype: "status", status: "thinking" },
+      },
+      {
+        type: "status",
+        message: "mock: midway checkpoint",
+      },
+    ]);
+    try {
+      const outcome = await runSupervisorReview({
+        ...makeBaseInputs(workspaceRoot, "conv_stream_obs"),
+        providerOptions: { __forceStreamedReview: true },
+      });
+      expect(outcome.parsedOk).toBe(true);
+      const rawPath = path.join(
+        workspaceRoot,
+        ".ai-supervisor",
+        "conversations",
+        "conv_stream_obs",
+        "raw_events",
+        "events.ndjson",
+      );
+      const raw = await fs.readFile(rawPath, "utf8");
+      expect(raw).toContain("\"status\":\"thinking\"");
+      const tracePath = path.join(workspaceRoot, outcome.traceLogRel);
+      const trace = await fs.readFile(tracePath, "utf8");
+      expect(trace).toContain("stream_status attempt=1 message=mock: starting turn");
+      expect(trace).toContain("stream_status attempt=1 message=mock: midway checkpoint");
+    } finally {
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+      delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
+    }
+  });
+
   it("interrupts an in-flight supervisor review and continues the same thread", async () => {
     const workspaceRoot = await makeTempRoot("supervisor-run-");
     process.env.MOCK_PROVIDER_RUNONCE_DELAY_MS = "250";

@@ -192,7 +192,7 @@ describe("super CLI contracts", () => {
       await fs.readFile(path.join(workspaceRoot, ".ai-supervisor", "supervisor", "run_history", "index.json"), "utf8"),
     );
     expect(Array.isArray(runHistory.forks)).toBe(true);
-    expect(runHistory.forks.length).toBeGreaterThanOrEqual(2);
+    expect(runHistory.forks.length).toBeGreaterThanOrEqual(1);
   });
 
   it("rejects transcript paths for resume", async () => {

@@ -28,7 +28,7 @@ export class MockProvider implements AgentProvider {
 
   async *runStreamed(prompt: PromptContent, options?: { outputSchema?: any; signal?: AbortSignal }): AsyncGenerator<ProviderEvent, void, void> {
     yield { type: "status", message: "mock: starting turn" };
-    const delayMs = Number(process.env.MOCK_PROVIDER_DELAY_MS ?? 0);
+    const delayMs = Number(process.env.MOCK_PROVIDER_DELAY_MS ?? process.env.MOCK_PROVIDER_RUNONCE_DELAY_MS ?? 0);
     if (Number.isFinite(delayMs) && delayMs > 0) {
       await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -62,11 +62,9 @@ export class MockProvider implements AgentProvider {
     const promptText = promptContentToText(prompt);
     const promptEcho =
       process.env.MOCK_PROVIDER_ECHO_PROMPT_TAIL === "1" ? promptText.slice(-240) : promptText.slice(0, 120);
-    const full =
-      typeof process.env.MOCK_PROVIDER_STREAMED_TEXT === "string"
-        ? String(process.env.MOCK_PROVIDER_STREAMED_TEXT)
-        : `Mock response for model=${this.config.model}. You said: ${promptEcho}`;
-    const streamedErrorSequence = readSequenceEnv("MOCK_PROVIDER_STREAMED_ERROR_SEQUENCE");
+    const streamedTextSequence = readSequenceEnv("MOCK_PROVIDER_RUNONCE_TEXT_SEQUENCE");
+    const streamedErrorSequence = readSequenceEnv("MOCK_PROVIDER_STREAMED_ERROR_SEQUENCE")
+      ?? readSequenceEnv("MOCK_PROVIDER_RUNONCE_ERROR_SEQUENCE");
     if (Array.isArray(streamedErrorSequence) && streamedErrorSequence.length > 0) {
       const idx = Math.min(this.runStreamedCalls, streamedErrorSequence.length - 1);
       const message = String(streamedErrorSequence[idx] ?? "").trim();
@@ -80,6 +78,21 @@ export class MockProvider implements AgentProvider {
     } else {
       this.runStreamedCalls += 1;
     }
+    if (typeof process.env.MOCK_PROVIDER_RUNONCE_ERROR === "string") {
+      const err = new Error(String(process.env.MOCK_PROVIDER_RUNONCE_ERROR)) as Error & { name: string; threadId?: string; };
+      err.name = "ProviderExecutionError";
+      err.threadId = this.threadId;
+      throw err;
+    }
+    const sequenceIdx = Math.max(this.runStreamedCalls - 1, 0);
+    const full =
+      Array.isArray(streamedTextSequence) && streamedTextSequence.length > 0
+        ? String(streamedTextSequence[Math.min(sequenceIdx, streamedTextSequence.length - 1)] ?? "")
+        : typeof process.env.MOCK_PROVIDER_STREAMED_TEXT === "string"
+          ? String(process.env.MOCK_PROVIDER_STREAMED_TEXT)
+          : typeof process.env.MOCK_PROVIDER_RUNONCE_TEXT === "string"
+            ? String(process.env.MOCK_PROVIDER_RUNONCE_TEXT)
+            : `Mock response for model=${this.config.model}. You said: ${promptEcho}`;
     if (process.env.MOCK_PROVIDER_SKIP_DELTAS !== "1") {
       for (const chunk of ["Mock response", " for model=", this.config.model, ". ", "You said: "]) {
         yield { type: "assistant_delta", delta: chunk };
@@ -100,7 +113,7 @@ export class MockProvider implements AgentProvider {
         // ignore malformed test-only injection
       }
     }
-    if (process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE === "1") {
+    if (process.env.MOCK_PROVIDER_RUNONCE_EMPTY === "1" || process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE === "1") {
       yield { type: "done", finalText: undefined, threadId: this.threadId };
       return;
     }
@@ -118,7 +131,7 @@ export class MockProvider implements AgentProvider {
         },
       };
     }
-    yield { type: "done", finalText: `Mock response for model=${this.config.model}.`, threadId: this.threadId };
+    yield { type: "done", finalText: full, threadId: this.threadId };
   }
 
   async runOnce(
