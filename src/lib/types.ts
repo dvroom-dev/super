@@ -48,6 +48,7 @@ export type CliOptions = {
   outputPath?: string;
   quiet: boolean;
   prompt?: string;
+  promptFilePath?: string;
   startMode?: string;
   yolo: boolean;
   disableSupervision: boolean;

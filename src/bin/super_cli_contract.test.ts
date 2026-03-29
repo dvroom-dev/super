@@ -114,6 +114,45 @@ describe("super CLI contracts", () => {
     expect(await fs.readFile(outputPath, "utf8")).toContain("assistant from new");
   });
 
+  it("accepts --prompt-file on super new and preserves image-backed prompt content", async () => {
+    const workspaceRoot = await makeTempDir("super-cli-new-prompt-file-");
+    const outputPath = path.join(workspaceRoot, "session.md");
+    const promptFile = path.join(workspaceRoot, "prompt.yaml");
+    const imagePath = path.join(workspaceRoot, "level_001_initial.png");
+    await writeBasicConfig(workspaceRoot);
+    await fs.writeFile(imagePath, "png", "utf8");
+    await fs.writeFile(
+      promptFile,
+      [
+        "operation: append",
+        "parts:",
+        "  - literal: |",
+        "      prompt from file",
+        `  - image: ${imagePath}`,
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await runSuper(
+      [
+        "new",
+        "--workspace", workspaceRoot,
+        "--provider", "mock",
+        "--model", "mock-model",
+        "--disable-supervision",
+        "--cycle-limit", "1",
+        "--prompt-file", promptFile,
+        "--output", outputPath,
+      ],
+      { MOCK_PROVIDER_STREAMED_TEXT: "assistant from new" },
+    );
+
+    expect(result.exitCode).toBe(0);
+    const exported = await fs.readFile(outputPath, "utf8");
+    expect(exported).toContain("prompt from file");
+    expect(exported).toContain(`![image](${imagePath})`);
+  });
+
   it("resumes from state.json and the fork store without a transcript path", async () => {
     const workspaceRoot = await makeTempDir("super-cli-resume-");
     const outputPath = path.join(workspaceRoot, "resume-output.md");
@@ -139,6 +178,51 @@ describe("super CLI contracts", () => {
     const exported = await fs.readFile(outputPath, "utf8");
     expect(exported).toContain("seeded prompt");
     expect(exported).toContain("assistant from new");
+    expect(exported).toContain("assistant from resume");
+  });
+
+  it("applies --prompt-file on resume as a new user message", async () => {
+    const workspaceRoot = await makeTempDir("super-cli-resume-prompt-file-");
+    const outputPath = path.join(workspaceRoot, "resume-output.md");
+    const promptFile = path.join(workspaceRoot, "resume-prompt.yaml");
+    const imagePath = path.join(workspaceRoot, "level_002_initial.png");
+    await writeBasicConfig(workspaceRoot);
+    await fs.writeFile(imagePath, "png", "utf8");
+    await fs.writeFile(
+      promptFile,
+      [
+        "operation: append",
+        "parts:",
+        "  - literal: |",
+        "      resume prompt from file",
+        `  - image: ${imagePath}`,
+      ].join("\n"),
+      "utf8",
+    );
+    const first = await runSuper(
+      ["new", "--workspace", workspaceRoot, "--provider", "mock", "--model", "mock-model", "--disable-supervision", "--cycle-limit", "1", "--output", outputPath],
+      { MOCK_PROVIDER_STREAMED_TEXT: "assistant from new" },
+    );
+    expect(first.exitCode).toBe(0);
+
+    const result = await runSuper(
+      [
+        "resume",
+        "--workspace", workspaceRoot,
+        "--provider", "mock",
+        "--model", "mock-model",
+        "--disable-supervision",
+        "--cycle-limit", "1",
+        "--prompt-file", promptFile,
+        "--output", outputPath,
+      ],
+      { MOCK_PROVIDER_STREAMED_TEXT: "assistant from resume" },
+    );
+
+    expect(result.exitCode).toBe(0);
+    const exported = await fs.readFile(outputPath, "utf8");
+    expect(exported).toContain("resume prompt from file");
+    expect(exported).toContain(`![image](${imagePath})`);
     expect(exported).toContain("assistant from resume");
   });
 

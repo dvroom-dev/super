@@ -1,5 +1,6 @@
 import path from "node:path";
 import { loadRunConfigForDirectory, renderRunConfig } from "../supervisor/run_config.ts";
+import { renderPromptFile } from "../supervisor/run_config_prompt_file.ts";
 import { resolveModeConfig } from "../server/stdio/supervisor/mode_runtime.ts";
 import {
   isV2ProcessEnabled,
@@ -19,9 +20,11 @@ import { loadForkDocument } from "../lib/store.ts";
 import { writeProcessLedger } from "../server/stdio/supervisor/process_ledger.ts";
 import { buildSupervisorRunHistoryContext } from "../server/stdio/supervisor/run_history.ts";
 import type { CliOptions, SuperEvent, SuperState } from "../lib/types.ts";
+import { renderChat } from "../markdown/render.ts";
+import { combineTranscript } from "../server/stdio/helpers.ts";
 
 function usage(): string {
-  return "usage: super <new|resume|status> --workspace <dir> [--config <file>] [--output <file>] [--provider <name>] [--model <name>] [--cycle-limit N] [--start-mode <mode>]";
+  return "usage: super <new|resume|status> --workspace <dir> [--config <file>] [--output <file>] [--provider <name>] [--model <name>] [--prompt <text> | --prompt-file <file>] [--cycle-limit N] [--start-mode <mode>]";
 }
 
 function requireValue(flag: string, next: string | undefined): string {
@@ -68,6 +71,7 @@ function parseArgs(argv: string[]): CliOptions {
     if (arg === "--cycle-limit") { out.cycleLimit = Number(requireValue(arg, next)); i += 1; continue; }
     if (arg === "--output") { out.outputPath = requireValue(arg, next); i += 1; continue; }
     if (arg === "--prompt") { out.prompt = requireValue(arg, next); i += 1; continue; }
+    if (arg === "--prompt-file") { out.promptFilePath = requireValue(arg, next); i += 1; continue; }
     if (arg === "--start-mode") { out.startMode = requireValue(arg, next); i += 1; continue; }
     if (arg === "--quiet") { out.quiet = true; continue; }
     if (arg === "--yolo") { out.yolo = true; continue; }
@@ -76,6 +80,9 @@ function parseArgs(argv: string[]): CliOptions {
     throw new Error(`unknown arg: ${arg}`);
   }
   if (!out.workspaceRoot) throw new Error("--workspace is required");
+  if (out.prompt && out.promptFilePath) {
+    throw new Error("--prompt and --prompt-file are mutually exclusive");
+  }
   return out;
 }
 
@@ -138,14 +145,18 @@ async function buildNewDocument(options: CliOptions) {
     conversationId,
   );
   const renderedConfig = await renderRunConfig(runConfig, { configBaseDir, agentBaseDir, supervisorBaseDir });
+  const cliPrompt = await resolveCliPrompt(options, { configBaseDir, agentBaseDir, supervisorBaseDir });
   const { agentProvider, agentModel } = resolveRuntimeProvidersAndModels(options, renderedConfig);
   const initialStage = resolveInitialProcessStage(renderedConfig);
   const initialTaskProfile = initialStage ? renderedConfig?.process?.stages?.[initialStage]?.profile ?? null : null;
   if (isV2ProcessEnabled(renderedConfig)) {
-    const documentText = buildInitialProcessDocument({
+    const bootstrapDocumentText = buildInitialProcessDocument({
       conversationId,
       forkId,
     });
+    const documentText = cliPrompt
+      ? combineTranscript(bootstrapDocumentText, [renderChat("user", cliPrompt)])
+      : bootstrapDocumentText;
     return {
       documentText,
       conversationId,
@@ -162,7 +173,7 @@ async function buildNewDocument(options: CliOptions) {
     ?? "";
   if (!mode) throw new Error("new mode requires mode_state_machine.initial_mode or --start-mode");
   const modeConfig = resolveModeConfig(renderedConfig, mode);
-  const userMessage = String(options.prompt ?? modeConfig?.userMessage?.text ?? "").trim();
+  const userMessage = String(cliPrompt ?? modeConfig?.userMessage?.text ?? "").trim();
   if (!userMessage) throw new Error("new mode requires prompt text");
   const agentRules = modeConfig?.agentRules ?? renderedConfig?.agentRules ?? { requirements: [], violations: [] };
   const documentText = buildInitialDocument({
@@ -189,6 +200,19 @@ async function buildNewDocument(options: CliOptions) {
     activeModePayload: {},
     renderedConfig,
   };
+}
+
+async function resolveCliPrompt(
+  options: CliOptions,
+  roots: { configBaseDir: string; agentBaseDir: string; supervisorBaseDir: string },
+): Promise<string | undefined> {
+  const inlinePrompt = String(options.prompt ?? "").trim();
+  if (inlinePrompt) return inlinePrompt;
+  const promptFilePath = String(options.promptFilePath ?? "").trim();
+  if (!promptFilePath) return undefined;
+  const rendered = await renderPromptFile(promptFilePath, roots);
+  const markdown = String(rendered.text ?? "").trim();
+  return markdown || undefined;
 }
 
 async function loadResumeDocumentFromState(options: CliOptions, state: SuperState) {
@@ -238,6 +262,10 @@ async function runCycle(options: CliOptions): Promise<{ state: SuperState; docum
     built.conversationId,
   );
   const renderedConfig = await renderRunConfig(runConfig, { configBaseDir, agentBaseDir, supervisorBaseDir });
+  const cliPrompt = await resolveCliPrompt(options, { configBaseDir, agentBaseDir, supervisorBaseDir });
+  if (options.mode === "resume" && cliPrompt) {
+    documentTextRef.value = combineTranscript(documentTextRef.value, [renderChat("user", cliPrompt)]);
+  }
   const runtimeDefaults = renderedConfig?.runtimeDefaults;
   const activeTransitionPayload = continuingPriorState ? (prior?.activeTransitionPayload ?? {}) : {};
   const resolvedRuntime = resolveActiveWorkerRuntime({
