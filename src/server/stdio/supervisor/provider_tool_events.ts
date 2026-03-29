@@ -163,6 +163,19 @@ function parseReportProcessResultShellArgs(commandText: string): Record<string, 
   for (let i = 1; i < tokens.length; i += 1) {
     const token = tokens[i];
     const next = tokens[i + 1];
+    const equalsAt = token.indexOf("=");
+    if (equalsAt > 0) {
+      const key = token.slice(0, equalsAt).trim();
+      const value = token.slice(equalsAt + 1).trim();
+      if (!value) continue;
+      if (key === "outcome") args.outcome = value;
+      else if (key === "summary") args.summary = value;
+      else if (key === "evidence") args.evidence = value;
+      else if (key === "blocker") args.blocker = value;
+      else if (key === "requested_profile" || key === "requested-profile") args.requested_profile = value;
+      else if (key === "user_message" || key === "user-message") args.user_message = value;
+      continue;
+    }
     if (!token.startsWith("--") || !next) continue;
     if (token === "--outcome") args.outcome = next;
     else if (token === "--summary") args.summary = next;

@@ -2310,6 +2310,123 @@ describe("handleConversationSupervise", () => {
     }
   });
 
+  it("advances process-result guidance from runtime-captured bash report_process_result key=value syntax", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-runtime-process-guidance-key-value-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "  supervisor_provider: mock",
+        "  supervisor_model: mock-supervisor",
+        "task_profiles:",
+        "  action_vocabulary:",
+        "    mode: explore_and_solve",
+        "process:",
+        "  initial_stage: action_vocabulary",
+        "  stages:",
+        "    action_vocabulary:",
+        "      profile: action_vocabulary",
+        "supervisor:",
+        "  stop_condition: task complete",
+        "  supervisor_triggers:",
+        "    agent_process_result_report:",
+        "      message_templates:",
+        "        - name: replace_process_result_with_guidance",
+        "          description: replace stale process guidance",
+        "          message_type: user",
+        "          text: |",
+        "            Supervisor guidance:",
+        "            {{message}}",
+        "modes:",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: explore seed",
+        "mode_state_machine:",
+        "  initial_mode: explore_and_solve",
+        "  transitions:",
+        "    explore_and_solve: [explore_and_solve]",
+      ].join("\n"),
+      "utf8",
+    );
+    const { ctx, createForkCalls } = makeCtx({ conversationId: "conversation_v2_runtime_process_guidance_key_value" });
+    process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+      {
+        type: "provider_item",
+        item: { provider: "claude", kind: "tool_call", name: "Bash", summary: "tool_call Bash" },
+        raw: {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                name: "Bash",
+                input: {
+                  command:
+                    'report_process_result outcome=evidence_collected summary="probe complete" evidence="marker overlap changed display" blocker="loop suspect" requested_profile=component_coding user_message="advance to the next bounded target"',
+                },
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE = "1";
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "append_message_and_continue",
+      payload: strictSupervisorPayload({
+        message: "Probe is closed. Next target only: test the upper feature with one bounded probe.",
+        message_template: "replace_process_result_with_guidance",
+        message_type: "supervisor",
+      }),
+      transition_payload: {
+        analysis_scope: "frontier",
+        analysis_level: "1",
+        frontier_level: "1",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [
+          { mode: "explore_and_solve", confidence: "medium", evidence: "stay in the same worker mode with a new bounded target" },
+        ],
+        recommended_action: "continue",
+      },
+      reasoning: "replace stale handoff in-place",
+      agent_model: null,
+    });
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_v2_runtime_process_guidance_key_value",
+          forkId: "fork_doc",
+          mode: "explore_and_solve",
+          userMessage: "stale probe packet",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+      });
+      const persistedDocText = String(createForkCalls.at(-1)?.documentText ?? "");
+      expect(persistedDocText).toContain("Probe is closed. Next target only: test the upper feature with one bounded probe.");
+      expect(persistedDocText).not.toContain("report_process_result requires outcome");
+      const handoffText = JSON.stringify(result.activeModePayload ?? {});
+      expect(handoffText).toContain("Probe is closed. Next target only: test the upper feature with one bounded probe.");
+    } finally {
+      delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
+      delete process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE;
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+    }
+  });
+
   it("preserves the last valid process-result guidance when a later runtime-captured report is malformed", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-v2-runtime-process-guidance-malformed-tail-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });

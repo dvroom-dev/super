@@ -564,6 +564,61 @@ describe("runAgentTurn", () => {
     expect(result.toolCalls?.[0]?.source).toBe("runtime_provider");
   });
 
+  it("captures bash CLI report_process_result key=value calls for runtime handling", async () => {
+    const ctx: any = {
+      sendNotification() {},
+    };
+    const provider = providerFromEvents([
+      {
+        type: "provider_item",
+        item: {
+          provider: "claude",
+          kind: "tool_call",
+          name: "Bash",
+          summary: "tool_call Bash",
+        },
+        raw: {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                name: "Bash",
+                input: {
+                  command:
+                    'report_process_result outcome=evidence_collected summary="probe complete" evidence="marker overlap changed display" blocker="loop suspect" requested_profile=component_coding user_message="advance to the next bounded target"',
+                },
+              },
+            ],
+          },
+        },
+      },
+      { type: "done", threadId: "thread_report_process_key_value" },
+    ]);
+    const result = await runAgentTurn({
+      ctx,
+      docPath: "/tmp/session.md",
+      provider,
+      prompt: promptContentFromText("report"),
+      supervisor: {},
+      budget: makeBudget(),
+      currentModel: "mock-model",
+      controller: new AbortController(),
+      sendBudgetUpdate: () => {},
+      workspaceRoot: "/tmp/work",
+      conversationId: "conversation_1",
+    });
+
+    expect(result.toolCalls?.map((call) => call.name)).toEqual(["report_process_result"]);
+    expect(result.toolCalls?.[0]?.args?.outcome).toBe("evidence_collected");
+    expect(result.toolCalls?.[0]?.args?.summary).toBe("probe complete");
+    expect(result.toolCalls?.[0]?.args?.evidence).toBe("marker overlap changed display");
+    expect(result.toolCalls?.[0]?.args?.blocker).toBe("loop suspect");
+    expect(result.toolCalls?.[0]?.args?.requested_profile).toBe("component_coding");
+    expect(result.toolCalls?.[0]?.args?.user_message).toBe("advance to the next bounded target");
+    expect(result.toolCalls?.[0]?.source).toBe("runtime_provider");
+  });
+
   it("interrupts the turn after a successful bash switch_mode response", async () => {
     const notifications: any[] = [];
     const ctx: any = {
