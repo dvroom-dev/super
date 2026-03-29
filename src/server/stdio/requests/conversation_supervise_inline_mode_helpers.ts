@@ -59,7 +59,20 @@ function decisionModePayload(args: {
   mode: string;
 }): Record<string, string> {
   const payload = args.review.decision === "fork_new_conversation"
-    ? args.review.payload.mode_payload?.[args.mode]
+    ? (
+        args.review.payload.mode_payload?.[args.mode]
+        ?? (
+          (() => {
+            const raw = args.review.payload.mode_payload as unknown as Record<string, unknown> | undefined;
+            if (!raw || Array.isArray(raw)) return undefined;
+            const directStringEntries = Object.entries(raw).filter(([, value]) => typeof value === "string");
+            if (directStringEntries.length === 0) return undefined;
+            return Object.fromEntries(
+              directStringEntries.map(([key, value]) => [String(key).trim(), String(value).trim()]),
+            ) as Record<string, string>;
+          })()
+        )
+      )
     : args.review.decision === "resume_mode_head"
       ? args.review.payload.mode_payload
       : undefined;

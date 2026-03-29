@@ -188,9 +188,16 @@ function normalizeDecisionPayload(args: {
     };
   }
   if (args.decision === "fork_new_conversation") {
+    const mode = normalizeString(payload.mode);
+    const nestedPayload = normalizeModePayload(payload.mode_payload);
+    const flatPayload = normalizeFlatStringPayload(payload.mode_payload);
     return {
-      mode: normalizeString(payload.mode),
-      mode_payload: normalizeModePayload(payload.mode_payload),
+      mode,
+      mode_payload: Object.keys(nestedPayload).length > 0
+        ? nestedPayload
+        : (mode && Object.keys(flatPayload).length > 0
+            ? { [mode]: flatPayload }
+            : {}),
       wait_for_boundary: normalizeBoolean(payload.wait_for_boundary),
     };
   }

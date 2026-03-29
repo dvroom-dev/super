@@ -272,6 +272,13 @@ export async function runSuperviseReviewStep(
       const selectedModePayload = fork.mode_payload?.[requestedMode];
       if (selectedModePayload && typeof selectedModePayload === "object") {
         nextModePayload = { ...selectedModePayload };
+      } else {
+        const directStringEntries = Object.entries(fork.mode_payload ?? {}).filter(([, value]) => typeof value === "string");
+        if (directStringEntries.length > 0) {
+          nextModePayload = Object.fromEntries(
+            directStringEntries.map(([key, value]) => [String(key).trim(), String(value).trim()]),
+          );
+        }
       }
     } else {
       effectiveAction = "continue";

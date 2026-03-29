@@ -2094,6 +2094,95 @@ describe("handleConversationSupervise", () => {
     }
   });
 
+  it("preserves flat fork_new_conversation mode_payload handoffs for explore_only", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-flat-fork-mode-payload-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "  supervisor_provider: mock",
+        "  supervisor_model: mock-supervisor",
+        "task_profiles:",
+        "  mechanic_probing:",
+        "    mode: explore_only",
+        "process:",
+        "  initial_stage: frontier_delta_investigation",
+        "  stages:",
+        "    frontier_delta_investigation:",
+        "      profile: mechanic_probing",
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  explore_only:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: explore-only seed",
+        "mode_state_machine:",
+        "  initial_mode: explore_only",
+        "  transitions:",
+        "    explore_only: [explore_only]",
+      ].join("\n"),
+      "utf8",
+    );
+    const { ctx, createForkCalls } = makeCtx({ conversationId: "conversation_flat_fork_mode_payload" });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "worker blocked on invalid handoff";
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "fork_new_conversation",
+      payload: strictSupervisorPayload({
+        mode: "explore_only",
+        mode_payload: {
+          user_message: "Probe exactly one new level-2 component: the hollow B-ring. Take ACTION1 once and report the result.",
+        },
+        wait_for_boundary: false,
+      }),
+      transition_payload: {
+        analysis_scope: "frontier",
+        analysis_level: "2",
+        frontier_level: "2",
+        process_stage: "frontier_delta_investigation",
+        task_profile: "mechanic_probing",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [
+          { mode: "explore_only", confidence: "high", evidence: "stay in explore_only with one bounded level-2 probe" },
+        ],
+        recommended_action: "fork_new_conversation",
+      },
+      reasoning: "correct underspecified handoff with a flat mode payload",
+      agent_model: null,
+    });
+    try {
+      const result = await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_flat_fork_mode_payload",
+          forkId: "fork_doc",
+          mode: "explore_only",
+          userMessage: "stale handoff",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+      });
+      const persistedDocText = String(createForkCalls.at(-1)?.documentText ?? "");
+      expect(persistedDocText).toContain("mode_payload_b64");
+      const handoffText = JSON.stringify(result.activeModePayload ?? {});
+      expect(handoffText).toContain("Probe exactly one new level-2 component: the hollow B-ring.");
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+    }
+  });
+
   it("replaces an exhausted probe handoff when report_process_result returns append_message_and_continue guidance", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-v2-process-append-guidance-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
