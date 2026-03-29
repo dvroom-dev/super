@@ -457,6 +457,9 @@ export async function processInlineToolCalls(args: ProcessInlineToolCallsArgs): 
     });
     appendInlineMarkdown(execution.markdown);
     if (execution.supervisorThreadId) nextSupervisorThreadId = execution.supervisorThreadId;
+    if (toolName === "report_process_result" && !execution.ok) {
+      return continueAfterInlineTermination();
+    }
     if (execution.supervisorReview) {
       if (toolName === "certify_wrapup") wrapupCertificationReview = execution.supervisorReview;
       else if (toolName === "report_process_result") processResultReview = execution.supervisorReview;

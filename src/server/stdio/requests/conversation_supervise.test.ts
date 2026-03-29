@@ -2434,6 +2434,114 @@ describe("handleConversationSupervise", () => {
     }
   });
 
+  it("halts the inline loop immediately when report_process_result is malformed", async () => {
+    const workspaceRoot = await makeTempRoot("conv-supervise-v2-malformed-process-halts-");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-supervisor", "config.yaml"),
+      [
+        "schema_version: 2",
+        "runtime_defaults:",
+        "  agent_provider: mock",
+        "  agent_model: mock-model",
+        "  supervisor_provider: mock",
+        "  supervisor_model: mock-supervisor",
+        "task_profiles:",
+        "  action_vocabulary:",
+        "    mode: explore_and_solve",
+        "process:",
+        "  initial_stage: action_vocabulary",
+        "  stages:",
+        "    action_vocabulary:",
+        "      profile: action_vocabulary",
+        "supervisor:",
+        "  stop_condition: task complete",
+        "modes:",
+        "  explore_and_solve:",
+        "    user_message:",
+        "      operation: append",
+        "      parts:",
+        "        - literal: explore seed",
+        "mode_state_machine:",
+        "  initial_mode: explore_and_solve",
+        "  transitions:",
+        "    explore_and_solve: [explore_and_solve]",
+      ].join("\n"),
+      "utf8",
+    );
+    const { ctx, createForkCalls } = makeCtx({ conversationId: "conversation_v2_malformed_process_halts" });
+    process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+      {
+        type: "provider_item",
+        item: { provider: "claude", kind: "tool_call", name: "Bash", summary: "tool_call Bash" },
+        raw: {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                name: "Bash",
+                input: {
+                  command: "report_process_result",
+                },
+              },
+              {
+                type: "tool_use",
+                name: "Bash",
+                input: {
+                  command: "check_supervisor --mode hard",
+                },
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE = "1";
+    process.env.MOCK_PROVIDER_RUNONCE_TEXT = JSON.stringify({
+      decision: "continue",
+      payload: strictSupervisorPayload({}),
+      transition_payload: {
+        analysis_scope: "frontier",
+        analysis_level: "1",
+        frontier_level: "1",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: false,
+        candidate_modes_ranked: [
+          { mode: "explore_and_solve", confidence: "medium", evidence: "stay in the same mode after the malformed process report" },
+        ],
+        recommended_action: "continue",
+      },
+      reasoning: "malformed report returned control to supervisor",
+      agent_model: null,
+    });
+    try {
+      await handleConversationSupervise(ctx, {
+        workspaceRoot,
+        docPath: path.join(workspaceRoot, "session.md"),
+        documentText: makeModeDoc({
+          conversationId: "conversation_v2_malformed_process_halts",
+          forkId: "fork_doc",
+          mode: "explore_and_solve",
+          userMessage: "probe seed",
+        }),
+        models: ["mock-model"],
+        provider: "mock",
+        supervisorProvider: "mock",
+        supervisorModel: "mock-supervisor",
+        cycleLimit: 1,
+      });
+      const persistedDocText = String(createForkCalls.at(-1)?.documentText ?? "");
+      expect(persistedDocText).toContain("report_process_result requires outcome");
+      expect(persistedDocText).not.toContain("\"source\": \"check_supervisor\"");
+    } finally {
+      delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
+      delete process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE;
+      delete process.env.MOCK_PROVIDER_RUNONCE_TEXT;
+    }
+  });
+
   it("normalizes stale process transition payload to the chosen mode on the v2 path", async () => {
     const workspaceRoot = await makeTempRoot("conv-supervise-v2-normalize-transition-");
     await fs.mkdir(path.join(workspaceRoot, ".ai-supervisor"), { recursive: true });
