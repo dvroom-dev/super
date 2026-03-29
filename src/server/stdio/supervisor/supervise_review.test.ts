@@ -276,6 +276,37 @@ describe("runSuperviseReviewStep", () => {
     expect(result.nextDocText).toContain("mode transition blocked");
   });
 
+  it("keeps running when supervisor issues a same-mode follow-up handoff after a stop boundary", async () => {
+    const args = baseArgs();
+    const reviewOverrideJson = JSON.stringify({
+      decision: "append_message_and_continue",
+      append_message_and_continue: {
+        reason: "bounded probe complete",
+        message: "Current probe is closed. Stay in the same mode and test exactly one new bounded target.",
+        mode: "analyze",
+        message_template: "custom",
+      },
+      mode_assessment: {
+        current_mode_stop_satisfied: true,
+        candidate_modes_ranked: [{ mode: "analyze", confidence: "high", evidence: "Stay in the same mode with a new bounded handoff." }],
+        recommended_action: "continue",
+      },
+    });
+    const result = await runSuperviseReviewStep({
+      ...args,
+      currentMode: "analyze",
+      allowedNextModes: ["analyze", "plan"],
+      supervisor: {
+        reviewOverrideJson,
+        appendSupervisorJudgements: false,
+      },
+    });
+
+    expect(result.effectiveAction).toBe("continue");
+    expect(result.resume).toBe(true);
+    expect(result.reviewReasons).not.toContain("missing_runtime_switch_mode");
+  });
+
   it("forces fork on matched violation checks even when no next modes are listed", async () => {
     const args = baseArgs();
     const reviewOverrideJson = JSON.stringify({

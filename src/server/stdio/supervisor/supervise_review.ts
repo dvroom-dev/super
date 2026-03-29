@@ -241,6 +241,7 @@ export async function runSuperviseReviewStep(
   let nextResumeMessageType: SupervisorMessageType | undefined = undefined;
   let nextMessageTemplateName: string | undefined = undefined;
   let nextModePayload: Record<string, string> | undefined = undefined;
+  let nextRequestedMode: string | undefined = undefined;
   const nextTransitionPayload = { ...(review.transition_payload ?? {}) };
   let shouldRewriteWithCheck = false;
   let checkRuleChecks: AgentRuleCheck[] = [];
@@ -253,6 +254,7 @@ export async function runSuperviseReviewStep(
     resume = true;
     nextUserMessage = review.payload.message ?? "";
     nextMessageTemplateName = review.payload.message_template.trim() || undefined;
+    nextRequestedMode = String((review.payload as any)?.mode ?? "").trim() || undefined;
   } else if (review.decision === "retry") {
     effectiveAction = "continue";
     resume = true;
@@ -340,11 +342,22 @@ export async function runSuperviseReviewStep(
   }
 
   const modeStopSatisfied = review.mode_assessment?.current_mode_stop_satisfied === true;
+  const rankedCurrentModeContinuation =
+    effectiveAction === "continue"
+    && (review.mode_assessment?.recommended_action === "continue")
+    && !!(review.mode_assessment?.candidate_modes_ranked ?? []).find((candidate) => String(candidate?.mode ?? "").trim() === currentMode);
+  const sameModeSupervisorHandoff =
+    effectiveAction === "continue"
+    && (
+      (!!nextRequestedMode && nextRequestedMode === currentMode)
+      || rankedCurrentModeContinuation
+    )
+    && (!!nextUserMessage || !!nextMessageTemplateName);
   const requiresRuntimeModeSwitch = reviewTrigger === "agent_yield"
     && result.streamEnded
     && modeStopSatisfied
     && allowedNextModes.length > 0;
-  if (requiresRuntimeModeSwitch && effectiveAction === "continue") {
+  if (requiresRuntimeModeSwitch && effectiveAction === "continue" && !sameModeSupervisorHandoff) {
     if (!reviewReasons.includes("missing_runtime_switch_mode")) {
       reviewReasons.push("missing_runtime_switch_mode");
     }
