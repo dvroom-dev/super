@@ -21,6 +21,40 @@ function modelSessionId(): string {
   return "modeler_run";
 }
 
+function fallbackModelOutput(queuePayload: Record<string, unknown>, assistantText: string, interrupted: boolean): Record<string, unknown> {
+  return {
+    decision: "updated_model",
+    summary: interrupted ? "interrupted modeler turn; evaluate current workspace state" : "modeler output was not valid JSON; evaluate current workspace state",
+    message_for_bootstrapper: "",
+    artifacts_updated: [],
+    evidence_watermark: String(queuePayload.evidenceWatermark ?? ""),
+    raw_assistant_text: assistantText,
+  };
+}
+
+function compactAcceptancePayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const comparePayload = payload.compare_payload && typeof payload.compare_payload === "object" && !Array.isArray(payload.compare_payload)
+    ? payload.compare_payload as Record<string, unknown>
+    : {};
+  const reports = Array.isArray(comparePayload.reports) ? comparePayload.reports : [];
+  const firstReport = reports[0] && typeof reports[0] === "object" && !Array.isArray(reports[0])
+    ? reports[0] as Record<string, unknown>
+    : {};
+  return {
+    accepted: Boolean(payload.accepted),
+    message: String(payload.message ?? ""),
+    model_output: payload.model_output,
+    compare_summary: {
+      all_match: Boolean(comparePayload.all_match),
+      compared_sequences: Number(comparePayload.compared_sequences ?? 0),
+      diverged_sequences: Number(comparePayload.diverged_sequences ?? 0),
+      divergence_reason: String(firstReport.divergence_reason ?? ""),
+      report_file: String(firstReport.report_file ?? ""),
+      sequence_id: String(firstReport.sequence_id ?? ""),
+    },
+  };
+}
+
 async function persistAcceptedModel(
   workspaceRoot: string,
   config: FluxConfig,
@@ -82,6 +116,8 @@ export async function runModelerQueueItem(args: {
     kind: "user",
     text: promptText,
   });
+  const controller = args.config.modeler.turnTimeoutMs ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), args.config.modeler.turnTimeoutMs) : null;
   const turn = await runFluxProviderTurn({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
@@ -89,9 +125,11 @@ export async function runModelerQueueItem(args: {
     sessionType: "modeler",
     promptText,
     reasoningEffort: args.config.modeler.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
-    outputSchema: schemaForName(args.config.modeler.outputSchema),
+    outputSchema: args.config.modeler.turnTimeoutMs ? undefined : schemaForName(args.config.modeler.outputSchema),
     workingDirectory: path.resolve(args.workspaceRoot, args.config.modeler.workingDirectory ?? "."),
+    signal: controller?.signal,
   });
+  if (timeout) clearTimeout(timeout);
   await appendFluxMessage(args.workspaceRoot, args.config, "modeler", sessionId, {
     messageId: newId("msg"),
     ts: nowIso(),
@@ -100,7 +138,12 @@ export async function runModelerQueueItem(args: {
     text: turn.assistantText,
     providerThreadId: turn.providerThreadId,
   });
-  const modelOutput = JSON.parse(turn.assistantText || "{}") as Record<string, unknown>;
+  let modelOutput: Record<string, unknown>;
+  try {
+    modelOutput = JSON.parse(turn.assistantText || "{}") as Record<string, unknown>;
+  } catch {
+    modelOutput = fallbackModelOutput(args.queueItem.payload, turn.assistantText, turn.interrupted);
+  }
   const acceptance = await runModelAcceptance({ workspaceRoot: args.workspaceRoot, config: args.config, modelOutput });
   if (!acceptance.accepted) {
     const template = await loadFluxPromptTemplate(args.workspaceRoot, args.config.modeler.acceptance.continueMessageTemplateFile);
@@ -119,7 +162,7 @@ export async function runModelerQueueItem(args: {
       sessionType: "modeler",
       createdAt: nowIso(),
       reason: "acceptance_failed_resume",
-      payload: { acceptance: acceptance.payload },
+      payload: { acceptance: compactAcceptancePayload(acceptance.payload) },
     });
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),

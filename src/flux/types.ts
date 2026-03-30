@@ -56,6 +56,7 @@ export type FluxWorkerConfig = {
   provider?: string;
   model?: string;
   reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  turnTimeoutMs?: number;
 };
 
 export type FluxSolverConfig = FluxWorkerConfig & {

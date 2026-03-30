@@ -106,6 +106,7 @@ export async function loadFluxConfig(workspaceRoot: string, configPath: string):
       provider: solver.provider == null ? undefined : asString(solver.provider, "solver.provider"),
       model: solver.model == null ? undefined : asString(solver.model, "solver.model"),
       reasoningEffort: solver.reasoning_effort == null ? undefined : asString(solver.reasoning_effort, "solver.reasoning_effort") as any,
+      turnTimeoutMs: solver.turn_timeout_ms == null ? undefined : asNumber(solver.turn_timeout_ms, "solver.turn_timeout_ms"),
       cadenceMs: asNumber(solver.cadence_ms, "solver.cadence_ms"),
       queueReplacementGraceMs: asNumber(solver.queue_replacement_grace_ms, "solver.queue_replacement_grace_ms"),
       tools: {
@@ -121,6 +122,7 @@ export async function loadFluxConfig(workspaceRoot: string, configPath: string):
       provider: modeler.provider == null ? undefined : asString(modeler.provider, "modeler.provider"),
       model: modeler.model == null ? undefined : asString(modeler.model, "modeler.model"),
       reasoningEffort: modeler.reasoning_effort == null ? undefined : asString(modeler.reasoning_effort, "modeler.reasoning_effort") as any,
+      turnTimeoutMs: modeler.turn_timeout_ms == null ? undefined : asNumber(modeler.turn_timeout_ms, "modeler.turn_timeout_ms"),
       triggers: {
         onNewEvidence: asBoolean(asRecord(modeler.triggers, "modeler.triggers").on_new_evidence, "modeler.triggers.on_new_evidence"),
         onSolverStopped: asBoolean(asRecord(modeler.triggers, "modeler.triggers").on_solver_stopped, "modeler.triggers.on_solver_stopped"),
@@ -144,6 +146,7 @@ export async function loadFluxConfig(workspaceRoot: string, configPath: string):
       provider: bootstrapper.provider == null ? undefined : asString(bootstrapper.provider, "bootstrapper.provider"),
       model: bootstrapper.model == null ? undefined : asString(bootstrapper.model, "bootstrapper.model"),
       reasoningEffort: bootstrapper.reasoning_effort == null ? undefined : asString(bootstrapper.reasoning_effort, "bootstrapper.reasoning_effort") as any,
+      turnTimeoutMs: bootstrapper.turn_timeout_ms == null ? undefined : asNumber(bootstrapper.turn_timeout_ms, "bootstrapper.turn_timeout_ms"),
       outputSchema: asString(bootstrapper.output_schema, "bootstrapper.output_schema"),
       seedBundlePath: asString(bootstrapper.seed_bundle_path, "bootstrapper.seed_bundle_path"),
       replay: {

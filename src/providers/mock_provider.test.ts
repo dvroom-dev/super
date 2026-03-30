@@ -179,6 +179,28 @@ describe("MockProvider", () => {
         delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
       }
     });
+
+    it("supports prompt-routed streamed responses", async () => {
+      process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
+        { contains: "bootstrapper", text: "{\"decision\":\"replay_satisfactory\",\"summary\":\"ok\",\"seed_bundle_updated\":true,\"notes\":\"done\"}" },
+        { contains: "modeler", text: "{\"decision\":\"updated_model\",\"summary\":\"ok\",\"message_for_bootstrapper\":\"use it\",\"artifacts_updated\":[],\"evidence_watermark\":\"wm\"}" },
+      ]);
+      try {
+        const provider = new MockProvider(baseConfig);
+        const modelerEvents: ProviderEvent[] = [];
+        for await (const event of provider.runStreamed(promptContentFromText("hello modeler"))) {
+          modelerEvents.push(event);
+        }
+        const bootstrapperEvents: ProviderEvent[] = [];
+        for await (const event of provider.runStreamed(promptContentFromText("hello bootstrapper"))) {
+          bootstrapperEvents.push(event);
+        }
+        expect((modelerEvents.find((event) => event.type === "assistant_message") as any)?.text).toContain("\"updated_model\"");
+        expect((bootstrapperEvents.find((event) => event.type === "assistant_message") as any)?.text).toContain("\"replay_satisfactory\"");
+      } finally {
+        delete process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON;
+      }
+    });
   });
 
   describe("compactThread", () => {

@@ -19,9 +19,17 @@ function buildInitialSolverPrompt(args: {
   template: string;
   instancePromptText?: string;
   seedBundle?: FluxSeedBundle | null;
+  seedReplayResult?: Record<string, unknown> | null;
 }): string {
   const parts = [args.template.trim()];
   if (args.seedBundle) parts.push(formatSeedBundleForPrompt(args.seedBundle));
+  if (args.seedReplayResult) {
+    parts.push([
+      "Seed replay results on this fresh instance:",
+      "",
+      JSON.stringify(args.seedReplayResult, null, 2),
+    ].join("\n"));
+  }
   if (args.instancePromptText) parts.push(args.instancePromptText.trim());
   return parts.filter(Boolean).join("\n\n");
 }
@@ -79,11 +87,44 @@ export async function runSolverQueueItem(args: {
   };
   await saveFluxSession(args.workspaceRoot, args.config, session);
 
-  const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.solver.promptFile);
   const seedBundle = args.queueItem.payload.seedBundle as FluxSeedBundle | undefined;
+  if (seedBundle?.syntheticMessages?.length) {
+    for (const [index, message] of seedBundle.syntheticMessages.entries()) {
+      await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
+        messageId: newId("msg"),
+        ts: nowIso(),
+        turnIndex: index + 1,
+        kind: message.role === "assistant" ? "synthetic_assistant" : "user",
+        text: message.text,
+        synthetic: true,
+      });
+    }
+  }
+  let seedReplayResult: Record<string, unknown> | null = null;
+  if (seedBundle?.replayPlan?.length) {
+    seedReplayResult = await runFluxProblemCommand(args.config.problem.replaySeed, {
+      workspaceRoot: args.workspaceRoot,
+      attemptId,
+      instanceId,
+      seedBundle,
+      instance: provisioned,
+    });
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "solver.seed_replayed",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "solver",
+      sessionId,
+      summary: `replayed seed bundle before solver turn`,
+      payload: { attemptId, instanceId },
+    }]);
+  }
+  const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.solver.promptFile);
   const promptText = buildInitialSolverPrompt({
     template: promptTemplate,
     seedBundle: seedBundle ?? null,
+    seedReplayResult,
     instancePromptText: typeof provisioned.prompt_text === "string" ? String(provisioned.prompt_text) : undefined,
   });
   await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
@@ -133,8 +174,13 @@ export async function runSolverQueueItem(args: {
     attemptId,
     instanceId,
     workingDirectory,
+    instance: provisioned,
   });
   const evidenceList = Array.isArray(observed.evidence) ? observed.evidence : [];
+  const hasRealActionEvidence = evidenceList.some((payload) => {
+    const record = payload as Record<string, unknown>;
+    return Number(record.action_count ?? 0) > 0 || Number(record.changed_pixels ?? 0) > 0;
+  });
   const { watermark } = await appendEvidence(
     args.workspaceRoot,
     args.config,
@@ -170,24 +216,35 @@ export async function runSolverQueueItem(args: {
     summary: "solver session stopped",
     payload: { attemptId, instanceId },
   }]);
-  await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
-    id: newId("q"),
-    sessionType: "modeler",
-    createdAt: nowIso(),
-    reason: "solver_stopped",
-    payload: {
-      attemptId,
-      instanceId,
-      evidenceWatermark: watermark,
-      evidenceCount: evidenceList.length,
-    },
-  });
+  if (hasRealActionEvidence) {
+    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
+      id: newId("q"),
+      sessionType: "modeler",
+      createdAt: nowIso(),
+      reason: "solver_stopped",
+      payload: {
+        attemptId,
+        instanceId,
+        evidenceWatermark: watermark,
+        evidenceCount: evidenceList.length,
+      },
+    });
+  } else {
+    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "solver", {
+      id: newId("q"),
+      sessionType: "solver",
+      createdAt: nowIso(),
+      reason: "solver_retry_no_action_evidence",
+      payload: seedBundle ? { seedBundle } : {},
+    });
+  }
   if (!args.config.retention.keepAllAttempts) {
     await runFluxProblemCommand(args.config.problem.destroyInstance, {
       workspaceRoot: args.workspaceRoot,
       attemptId,
       instanceId,
       workingDirectory,
+      instance: provisioned,
     });
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),

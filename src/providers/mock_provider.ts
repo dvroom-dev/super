@@ -14,6 +14,24 @@ function readSequenceEnv(name: string): string[] | undefined {
   }
 }
 
+function matchPromptOverride(promptText: string): string | undefined {
+  const raw = process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON;
+  if (typeof raw !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== "object") continue;
+      const contains = typeof (entry as any).contains === "string" ? String((entry as any).contains) : "";
+      const text = typeof (entry as any).text === "string" ? String((entry as any).text) : "";
+      if (contains && promptText.includes(contains)) return text;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 export class MockProvider implements AgentProvider {
   private config: ProviderConfig;
   private threadId: string;
@@ -85,14 +103,16 @@ export class MockProvider implements AgentProvider {
       throw err;
     }
     const sequenceIdx = Math.max(this.runStreamedCalls - 1, 0);
+    const promptOverride = matchPromptOverride(promptText);
     const full =
-      Array.isArray(streamedTextSequence) && streamedTextSequence.length > 0
+      promptOverride
+      ?? (Array.isArray(streamedTextSequence) && streamedTextSequence.length > 0
         ? String(streamedTextSequence[Math.min(sequenceIdx, streamedTextSequence.length - 1)] ?? "")
         : typeof process.env.MOCK_PROVIDER_STREAMED_TEXT === "string"
           ? String(process.env.MOCK_PROVIDER_STREAMED_TEXT)
           : typeof process.env.MOCK_PROVIDER_RUNONCE_TEXT === "string"
             ? String(process.env.MOCK_PROVIDER_RUNONCE_TEXT)
-            : `Mock response for model=${this.config.model}. You said: ${promptEcho}`;
+            : `Mock response for model=${this.config.model}. You said: ${promptEcho}`);
     if (process.env.MOCK_PROVIDER_SKIP_DELTAS !== "1") {
       for (const chunk of ["Mock response", " for model=", this.config.model, ". ", "You said: "]) {
         yield { type: "assistant_delta", delta: chunk };
