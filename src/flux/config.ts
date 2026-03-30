@@ -100,6 +100,7 @@ export async function loadFluxConfig(workspaceRoot: string, configPath: string):
     },
     solver: {
       promptFile: asString(solver.prompt_file, "solver.prompt_file"),
+      workingDirectory: solver.working_directory == null ? undefined : asString(solver.working_directory, "solver.working_directory"),
       sessionScope: asString(solver.session_scope, "solver.session_scope") as any,
       resumePolicy: asString(solver.resume_policy, "solver.resume_policy") as any,
       provider: solver.provider == null ? undefined : asString(solver.provider, "solver.provider"),
@@ -114,6 +115,7 @@ export async function loadFluxConfig(workspaceRoot: string, configPath: string):
     },
     modeler: {
       promptFile: asString(modeler.prompt_file, "modeler.prompt_file"),
+      workingDirectory: modeler.working_directory == null ? undefined : asString(modeler.working_directory, "modeler.working_directory"),
       sessionScope: asString(modeler.session_scope, "modeler.session_scope") as any,
       resumePolicy: asString(modeler.resume_policy, "modeler.resume_policy") as any,
       provider: modeler.provider == null ? undefined : asString(modeler.provider, "modeler.provider"),
@@ -136,6 +138,7 @@ export async function loadFluxConfig(workspaceRoot: string, configPath: string):
     },
     bootstrapper: {
       promptFile: asString(bootstrapper.prompt_file, "bootstrapper.prompt_file"),
+      workingDirectory: bootstrapper.working_directory == null ? undefined : asString(bootstrapper.working_directory, "bootstrapper.working_directory"),
       sessionScope: asString(bootstrapper.session_scope, "bootstrapper.session_scope") as any,
       resumePolicy: asString(bootstrapper.resume_policy, "bootstrapper.resume_policy") as any,
       provider: bootstrapper.provider == null ? undefined : asString(bootstrapper.provider, "bootstrapper.provider"),

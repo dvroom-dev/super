@@ -29,6 +29,14 @@ export function fluxSessionsRoot(workspaceRoot: string, config: FluxConfig): str
   return path.join(fluxAiRoot(workspaceRoot, config), "sessions");
 }
 
+export function fluxModelRoot(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxRoot(workspaceRoot, config), "model");
+}
+
+export function fluxSeedRoot(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxRoot(workspaceRoot, config), "seed");
+}
+
 export function fluxSessionDir(
   workspaceRoot: string,
   config: FluxConfig,

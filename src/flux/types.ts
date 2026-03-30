@@ -50,6 +50,7 @@ export type FluxToolsConfig = {
 
 export type FluxWorkerConfig = {
   promptFile: string;
+  workingDirectory?: string;
   sessionScope: FluxSessionScope;
   resumePolicy: FluxResumePolicy;
   provider?: string;

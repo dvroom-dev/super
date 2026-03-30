@@ -2,8 +2,11 @@ import { newId } from "../utils/ids.js";
 import type { FluxConfig, FluxRunState } from "./types.js";
 import { appendFluxEvents } from "./events.js";
 import { loadFluxState, saveFluxState } from "./state.js";
+import { runModelerQueueItem } from "./modeler_runtime.js";
 import { dequeueNextSolver, ensureInitialSolverQueued, shouldStartSolver } from "./scheduler.js";
 import { runSolverQueueItem } from "./solver_runtime.js";
+import { loadFluxQueue, saveFluxQueue } from "./queue.js";
+import { runBootstrapperQueueItem } from "./bootstrapper_runtime.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -109,6 +112,46 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
               activeRuns.delete("solver");
             });
           activeRuns.set("solver", runPromise);
+        }
+      }
+      if (state.active.modeler.status === "idle" && !activeRuns.has("modeler")) {
+        const queue = await loadFluxQueue(workspaceRoot, config, "modeler");
+        const next = queue.items.shift() ?? null;
+        if (next) {
+          await saveFluxQueue(workspaceRoot, config, queue);
+          const runPromise = runModelerQueueItem({ workspaceRoot, config, queueItem: next, state })
+            .catch(async (err) => {
+              await appendFluxEvents(workspaceRoot, config, [{
+                eventId: newId("evt"),
+                ts: nowIso(),
+                kind: "session.failed",
+                workspaceRoot,
+                sessionType: "modeler",
+                summary: String(err?.message ?? err),
+              }]);
+            })
+            .finally(() => activeRuns.delete("modeler"));
+          activeRuns.set("modeler", runPromise);
+        }
+      }
+      if (state.active.bootstrapper.status === "idle" && !activeRuns.has("bootstrapper")) {
+        const queue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+        const next = queue.items.shift() ?? null;
+        if (next) {
+          await saveFluxQueue(workspaceRoot, config, queue);
+          const runPromise = runBootstrapperQueueItem({ workspaceRoot, config, queueItem: next, state })
+            .catch(async (err) => {
+              await appendFluxEvents(workspaceRoot, config, [{
+                eventId: newId("evt"),
+                ts: nowIso(),
+                kind: "session.failed",
+                workspaceRoot,
+                sessionType: "bootstrapper",
+                summary: String(err?.message ?? err),
+              }]);
+            })
+            .finally(() => activeRuns.delete("bootstrapper"));
+          activeRuns.set("bootstrapper", runPromise);
         }
       }
       state.updatedAt = nowIso();
