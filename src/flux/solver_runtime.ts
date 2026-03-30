@@ -4,6 +4,7 @@ import { appendFluxEvents } from "./events.js";
 import { appendEvidence } from "./evidence.js";
 import { formatSeedBundleForPrompt } from "./json_session_format.js";
 import { runFluxProblemCommand } from "./problem_shell.js";
+import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate } from "./prompt_templates.js";
 import { runFluxProviderTurn } from "./provider_session.js";
 import { appendFluxMessage, saveFluxSession } from "./session_store.js";
@@ -153,6 +154,18 @@ export async function runSolverQueueItem(args: {
     summary: "solver session stopped",
     payload: { attemptId, instanceId },
   }]);
+  await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
+    id: newId("q"),
+    sessionType: "modeler",
+    createdAt: nowIso(),
+    reason: "solver_stopped",
+    payload: {
+      attemptId,
+      instanceId,
+      evidenceWatermark: watermark,
+      evidenceCount: evidenceList.length,
+    },
+  });
   await runFluxProblemCommand(args.config.problem.destroyInstance, {
     workspaceRoot: args.workspaceRoot,
     attemptId,

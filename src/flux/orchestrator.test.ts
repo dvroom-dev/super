@@ -127,7 +127,10 @@ describe("runFluxOrchestrator", () => {
   test("initializes state and records start/stop events", async () => {
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (await loadFluxState(workspaceRoot, config)) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     await requestFluxStop(workspaceRoot, config);
     await runPromise;
 

@@ -151,7 +151,9 @@ retention:
     await runSolverQueueItem({ workspaceRoot, config, queueItem: queueItem!, state });
     const events = await readFluxEvents(workspaceRoot, config);
     const persisted = await loadFluxState(workspaceRoot, config);
+    const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
     expect(events.some((event) => event.kind === "solver.evidence_observed")).toBe(true);
     expect(persisted?.active.solver.status).toBe("idle");
+    expect(modelerQueue.items).toHaveLength(1);
   });
 });
