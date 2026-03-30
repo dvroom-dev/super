@@ -88,6 +88,7 @@ export async function runModelerQueueItem(args: {
     session,
     sessionType: "modeler",
     promptText,
+    reasoningEffort: args.config.modeler.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
     outputSchema: schemaForName(args.config.modeler.outputSchema),
     workingDirectory: path.resolve(args.workspaceRoot, args.config.modeler.workingDirectory ?? "."),
   });

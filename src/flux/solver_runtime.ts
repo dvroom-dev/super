@@ -101,6 +101,7 @@ export async function runSolverQueueItem(args: {
     session,
     sessionType: "solver",
     promptText,
+    reasoningEffort: args.config.solver.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
     workingDirectory,
     env: typeof provisioned.env === "object" && provisioned.env ? provisioned.env as Record<string, string> : undefined,
     signal: controller.signal,
@@ -181,22 +182,24 @@ export async function runSolverQueueItem(args: {
       evidenceCount: evidenceList.length,
     },
   });
-  await runFluxProblemCommand(args.config.problem.destroyInstance, {
-    workspaceRoot: args.workspaceRoot,
-    attemptId,
-    instanceId,
-    workingDirectory,
-  });
-  await appendFluxEvents(args.workspaceRoot, args.config, [{
-    eventId: newId("evt"),
-    ts: nowIso(),
-    kind: "solver.instance_destroyed",
-    workspaceRoot: args.workspaceRoot,
-    sessionType: "solver",
-    sessionId,
-    summary: `solver instance destroyed: ${instanceId}`,
-    payload: { attemptId, instanceId },
-  }]);
+  if (!args.config.retention.keepAllAttempts) {
+    await runFluxProblemCommand(args.config.problem.destroyInstance, {
+      workspaceRoot: args.workspaceRoot,
+      attemptId,
+      instanceId,
+      workingDirectory,
+    });
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "solver.instance_destroyed",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "solver",
+      sessionId,
+      summary: `solver instance destroyed: ${instanceId}`,
+      payload: { attemptId, instanceId },
+    }]);
+  }
   const latestState = await loadFluxState(args.workspaceRoot, args.config) ?? startingState;
   latestState.active.solver = {
     sessionId,

@@ -18,6 +18,7 @@ export async function runFluxProviderTurn(args: {
   session: FluxSessionRecord;
   sessionType: FluxSessionType;
   promptText: string;
+  reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
   outputSchema?: Record<string, unknown>;
   workingDirectory: string;
   env?: Record<string, string>;
@@ -28,7 +29,7 @@ export async function runFluxProviderTurn(args: {
     model: args.session.model,
     workingDirectory: args.workingDirectory,
     threadId: args.session.providerThreadId,
-    modelReasoningEffort: undefined,
+    modelReasoningEffort: args.reasoningEffort,
     sandboxMode: args.config.runtimeDefaults.sandboxMode,
     approvalPolicy: args.config.runtimeDefaults.approvalPolicy,
     permissionProfile: "workspace_no_network",
@@ -67,7 +68,9 @@ export async function runFluxProviderTurn(args: {
       if (event.type === "done" && event.threadId) providerThreadId = event.threadId;
     }
   } catch (err: any) {
-    if (err?.name !== "AbortError") throw err;
+    const message = String(err?.message ?? err ?? "");
+    const abortLike = err?.name === "AbortError" || /aborted by user/i.test(message) || /interrupt/i.test(message);
+    if (!abortLike) throw err;
     interrupted = true;
   } finally {
     await provider.close?.();

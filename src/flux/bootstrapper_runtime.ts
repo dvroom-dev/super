@@ -88,6 +88,7 @@ export async function runBootstrapperQueueItem(args: {
     session,
     sessionType: "bootstrapper",
     promptText,
+    reasoningEffort: args.config.bootstrapper.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
     outputSchema: schemaForName(args.config.bootstrapper.outputSchema),
     workingDirectory: path.resolve(args.workspaceRoot, args.config.bootstrapper.workingDirectory ?? "."),
   });
@@ -135,10 +136,12 @@ export async function runBootstrapperQueueItem(args: {
       payload: { evidenceWatermark: appended.watermark, replayResult },
     });
   }
-  await runFluxProblemCommand(args.config.problem.destroyInstance, {
-    workspaceRoot: args.workspaceRoot,
-    instance: replayProvision,
-  });
+  if (!args.config.retention.keepAllAttempts) {
+    await runFluxProblemCommand(args.config.problem.destroyInstance, {
+      workspaceRoot: args.workspaceRoot,
+      instance: replayProvision,
+    });
+  }
 
   const decision = String(attestation.decision ?? "");
   if (decision === "replay_satisfactory") {
