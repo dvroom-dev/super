@@ -9,6 +9,7 @@ export type FluxProviderTurnResult = {
   assistantText: string;
   providerThreadId?: string;
   providerEvents: ProviderEvent[];
+  interrupted: boolean;
 };
 
 export async function runFluxProviderTurn(args: {
@@ -50,6 +51,7 @@ export async function runFluxProviderTurn(args: {
   const providerEvents: ProviderEvent[] = [];
   let assistantText = "";
   let providerThreadId = args.session.providerThreadId;
+  let interrupted = false;
   try {
     for await (const event of provider.runStreamed(prompt, { outputSchema: args.outputSchema, signal: args.signal })) {
       providerEvents.push(event);
@@ -64,6 +66,9 @@ export async function runFluxProviderTurn(args: {
       if (event.type === "assistant_message") assistantText = event.text;
       if (event.type === "done" && event.threadId) providerThreadId = event.threadId;
     }
+  } catch (err: any) {
+    if (err?.name !== "AbortError") throw err;
+    interrupted = true;
   } finally {
     await provider.close?.();
   }
@@ -71,5 +76,5 @@ export async function runFluxProviderTurn(args: {
   args.session.updatedAt = new Date().toISOString();
   args.session.latestAssistantText = assistantText;
   await saveFluxSession(args.workspaceRoot, args.config, args.session);
-  return { assistantText, providerThreadId, providerEvents };
+  return { assistantText, providerThreadId, providerEvents, interrupted };
 }

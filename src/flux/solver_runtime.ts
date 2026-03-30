@@ -93,6 +93,8 @@ export async function runSolverQueueItem(args: {
     kind: "user",
     text: promptText,
   });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1, args.config.solver.cadenceMs));
   const turn = await runFluxProviderTurn({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
@@ -101,8 +103,9 @@ export async function runSolverQueueItem(args: {
     promptText,
     workingDirectory,
     env: typeof provisioned.env === "object" && provisioned.env ? provisioned.env as Record<string, string> : undefined,
-    signal: args.signal,
+    signal: controller.signal,
   });
+  clearTimeout(timeout);
   await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
     messageId: newId("msg"),
     ts: nowIso(),
@@ -111,6 +114,18 @@ export async function runSolverQueueItem(args: {
     text: turn.assistantText,
     providerThreadId: turn.providerThreadId,
   });
+  if (turn.interrupted) {
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "queue.preempt_requested",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "solver",
+      sessionId,
+      summary: `solver cadence reached (${args.config.solver.cadenceMs}ms)`,
+      payload: { attemptId, instanceId, cadenceMs: args.config.solver.cadenceMs },
+    }]);
+  }
 
   const observed = await runFluxProblemCommand(args.config.problem.observeEvidence, {
     workspaceRoot: args.workspaceRoot,
