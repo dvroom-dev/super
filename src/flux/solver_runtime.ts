@@ -15,6 +15,23 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function maxObservedStepCount(payloads: Record<string, unknown>[]): number {
+  let maxSteps = 0;
+  for (const payload of payloads) {
+    const state = payload.state;
+    if (state && typeof state === "object" && !Array.isArray(state)) {
+      const record = state as Record<string, unknown>;
+      maxSteps = Math.max(
+        maxSteps,
+        Number(record.current_attempt_steps ?? 0) || 0,
+        Number(record.total_steps ?? 0) || 0,
+      );
+    }
+    maxSteps = Math.max(maxSteps, Number(payload.action_count ?? 0) || 0);
+  }
+  return maxSteps;
+}
+
 function buildInitialSolverPrompt(args: {
   template: string;
   instancePromptText?: string;
@@ -101,6 +118,7 @@ export async function runSolverQueueItem(args: {
     }
   }
   let seedReplayResult: Record<string, unknown> | null = null;
+  let replayBaselineSteps = 0;
   if (seedBundle?.replayPlan?.length) {
     seedReplayResult = await runFluxProblemCommand(args.config.problem.replaySeed, {
       workspaceRoot: args.workspaceRoot,
@@ -109,6 +127,10 @@ export async function runSolverQueueItem(args: {
       seedBundle,
       instance: provisioned,
     });
+    const replayEvidence = Array.isArray(seedReplayResult.evidence)
+      ? seedReplayResult.evidence.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : [];
+    replayBaselineSteps = maxObservedStepCount(replayEvidence);
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),
@@ -177,10 +199,20 @@ export async function runSolverQueueItem(args: {
     instance: provisioned,
   });
   const evidenceList = Array.isArray(observed.evidence) ? observed.evidence : [];
-  const hasRealActionEvidence = evidenceList.some((payload) => {
+  const evidenceRecords = evidenceList.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+  const observedStepCount = maxObservedStepCount(evidenceRecords);
+  const hasRealActionEvidence = evidenceRecords.some((payload) => {
     const record = payload as Record<string, unknown>;
-    return Number(record.action_count ?? 0) > 0 || Number(record.changed_pixels ?? 0) > 0;
-  });
+    const state = record.state && typeof record.state === "object" && !Array.isArray(record.state)
+      ? record.state as Record<string, unknown>
+      : {};
+    const totalSteps = Math.max(
+      Number(record.action_count ?? 0) || 0,
+      Number(state.current_attempt_steps ?? 0) || 0,
+      Number(state.total_steps ?? 0) || 0,
+    );
+    return totalSteps > replayBaselineSteps;
+  }) || observedStepCount > replayBaselineSteps;
   const { watermark } = await appendEvidence(
     args.workspaceRoot,
     args.config,
@@ -205,7 +237,7 @@ export async function runSolverQueueItem(args: {
     sessionType: "solver",
     sessionId,
     summary: `observed ${evidenceList.length} evidence records`,
-    payload: { attemptId, instanceId, watermark, count: evidenceList.length },
+      payload: { attemptId, instanceId, watermark, count: evidenceList.length },
   }, {
     eventId: newId("evt"),
     ts: nowIso(),

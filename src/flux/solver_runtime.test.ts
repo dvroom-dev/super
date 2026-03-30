@@ -250,4 +250,83 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({ evidence: [{
     const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     expect(solverQueue.items).toHaveLength(1);
   });
+
+  test("requeues solver when observed evidence comes only from seed replay", async () => {
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const observeScript = path.join(workspaceRoot, "scripts", "observe.js");
+    await fs.writeFile(observeScript, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const replayOnly = !!(input.instance && input.instance.metadata);
+  process.stdout.write(JSON.stringify({
+    evidence: [{
+      summary: "replay-only action",
+      action_count: replayOnly ? 1 : 0,
+      changed_pixels: replayOnly ? 1 : 0,
+      state: {
+        current_attempt_steps: replayOnly ? 1 : 0,
+        total_steps: replayOnly ? 1 : 0
+      }
+    }]
+  }));
+});`, "utf8");
+    await fs.chmod(observeScript, 0o755);
+    const replayScript = path.join(workspaceRoot, "scripts", "replay.js");
+    await fs.writeFile(replayScript, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  replay_ok: true,
+  evidence: [{
+    summary: "seed replay",
+    action_count: 1,
+    changed_pixels: 1,
+    state: { current_attempt_steps: 1, total_steps: 1 }
+  }]
+})));`, "utf8");
+    await fs.chmod(replayScript, 0o755);
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: {
+        id: "q_seed_only",
+        sessionType: "solver",
+        createdAt: new Date().toISOString(),
+        reason: "seed_only",
+        payload: {
+          seedBundle: {
+            version: 1,
+            generatedAt: new Date().toISOString(),
+            syntheticMessages: [{ role: "assistant", text: "do action" }],
+            replayPlan: [{ tool: "shell", args: { cmd: ["echo", "hi"] } }],
+            assertions: [],
+          },
+        },
+      },
+      state,
+    });
+    const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+    const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+    expect(solverQueue.items).toHaveLength(1);
+    expect(modelerQueue.items).toHaveLength(0);
+  });
 });
