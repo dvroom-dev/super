@@ -2,6 +2,8 @@ import { newId } from "../utils/ids.js";
 import type { FluxConfig, FluxRunState } from "./types.js";
 import { appendFluxEvents } from "./events.js";
 import { loadFluxState, saveFluxState } from "./state.js";
+import { dequeueNextSolver, ensureInitialSolverQueued, shouldStartSolver } from "./scheduler.js";
+import { runSolverQueueItem } from "./solver_runtime.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -57,8 +59,10 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
     summary: "flux orchestrator started",
     payload: { pid: process.pid },
   }]);
+  await ensureInitialSolverQueued(workspaceRoot, config);
 
   let stopping = false;
+  const activeRuns = new Map<string, Promise<void>>();
   const stop = async (reason: string) => {
     if (stopping) return;
     stopping = true;
@@ -87,9 +91,30 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
       await new Promise((resolve) => setTimeout(resolve, config.orchestrator.tickMs));
       state = await loadFluxState(workspaceRoot, config) ?? state;
       if (state.stopRequested) break;
+      if (shouldStartSolver(state) && !activeRuns.has("solver")) {
+        const nextSolver = await dequeueNextSolver(workspaceRoot, config);
+        if (nextSolver) {
+          const runPromise = runSolverQueueItem({ workspaceRoot, config, queueItem: nextSolver, state })
+            .catch(async (err) => {
+              await appendFluxEvents(workspaceRoot, config, [{
+                eventId: newId("evt"),
+                ts: nowIso(),
+                kind: "session.failed",
+                workspaceRoot,
+                sessionType: "solver",
+                summary: String(err?.message ?? err),
+              }]);
+            })
+            .finally(() => {
+              activeRuns.delete("solver");
+            });
+          activeRuns.set("solver", runPromise);
+        }
+      }
       state.updatedAt = nowIso();
       await saveFluxState(workspaceRoot, config, state);
     }
+    await Promise.allSettled(activeRuns.values());
     await stop("stop requested");
   } finally {
     process.off("SIGINT", onSignal);

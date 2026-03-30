@@ -8,6 +8,44 @@ import { requestFluxStop, runFluxOrchestrator } from "./orchestrator.js";
 import { loadFluxState } from "./state.js";
 
 async function writeConfig(workspaceRoot: string) {
+  await fs.mkdir(path.join(workspaceRoot, "prompts"), { recursive: true });
+  await fs.writeFile(path.join(workspaceRoot, "prompts", "solver.md"), "Solve.", "utf8");
+  await fs.writeFile(path.join(workspaceRoot, "prompts", "modeler.md"), "Model.", "utf8");
+  await fs.writeFile(path.join(workspaceRoot, "prompts", "bootstrapper.md"), "Bootstrap.", "utf8");
+  await fs.writeFile(path.join(workspaceRoot, "prompts", "modeler_continue.md"), "Continue model.", "utf8");
+  await fs.writeFile(path.join(workspaceRoot, "prompts", "bootstrapper_continue.md"), "Continue bootstrap.", "utf8");
+  await fs.mkdir(path.join(workspaceRoot, "scripts"), { recursive: true });
+  const writeScript = async (name: string, body: string) => {
+    const filePath = path.join(workspaceRoot, "scripts", name);
+    await fs.writeFile(filePath, body, "utf8");
+    await fs.chmod(filePath, 0o755);
+    return filePath;
+  };
+  const provisionPath = await writeScript("provision.js", `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  process.stdout.write(JSON.stringify({
+    instance_id: "instance_1",
+    working_directory: input.workspaceRoot,
+    prompt_text: "Puzzle context",
+    env: {}
+  }));
+});`);
+  const destroyPath = await writeScript("destroy.js", `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write("{}"));`);
+  const observePath = await writeScript("observe.js", `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({ evidence: [] })));`);
+  const replayPath = await writeScript("replay.js", `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write("{}"));`);
   await fs.writeFile(path.join(workspaceRoot, "flux.yaml"), `
 schema_version: 1
 runtime_defaults:
@@ -25,13 +63,13 @@ orchestrator:
   bootstrapper_idle_backoff_ms: 10
 problem:
   provision_instance:
-    command: ["echo", "provision"]
+    command: ["${provisionPath}"]
   destroy_instance:
-    command: ["echo", "destroy"]
+    command: ["${destroyPath}"]
   observe_evidence:
-    command: ["echo", "observe"]
+    command: ["${observePath}"]
   replay_seed:
-    command: ["echo", "replay"]
+    command: ["${replayPath}"]
   merge_evidence:
     strategy: dedupe_by_fingerprint
 solver:

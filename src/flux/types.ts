@@ -123,6 +123,73 @@ export type FluxQueueItem = {
   payload: Record<string, unknown>;
 };
 
+export type FluxProblemInstance = {
+  instanceId: string;
+  workingDirectory: string;
+  promptText?: string;
+  env?: Record<string, string>;
+  metadata?: Record<string, unknown>;
+};
+
+export type FluxMessageRecord = {
+  messageId: string;
+  ts: string;
+  turnIndex: number;
+  kind: "system" | "user" | "assistant" | "synthetic_assistant" | "tool_call" | "tool_result" | "status" | "control";
+  text?: string;
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  toolResult?: Record<string, unknown>;
+  providerThreadId?: string;
+  synthetic?: boolean;
+  sourceEventIds?: string[];
+  evidenceWatermark?: string;
+};
+
+export type FluxSessionRecord = {
+  sessionId: string;
+  sessionType: FluxSessionType;
+  status: "idle" | "running" | "stopped" | "failed";
+  createdAt: string;
+  updatedAt: string;
+  provider: string;
+  model: string;
+  providerThreadId?: string;
+  resumePolicy: FluxResumePolicy;
+  sessionScope: FluxSessionScope;
+  activeAttemptId?: string;
+  lastEventCursor?: string;
+  lastEvidenceWatermark?: string;
+  stopReason?: string;
+  latestAssistantText?: string;
+};
+
+export type FluxEvidenceRecord = {
+  evidenceId: string;
+  ts: string;
+  attemptId?: string;
+  instanceId?: string;
+  fingerprint: string;
+  summary: string;
+  payload: Record<string, unknown>;
+};
+
+export type FluxSeedBundle = {
+  version: 1;
+  generatedAt: string;
+  modelRevisionId?: string;
+  evidenceWatermark?: string;
+  syntheticMessages: Array<{
+    role: "user" | "assistant";
+    text: string;
+  }>;
+  replayPlan: Array<{
+    tool: string;
+    args: Record<string, unknown>;
+  }>;
+  assertions: Array<Record<string, unknown>>;
+};
+
 export type FluxQueueSnapshot = {
   sessionType: FluxSessionType;
   updatedAt: string;
@@ -134,6 +201,8 @@ export type FluxActiveSessionState = {
   status: "idle" | "running" | "stopping";
   queueItemId?: string;
   pid?: number;
+  attemptId?: string;
+  instanceId?: string;
   updatedAt: string;
 };
 
