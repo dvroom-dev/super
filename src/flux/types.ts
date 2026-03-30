@@ -1,0 +1,162 @@
+export type FluxSessionType = "solver" | "modeler" | "bootstrapper";
+
+export type FluxSessionScope = "per_attempt" | "run";
+export type FluxResumePolicy = "never" | "always";
+
+export type FluxCommandSpec = {
+  command: string[];
+};
+
+export type FluxRuntimeDefaults = {
+  provider: string;
+  model: string;
+  reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never";
+  env: Record<string, string>;
+};
+
+export type FluxStorageConfig = {
+  fluxRoot: string;
+  aiRoot: string;
+};
+
+export type FluxOrchestratorConfig = {
+  tickMs: number;
+  solverPreemptGraceMs: number;
+  evidencePollMs: number;
+  modelerIdleBackoffMs: number;
+  bootstrapperIdleBackoffMs: number;
+};
+
+export type FluxProblemConfig = {
+  provisionInstance: FluxCommandSpec;
+  destroyInstance: FluxCommandSpec;
+  observeEvidence: FluxCommandSpec;
+  replaySeed: FluxCommandSpec;
+  mergeEvidence: {
+    strategy: "append" | "dedupe_by_fingerprint";
+  };
+};
+
+export type FluxToolsConfig = {
+  builtin: string[];
+  custom: Array<{
+    name: string;
+    command: string[];
+    cwd?: string;
+  }>;
+};
+
+export type FluxWorkerConfig = {
+  promptFile: string;
+  sessionScope: FluxSessionScope;
+  resumePolicy: FluxResumePolicy;
+  provider?: string;
+  model?: string;
+  reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+};
+
+export type FluxSolverConfig = FluxWorkerConfig & {
+  cadenceMs: number;
+  queueReplacementGraceMs: number;
+  tools: FluxToolsConfig;
+};
+
+export type FluxModelerConfig = FluxWorkerConfig & {
+  triggers: {
+    onNewEvidence: boolean;
+    onSolverStopped: boolean;
+    periodicMs: number;
+  };
+  outputSchema: string;
+  acceptance: {
+    command: string[];
+    parseAs: "json";
+    continueMessageTemplateFile: string;
+  };
+};
+
+export type FluxBootstrapperConfig = FluxWorkerConfig & {
+  outputSchema: string;
+  seedBundlePath: string;
+  replay: {
+    maxAttemptsPerEvent: number;
+    continueMessageTemplateFile: string;
+  };
+};
+
+export type FluxObservabilityConfig = {
+  capturePrompts: boolean;
+  captureRawProviderEvents: boolean;
+  captureToolCalls: boolean;
+  captureToolResults: boolean;
+  captureQueueSnapshots: boolean;
+  captureTimingMetrics: boolean;
+};
+
+export type FluxRetentionConfig = {
+  keepAllEvents: boolean;
+  keepAllSessions: boolean;
+  keepAllAttempts: boolean;
+};
+
+export type FluxConfig = {
+  schemaVersion: 1;
+  runtimeDefaults: FluxRuntimeDefaults;
+  storage: FluxStorageConfig;
+  orchestrator: FluxOrchestratorConfig;
+  problem: FluxProblemConfig;
+  solver: FluxSolverConfig;
+  modeler: FluxModelerConfig;
+  bootstrapper: FluxBootstrapperConfig;
+  observability: FluxObservabilityConfig;
+  retention: FluxRetentionConfig;
+};
+
+export type FluxQueueItem = {
+  id: string;
+  sessionType: FluxSessionType;
+  createdAt: string;
+  reason: string;
+  dedupeKey?: string;
+  payload: Record<string, unknown>;
+};
+
+export type FluxQueueSnapshot = {
+  sessionType: FluxSessionType;
+  updatedAt: string;
+  items: FluxQueueItem[];
+};
+
+export type FluxActiveSessionState = {
+  sessionId?: string;
+  status: "idle" | "running" | "stopping";
+  queueItemId?: string;
+  pid?: number;
+  updatedAt: string;
+};
+
+export type FluxRunState = {
+  version: 1;
+  workspaceRoot: string;
+  configPath: string;
+  pid: number;
+  startedAt: string;
+  updatedAt: string;
+  status: "running" | "stopping" | "stopped";
+  stopRequested: boolean;
+  active: Record<FluxSessionType, FluxActiveSessionState>;
+};
+
+export type FluxEvent = {
+  eventId: string;
+  ts: string;
+  kind: string;
+  workspaceRoot: string;
+  sessionType?: FluxSessionType;
+  sessionId?: string;
+  queueItemId?: string;
+  summary?: string;
+  payload?: Record<string, unknown>;
+};

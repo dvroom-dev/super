@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "flux": "bun run src/bin/flux.ts",
     "lint": "bun run scripts/check_ts_line_limit.ts && bun run scripts/check_standalone.ts",
     "super": "bun run src/bin/super.ts",
     "test": "bun test",
