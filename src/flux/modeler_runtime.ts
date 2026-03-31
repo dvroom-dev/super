@@ -3,7 +3,7 @@ import path from "node:path";
 import { writeJsonAtomic } from "../lib/fs.js";
 import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
-import { schemaForName } from "./json_session_format.js";
+import { parseJsonObjectFromAssistantText, schemaForName } from "./json_session_format.js";
 import { runModelAcceptance } from "./model_acceptance.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate, renderTemplate } from "./prompt_templates.js";
@@ -151,12 +151,8 @@ export async function runModelerQueueItem(args: {
     text: turn.assistantText,
     providerThreadId: turn.providerThreadId,
   });
-  let modelOutput: Record<string, unknown>;
-  try {
-    modelOutput = JSON.parse(turn.assistantText || "{}") as Record<string, unknown>;
-  } catch {
-    modelOutput = fallbackModelOutput(args.queueItem.payload, turn.assistantText, turn.interrupted);
-  }
+  const parsedModelOutput = parseJsonObjectFromAssistantText(turn.assistantText || "");
+  const modelOutput = parsedModelOutput ?? fallbackModelOutput(args.queueItem.payload, turn.assistantText, turn.interrupted);
   const acceptance = await runModelAcceptance({ workspaceRoot: args.workspaceRoot, config: args.config, modelOutput });
   if (!acceptance.accepted) {
     const blocked = isBlockedModelOutput(modelOutput);
@@ -202,6 +198,8 @@ export async function runModelerQueueItem(args: {
         modelRevisionId: revisionId,
         messageForBootstrapper: String(modelOutput.message_for_bootstrapper ?? ""),
         modelOutput,
+        sourceEvidence: args.queueItem.payload.latestEvidence ?? null,
+        sourceEvidenceWatermark: String(args.queueItem.payload.evidenceWatermark ?? modelOutput.evidence_watermark ?? ""),
       },
     });
     await appendFluxEvents(args.workspaceRoot, args.config, [{

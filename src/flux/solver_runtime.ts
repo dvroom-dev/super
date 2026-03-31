@@ -126,6 +126,7 @@ async function observeAndPublishSolverEvidence(args: {
           instanceId: args.instanceId,
           evidenceWatermark: watermark,
           evidenceCount: evidenceList.length,
+          latestEvidence: evidenceRecords[evidenceRecords.length - 1] ?? null,
         },
       });
     }

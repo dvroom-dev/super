@@ -5,7 +5,7 @@ import { sha256Hex } from "../utils/hash.js";
 import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
 import { appendEvidence } from "./evidence.js";
-import { schemaForName } from "./json_session_format.js";
+import { parseJsonObjectFromAssistantText, schemaForName } from "./json_session_format.js";
 import { runFluxProblemCommand } from "./problem_shell.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate, renderTemplate } from "./prompt_templates.js";
@@ -111,7 +111,7 @@ export async function runBootstrapperQueueItem(args: {
     text: turn.assistantText,
     providerThreadId: turn.providerThreadId,
   });
-  const attestation = JSON.parse(turn.assistantText || "{}") as Record<string, unknown>;
+  const attestation = parseJsonObjectFromAssistantText(turn.assistantText || "") ?? {};
   const seedBundle = await loadSeedBundle(args.workspaceRoot, args.config);
   if (!seedBundle) throw new Error(`missing seed bundle at ${args.config.bootstrapper.seedBundlePath}`);
   const persistedSeed = await persistSeedRevision(args.workspaceRoot, args.config, seedBundle);

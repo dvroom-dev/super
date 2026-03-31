@@ -126,12 +126,16 @@ retention:
   });
 
   test("queues a solver attempt when replay is satisfactory", async () => {
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
-      decision: "replay_satisfactory",
-      summary: "looks good",
-      seed_bundle_updated: true,
-      notes: "ship it",
-    });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```json",
+      JSON.stringify({
+        decision: "replay_satisfactory",
+        summary: "looks good",
+        seed_bundle_updated: true,
+        notes: "ship it",
+      }, null, 2),
+      "```",
+    ].join("\n");
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     const state: FluxRunState = {
       version: 1,

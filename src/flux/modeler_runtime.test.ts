@@ -120,13 +120,17 @@ retention:
   });
 
   test("publishes accepted model updates to the bootstrapper queue", async () => {
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
-      decision: "updated_model",
-      summary: "improved model",
-      message_for_bootstrapper: "use this model",
-      artifacts_updated: ["model.py"],
-      evidence_watermark: "wm1",
-    });
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```json",
+      JSON.stringify({
+        decision: "updated_model",
+        summary: "improved model",
+        message_for_bootstrapper: "use this model",
+        artifacts_updated: ["model.py"],
+        evidence_watermark: "wm1",
+      }, null, 2),
+      "```",
+    ].join("\n");
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     const state: FluxRunState = {
       version: 1,
@@ -153,12 +157,20 @@ retention:
         sessionType: "modeler",
         createdAt: new Date().toISOString(),
         reason: "new_evidence",
-        payload: { evidenceWatermark: "wm1" },
+        payload: {
+          evidenceWatermark: "wm1",
+          latestEvidence: {
+            summary: "current_level=2",
+            state: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED" },
+          },
+        },
       },
     });
     const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     const events = await readFluxEvents(workspaceRoot, config);
     expect(bootstrapQueue.items).toHaveLength(1);
+    expect(bootstrapQueue.items[0]?.payload.sourceEvidenceWatermark).toBe("wm1");
+    expect((bootstrapQueue.items[0]?.payload.sourceEvidence as Record<string, unknown>)?.summary).toBe("current_level=2");
     expect(events.some((event) => event.kind === "modeler.acceptance_passed")).toBe(true);
   });
 
