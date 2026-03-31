@@ -11,6 +11,13 @@ import { appendFluxMessage, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSeedBundle, FluxSessionRecord } from "./types.js";
 import { loadFluxState, saveFluxState } from "./state.js";
 
+type ActiveSolverControl = {
+  controller: AbortController;
+  interruptRequested: boolean;
+};
+
+const activeSolverControls = new Map<string, ActiveSolverControl>();
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -49,6 +56,14 @@ function buildInitialSolverPrompt(args: {
   }
   if (args.instancePromptText) parts.push(args.instancePromptText.trim());
   return parts.filter(Boolean).join("\n\n");
+}
+
+export function requestActiveSolverInterrupt(sessionId: string): boolean {
+  const control = activeSolverControls.get(sessionId);
+  if (!control || control.interruptRequested) return false;
+  control.interruptRequested = true;
+  control.controller.abort();
+  return true;
 }
 
 export async function runSolverQueueItem(args: {
@@ -157,7 +172,7 @@ export async function runSolverQueueItem(args: {
     text: promptText,
   });
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.max(1, args.config.solver.cadenceMs));
+  activeSolverControls.set(sessionId, { controller, interruptRequested: false });
   const turn = await runFluxProviderTurn({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
@@ -169,7 +184,7 @@ export async function runSolverQueueItem(args: {
     env: typeof provisioned.env === "object" && provisioned.env ? provisioned.env as Record<string, string> : undefined,
     signal: controller.signal,
   });
-  clearTimeout(timeout);
+  activeSolverControls.delete(sessionId);
   await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
     messageId: newId("msg"),
     ts: nowIso(),
@@ -178,19 +193,6 @@ export async function runSolverQueueItem(args: {
     text: turn.assistantText,
     providerThreadId: turn.providerThreadId,
   });
-  if (turn.interrupted) {
-    await appendFluxEvents(args.workspaceRoot, args.config, [{
-      eventId: newId("evt"),
-      ts: nowIso(),
-      kind: "queue.preempt_requested",
-      workspaceRoot: args.workspaceRoot,
-      sessionType: "solver",
-      sessionId,
-      summary: `solver cadence reached (${args.config.solver.cadenceMs}ms)`,
-      payload: { attemptId, instanceId, cadenceMs: args.config.solver.cadenceMs },
-    }]);
-  }
-
   const observed = await runFluxProblemCommand(args.config.problem.observeEvidence, {
     workspaceRoot: args.workspaceRoot,
     attemptId,
@@ -226,7 +228,7 @@ export async function runSolverQueueItem(args: {
   );
   session.status = "stopped";
   session.lastEvidenceWatermark = watermark || session.lastEvidenceWatermark;
-  session.stopReason = "completed";
+  session.stopReason = turn.interrupted ? "interrupted_for_replacement" : "completed";
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
   await appendFluxEvents(args.workspaceRoot, args.config, [{
@@ -237,7 +239,7 @@ export async function runSolverQueueItem(args: {
     sessionType: "solver",
     sessionId,
     summary: `observed ${evidenceList.length} evidence records`,
-      payload: { attemptId, instanceId, watermark, count: evidenceList.length },
+      payload: { attemptId, instanceId, watermark, count: evidenceList.length, interrupted: turn.interrupted },
   }, {
     eventId: newId("evt"),
     ts: nowIso(),
@@ -245,8 +247,8 @@ export async function runSolverQueueItem(args: {
     workspaceRoot: args.workspaceRoot,
     sessionType: "solver",
     sessionId,
-    summary: "solver session stopped",
-    payload: { attemptId, instanceId },
+    summary: turn.interrupted ? "solver session interrupted for replacement" : "solver session stopped",
+    payload: { attemptId, instanceId, interrupted: turn.interrupted },
   }]);
   if (hasRealActionEvidence) {
     await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {

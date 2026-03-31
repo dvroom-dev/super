@@ -4,7 +4,7 @@ import { appendFluxEvents } from "./events.js";
 import { loadFluxState, saveFluxState } from "./state.js";
 import { runModelerQueueItem } from "./modeler_runtime.js";
 import { dequeueNextSolver, ensureInitialSolverQueued, shouldStartSolver } from "./scheduler.js";
-import { runSolverQueueItem } from "./solver_runtime.js";
+import { requestActiveSolverInterrupt, runSolverQueueItem } from "./solver_runtime.js";
 import { loadFluxQueue, saveFluxQueue } from "./queue.js";
 import { runBootstrapperQueueItem } from "./bootstrapper_runtime.js";
 
@@ -94,6 +94,29 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
       await new Promise((resolve) => setTimeout(resolve, config.orchestrator.tickMs));
       state = await loadFluxState(workspaceRoot, config) ?? state;
       if (state.stopRequested) break;
+      if (state.active.solver.status === "running") {
+        const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+        if (solverQueue.items.length > 0 && state.active.solver.sessionId) {
+          const interrupted = requestActiveSolverInterrupt(state.active.solver.sessionId);
+          if (interrupted) {
+            await appendFluxEvents(workspaceRoot, config, [{
+              eventId: newId("evt"),
+              ts: nowIso(),
+              kind: "queue.preempt_requested",
+              workspaceRoot,
+              sessionType: "solver",
+              sessionId: state.active.solver.sessionId,
+              summary: "replacement solver queued; interrupting current solver",
+              payload: {
+                queuedSolverCount: solverQueue.items.length,
+                replacementGraceMs: config.orchestrator.solverPreemptGraceMs,
+                attemptId: state.active.solver.attemptId,
+                instanceId: state.active.solver.instanceId,
+              },
+            }]);
+          }
+        }
+      }
       if (shouldStartSolver(state) && !activeRuns.has("solver")) {
         const nextSolver = await dequeueNextSolver(workspaceRoot, config);
         if (nextSolver) {

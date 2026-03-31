@@ -173,7 +173,7 @@ retention:
     expect(modelerQueue.items).toHaveLength(1);
   });
 
-  test("interrupts solver turn on cadence timeout and still harvests evidence", async () => {
+  test("does not hard-stop solver turns just because cadence elapses", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = "";
     process.env.MOCK_PROVIDER_DELAY_MS = "200";
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
@@ -207,7 +207,7 @@ retention:
       state,
     });
     const events = await readFluxEvents(workspaceRoot, config);
-    expect(events.some((event) => event.kind === "queue.preempt_requested")).toBe(true);
+    expect(events.some((event) => event.kind === "queue.preempt_requested")).toBe(false);
     delete process.env.MOCK_PROVIDER_DELAY_MS;
   });
 
