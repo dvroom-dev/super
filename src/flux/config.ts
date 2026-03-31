@@ -93,6 +93,9 @@ export async function loadFluxConfig(workspaceRoot: string, configPath: string):
       provisionInstance: asCommandSpec(problem.provision_instance, "problem.provision_instance"),
       destroyInstance: asCommandSpec(problem.destroy_instance, "problem.destroy_instance"),
       observeEvidence: asCommandSpec(problem.observe_evidence, "problem.observe_evidence"),
+      syncModelWorkspace: problem.sync_model_workspace == null
+        ? undefined
+        : asCommandSpec(problem.sync_model_workspace, "problem.sync_model_workspace"),
       replaySeed: asCommandSpec(problem.replay_seed, "problem.replay_seed"),
       mergeEvidence: {
         strategy: asString(asRecord(problem.merge_evidence, "problem.merge_evidence").strategy, "problem.merge_evidence.strategy") as any,

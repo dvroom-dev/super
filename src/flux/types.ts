@@ -33,6 +33,7 @@ export type FluxProblemConfig = {
   provisionInstance: FluxCommandSpec;
   destroyInstance: FluxCommandSpec;
   observeEvidence: FluxCommandSpec;
+  syncModelWorkspace?: FluxCommandSpec;
   replaySeed: FluxCommandSpec;
   mergeEvidence: {
     strategy: "append" | "dedupe_by_fingerprint";

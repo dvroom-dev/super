@@ -7,6 +7,7 @@ import { schemaForName } from "./json_session_format.js";
 import { runModelAcceptance } from "./model_acceptance.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate, renderTemplate } from "./prompt_templates.js";
+import { runFluxProblemCommand } from "./problem_shell.js";
 import { runFluxProviderTurn } from "./provider_session.js";
 import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSessionRecord } from "./types.js";
@@ -53,6 +54,10 @@ function compactAcceptancePayload(payload: Record<string, unknown>): Record<stri
       sequence_id: String(firstReport.sequence_id ?? ""),
     },
   };
+}
+
+function isBlockedModelOutput(modelOutput: Record<string, unknown>): boolean {
+  return String(modelOutput.decision ?? "").trim().toLowerCase() === "blocked";
 }
 
 async function persistAcceptedModel(
@@ -103,6 +108,14 @@ export async function runModelerQueueItem(args: {
   };
   await saveFluxState(args.workspaceRoot, args.config, latestState);
 
+  if (args.config.problem.syncModelWorkspace) {
+    await runFluxProblemCommand(args.config.problem.syncModelWorkspace, {
+      workspaceRoot: args.workspaceRoot,
+      queueItem: args.queueItem,
+      reason: args.queueItem.reason,
+    });
+  }
+
   const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.modeler.promptFile);
   const promptText = [
     promptTemplate.trim(),
@@ -146,24 +159,27 @@ export async function runModelerQueueItem(args: {
   }
   const acceptance = await runModelAcceptance({ workspaceRoot: args.workspaceRoot, config: args.config, modelOutput });
   if (!acceptance.accepted) {
-    const template = await loadFluxPromptTemplate(args.workspaceRoot, args.config.modeler.acceptance.continueMessageTemplateFile);
-    const continueText = renderTemplate(template, {
-      acceptance_message: acceptance.message || JSON.stringify(acceptance.payload, null, 2),
-    });
-    await appendFluxMessage(args.workspaceRoot, args.config, "modeler", sessionId, {
-      messageId: newId("msg"),
-      ts: nowIso(),
-      turnIndex: Date.now(),
-      kind: "user",
-      text: continueText,
-    });
-    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
-      id: newId("q"),
-      sessionType: "modeler",
-      createdAt: nowIso(),
-      reason: "acceptance_failed_resume",
-      payload: { acceptance: compactAcceptancePayload(acceptance.payload) },
-    });
+    const blocked = isBlockedModelOutput(modelOutput);
+    if (!blocked) {
+      const template = await loadFluxPromptTemplate(args.workspaceRoot, args.config.modeler.acceptance.continueMessageTemplateFile);
+      const continueText = renderTemplate(template, {
+        acceptance_message: acceptance.message || JSON.stringify(acceptance.payload, null, 2),
+      });
+      await appendFluxMessage(args.workspaceRoot, args.config, "modeler", sessionId, {
+        messageId: newId("msg"),
+        ts: nowIso(),
+        turnIndex: Date.now(),
+        kind: "user",
+        text: continueText,
+      });
+      await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
+        id: newId("q"),
+        sessionType: "modeler",
+        createdAt: nowIso(),
+        reason: "acceptance_failed_resume",
+        payload: { acceptance: compactAcceptancePayload(acceptance.payload) },
+      });
+    }
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),
@@ -171,7 +187,8 @@ export async function runModelerQueueItem(args: {
       workspaceRoot: args.workspaceRoot,
       sessionType: "modeler",
       sessionId,
-      summary: acceptance.message || "model acceptance failed",
+      summary: acceptance.message || (blocked ? "model acceptance blocked" : "model acceptance failed"),
+      payload: { blocked },
     }]);
   } else {
     const revisionId = await persistAcceptedModel(args.workspaceRoot, args.config, modelOutput);
