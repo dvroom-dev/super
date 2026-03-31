@@ -69,7 +69,7 @@ async function observeAndPublishSolverEvidence(args: {
   replayBaselineSteps: number;
   reason: "solver_running" | "solver_stopped";
   lastWatermark: string;
-}): Promise<{ watermark: string; hasRealActionEvidence: boolean; evidenceCount: number }> {
+}): Promise<{ watermark: string; hasRealActionEvidence: boolean; evidenceCount: number; evidenceRecords: Record<string, unknown>[] }> {
   const observed = await runFluxProblemCommand(args.config.problem.observeEvidence, {
     workspaceRoot: args.workspaceRoot,
     attemptId: args.attemptId,
@@ -130,7 +130,33 @@ async function observeAndPublishSolverEvidence(args: {
       });
     }
   }
-  return { watermark, hasRealActionEvidence, evidenceCount: evidenceList.length };
+  return { watermark, hasRealActionEvidence, evidenceCount: evidenceList.length, evidenceRecords };
+}
+
+function isLevelSolvedFromEvidence(evidenceRecords: Record<string, unknown>[]): boolean {
+  const latest = evidenceRecords[evidenceRecords.length - 1];
+  const state = latest?.state;
+  if (!state || typeof state !== "object" || Array.isArray(state)) return false;
+  const record = state as Record<string, unknown>;
+  const currentLevel = Number(record.current_level ?? 0) || 0;
+  const levelsCompleted = Number(record.levels_completed ?? 0) || 0;
+  const status = String(record.state ?? "");
+  return currentLevel > 1 || levelsCompleted > 0 || status === "FINISHED" || status === "GAME_OVER";
+}
+
+function buildContinuationPrompt(evidenceRecords: Record<string, unknown>[]): string {
+  const latest = evidenceRecords[evidenceRecords.length - 1] ?? {};
+  return [
+    "Continue solving from the current live state.",
+    "",
+    "You have not solved level 1 yet.",
+    "- Do not stop to summarize.",
+    "- Keep taking real actions until the level is solved or you are explicitly interrupted.",
+    "- Prefer continuing from the current state over resetting.",
+    "",
+    "Latest observed evidence:",
+    JSON.stringify(latest, null, 2),
+  ].join("\n");
 }
 
 export function requestActiveSolverInterrupt(sessionId: string): boolean {
@@ -249,6 +275,8 @@ export async function runSolverQueueItem(args: {
   const controller = new AbortController();
   activeSolverControls.set(sessionId, { controller, interruptRequested: false });
   let latestWatermark = "";
+  let latestEvidenceRecords: Record<string, unknown>[] = [];
+  let latestObservedStepCount = replayBaselineSteps;
   let pollStopped = false;
   const pollLoop = (async () => {
     while (!pollStopped && !controller.signal.aborted) {
@@ -267,30 +295,102 @@ export async function runSolverQueueItem(args: {
         lastWatermark: latestWatermark,
       });
       if (result.watermark) latestWatermark = result.watermark;
+      if (result.evidenceRecords.length > 0) {
+        latestEvidenceRecords = result.evidenceRecords;
+        latestObservedStepCount = Math.max(latestObservedStepCount, maxObservedStepCount(result.evidenceRecords));
+      }
     }
   })();
-  const turn = await runFluxProviderTurn({
+  let currentPromptText = promptText;
+  let turnIndex = 2;
+  let turn = await runFluxProviderTurn({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
     session,
     sessionType: "solver",
-    promptText,
+    promptText: currentPromptText,
     reasoningEffort: args.config.solver.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
     workingDirectory,
     env: typeof provisioned.env === "object" && provisioned.env ? provisioned.env as Record<string, string> : undefined,
     signal: controller.signal,
   });
+  let solverStopReason = "completed";
+  while (!turn.interrupted) {
+    const preTurnObservedStepCount = latestObservedStepCount;
+    await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
+      messageId: newId("msg"),
+      ts: nowIso(),
+      turnIndex,
+      kind: "assistant",
+      text: turn.assistantText,
+      providerThreadId: turn.providerThreadId,
+    });
+    const postTurnObservation = await observeAndPublishSolverEvidence({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      sessionId,
+      attemptId,
+      instanceId,
+      workingDirectory,
+      provisioned,
+      replayBaselineSteps,
+      reason: "solver_running",
+      lastWatermark: latestWatermark,
+    });
+    if (postTurnObservation.watermark) latestWatermark = postTurnObservation.watermark;
+    const postTurnEvidenceRecords = postTurnObservation.evidenceRecords.length > 0
+      ? postTurnObservation.evidenceRecords
+      : latestEvidenceRecords;
+    if (postTurnObservation.evidenceRecords.length > 0) latestEvidenceRecords = postTurnObservation.evidenceRecords;
+    const postTurnObservedStepCount = maxObservedStepCount(postTurnEvidenceRecords);
+    latestObservedStepCount = Math.max(latestObservedStepCount, postTurnObservedStepCount);
+    const madeProgressThisTurn = postTurnObservedStepCount > preTurnObservedStepCount;
+    if (!postTurnObservation.hasRealActionEvidence) {
+      solverStopReason = "no_action_evidence";
+      break;
+    }
+    if (isLevelSolvedFromEvidence(postTurnEvidenceRecords)) {
+      solverStopReason = "solved";
+      break;
+    }
+    if (!madeProgressThisTurn) {
+      solverStopReason = "no_progress_after_turn";
+      break;
+    }
+    currentPromptText = buildContinuationPrompt(postTurnEvidenceRecords);
+    await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
+      messageId: newId("msg"),
+      ts: nowIso(),
+      turnIndex: turnIndex + 1,
+      kind: "user",
+      text: currentPromptText,
+    });
+    turnIndex += 2;
+    turn = await runFluxProviderTurn({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      session,
+      sessionType: "solver",
+      promptText: currentPromptText,
+      reasoningEffort: args.config.solver.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
+      workingDirectory,
+      env: typeof provisioned.env === "object" && provisioned.env ? provisioned.env as Record<string, string> : undefined,
+      signal: controller.signal,
+    });
+  }
   pollStopped = true;
   await pollLoop;
   activeSolverControls.delete(sessionId);
-  await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
-    messageId: newId("msg"),
-    ts: nowIso(),
-    turnIndex: 2,
-    kind: "assistant",
-    text: turn.assistantText,
-    providerThreadId: turn.providerThreadId,
-  });
+  if (turn.interrupted) {
+    await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
+      messageId: newId("msg"),
+      ts: nowIso(),
+      turnIndex,
+      kind: "assistant",
+      text: turn.assistantText,
+      providerThreadId: turn.providerThreadId,
+    });
+  }
   const finalObservation = await observeAndPublishSolverEvidence({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
@@ -307,7 +407,7 @@ export async function runSolverQueueItem(args: {
   const hasRealActionEvidence = finalObservation.hasRealActionEvidence;
   session.status = "stopped";
   session.lastEvidenceWatermark = watermark || session.lastEvidenceWatermark;
-  session.stopReason = turn.interrupted ? "interrupted_for_replacement" : "completed";
+  session.stopReason = turn.interrupted ? "interrupted_for_replacement" : solverStopReason;
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
   await appendFluxEvents(args.workspaceRoot, args.config, [{

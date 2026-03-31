@@ -251,6 +251,75 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({ evidence: [{
     expect(solverQueue.items).toHaveLength(1);
   });
 
+  test("continues solver across natural provider stop when the turn made progress", async () => {
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const observeScript = path.join(workspaceRoot, "scripts", "observe.js");
+    const observeCounterPath = path.join(workspaceRoot, "observe-count.txt");
+    await fs.writeFile(observeCounterPath, "0", "utf8");
+    await fs.writeFile(observeScript, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const counterPath = path.join(input.workspaceRoot, "observe-count.txt");
+  const count = Number(fs.readFileSync(counterPath, "utf8")) || 0;
+  const next = count + 1;
+  fs.writeFileSync(counterPath, String(next));
+  const steps = 1;
+  process.stdout.write(JSON.stringify({
+    evidence: [{
+      summary: "step evidence",
+      action_count: steps,
+      changed_pixels: steps,
+      state: {
+        current_level: 1,
+        levels_completed: 0,
+        state: "NOT_FINISHED",
+        current_attempt_steps: steps,
+        total_steps: steps
+      }
+    }]
+  }));
+});`, "utf8");
+    await fs.chmod(observeScript, 0o755);
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: {
+        id: "q_continue_after_progress",
+        sessionType: "solver",
+        createdAt: new Date().toISOString(),
+        reason: "continue_after_progress",
+        payload: {},
+      },
+      state,
+    });
+    const sessionDirRoot = path.join(workspaceRoot, ".ai-flux", "sessions", "solver");
+    const [sessionDir] = await fs.readdir(sessionDirRoot);
+    const messages = await fs.readFile(path.join(sessionDirRoot, sessionDir, "messages.jsonl"), "utf8");
+    expect(messages).toContain("Continue solving from the current live state.");
+  });
+
   test("requeues solver when observed evidence comes only from seed replay", async () => {
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     const observeScript = path.join(workspaceRoot, "scripts", "observe.js");
