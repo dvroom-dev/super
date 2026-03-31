@@ -58,6 +58,81 @@ function buildInitialSolverPrompt(args: {
   return parts.filter(Boolean).join("\n\n");
 }
 
+async function observeAndPublishSolverEvidence(args: {
+  workspaceRoot: string;
+  config: FluxConfig;
+  sessionId: string;
+  attemptId: string;
+  instanceId: string;
+  workingDirectory: string;
+  provisioned: Record<string, unknown>;
+  replayBaselineSteps: number;
+  reason: "solver_running" | "solver_stopped";
+  lastWatermark: string;
+}): Promise<{ watermark: string; hasRealActionEvidence: boolean; evidenceCount: number }> {
+  const observed = await runFluxProblemCommand(args.config.problem.observeEvidence, {
+    workspaceRoot: args.workspaceRoot,
+    attemptId: args.attemptId,
+    instanceId: args.instanceId,
+    workingDirectory: args.workingDirectory,
+    instance: args.provisioned,
+  });
+  const evidenceList = Array.isArray(observed.evidence) ? observed.evidence : [];
+  const evidenceRecords = evidenceList.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+  const observedStepCount = maxObservedStepCount(evidenceRecords);
+  const hasRealActionEvidence = evidenceRecords.some((payload) => {
+    const record = payload as Record<string, unknown>;
+    const state = record.state && typeof record.state === "object" && !Array.isArray(record.state)
+      ? record.state as Record<string, unknown>
+      : {};
+    const totalSteps = Math.max(
+      Number(record.action_count ?? 0) || 0,
+      Number(state.current_attempt_steps ?? 0) || 0,
+      Number(state.total_steps ?? 0) || 0,
+    );
+    return totalSteps > args.replayBaselineSteps;
+  }) || observedStepCount > args.replayBaselineSteps;
+  const { watermark, appended } = await appendEvidence(
+    args.workspaceRoot,
+    args.config,
+    evidenceList.map((payload) => ({
+      ts: nowIso(),
+      attemptId: args.attemptId,
+      instanceId: args.instanceId,
+      summary: String((payload as any)?.summary ?? "solver evidence"),
+      payload: payload as Record<string, unknown>,
+    })),
+  );
+  if (appended.length > 0 && watermark && watermark !== args.lastWatermark) {
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "solver.evidence_observed",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "solver",
+      sessionId: args.sessionId,
+      summary: `observed ${evidenceList.length} evidence records`,
+      payload: { attemptId: args.attemptId, instanceId: args.instanceId, watermark, count: evidenceList.length, reason: args.reason },
+    }]);
+    if (hasRealActionEvidence) {
+      await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
+        id: newId("q"),
+        sessionType: "modeler",
+        createdAt: nowIso(),
+        reason: args.reason === "solver_running" ? "solver_new_evidence" : "solver_stopped",
+        dedupeKey: `evidence:${watermark}`,
+        payload: {
+          attemptId: args.attemptId,
+          instanceId: args.instanceId,
+          evidenceWatermark: watermark,
+          evidenceCount: evidenceList.length,
+        },
+      });
+    }
+  }
+  return { watermark, hasRealActionEvidence, evidenceCount: evidenceList.length };
+}
+
 export function requestActiveSolverInterrupt(sessionId: string): boolean {
   const control = activeSolverControls.get(sessionId);
   if (!control || control.interruptRequested) return false;
@@ -173,6 +248,27 @@ export async function runSolverQueueItem(args: {
   });
   const controller = new AbortController();
   activeSolverControls.set(sessionId, { controller, interruptRequested: false });
+  let latestWatermark = "";
+  let pollStopped = false;
+  const pollLoop = (async () => {
+    while (!pollStopped && !controller.signal.aborted) {
+      await new Promise((resolve) => setTimeout(resolve, args.config.orchestrator.evidencePollMs));
+      if (pollStopped || controller.signal.aborted) break;
+      const result = await observeAndPublishSolverEvidence({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        sessionId,
+        attemptId,
+        instanceId,
+        workingDirectory,
+        provisioned,
+        replayBaselineSteps,
+        reason: "solver_running",
+        lastWatermark: latestWatermark,
+      });
+      if (result.watermark) latestWatermark = result.watermark;
+    }
+  })();
   const turn = await runFluxProviderTurn({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
@@ -184,6 +280,8 @@ export async function runSolverQueueItem(args: {
     env: typeof provisioned.env === "object" && provisioned.env ? provisioned.env as Record<string, string> : undefined,
     signal: controller.signal,
   });
+  pollStopped = true;
+  await pollLoop;
   activeSolverControls.delete(sessionId);
   await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
     messageId: newId("msg"),
@@ -193,54 +291,26 @@ export async function runSolverQueueItem(args: {
     text: turn.assistantText,
     providerThreadId: turn.providerThreadId,
   });
-  const observed = await runFluxProblemCommand(args.config.problem.observeEvidence, {
+  const finalObservation = await observeAndPublishSolverEvidence({
     workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    sessionId,
     attemptId,
     instanceId,
     workingDirectory,
-    instance: provisioned,
+    provisioned,
+    replayBaselineSteps,
+    reason: "solver_stopped",
+    lastWatermark: latestWatermark,
   });
-  const evidenceList = Array.isArray(observed.evidence) ? observed.evidence : [];
-  const evidenceRecords = evidenceList.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
-  const observedStepCount = maxObservedStepCount(evidenceRecords);
-  const hasRealActionEvidence = evidenceRecords.some((payload) => {
-    const record = payload as Record<string, unknown>;
-    const state = record.state && typeof record.state === "object" && !Array.isArray(record.state)
-      ? record.state as Record<string, unknown>
-      : {};
-    const totalSteps = Math.max(
-      Number(record.action_count ?? 0) || 0,
-      Number(state.current_attempt_steps ?? 0) || 0,
-      Number(state.total_steps ?? 0) || 0,
-    );
-    return totalSteps > replayBaselineSteps;
-  }) || observedStepCount > replayBaselineSteps;
-  const { watermark } = await appendEvidence(
-    args.workspaceRoot,
-    args.config,
-    evidenceList.map((payload) => ({
-      ts: nowIso(),
-      attemptId,
-      instanceId,
-      summary: String((payload as any)?.summary ?? "solver evidence"),
-      payload: payload as Record<string, unknown>,
-    })),
-  );
+  const watermark = finalObservation.watermark || latestWatermark;
+  const hasRealActionEvidence = finalObservation.hasRealActionEvidence;
   session.status = "stopped";
   session.lastEvidenceWatermark = watermark || session.lastEvidenceWatermark;
   session.stopReason = turn.interrupted ? "interrupted_for_replacement" : "completed";
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
   await appendFluxEvents(args.workspaceRoot, args.config, [{
-    eventId: newId("evt"),
-    ts: nowIso(),
-    kind: "solver.evidence_observed",
-    workspaceRoot: args.workspaceRoot,
-    sessionType: "solver",
-    sessionId,
-    summary: `observed ${evidenceList.length} evidence records`,
-      payload: { attemptId, instanceId, watermark, count: evidenceList.length, interrupted: turn.interrupted },
-  }, {
     eventId: newId("evt"),
     ts: nowIso(),
     kind: "session.stopped",
@@ -250,20 +320,7 @@ export async function runSolverQueueItem(args: {
     summary: turn.interrupted ? "solver session interrupted for replacement" : "solver session stopped",
     payload: { attemptId, instanceId, interrupted: turn.interrupted },
   }]);
-  if (hasRealActionEvidence) {
-    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
-      id: newId("q"),
-      sessionType: "modeler",
-      createdAt: nowIso(),
-      reason: "solver_stopped",
-      payload: {
-        attemptId,
-        instanceId,
-        evidenceWatermark: watermark,
-        evidenceCount: evidenceList.length,
-      },
-    });
-  } else {
+  if (!hasRealActionEvidence) {
     await enqueueFluxQueueItem(args.workspaceRoot, args.config, "solver", {
       id: newId("q"),
       sessionType: "solver",

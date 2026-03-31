@@ -21,11 +21,32 @@ export async function appendEvidence(
   if (records.length === 0) {
     return { watermark: "", appended: [] };
   }
-  const appended: FluxEvidenceRecord[] = records.map((record) => ({
+  const normalized: FluxEvidenceRecord[] = records.map((record) => ({
     ...record,
     evidenceId: sha256Hex(JSON.stringify(record)),
     fingerprint: sha256Hex(JSON.stringify(record.payload)),
   }));
+  let appended = normalized;
+  if (config.problem.mergeEvidence.strategy === "dedupe_by_fingerprint") {
+    const existing = await fs.readFile(evidencePath(workspaceRoot, config), "utf8").catch(() => "");
+    const fingerprints = new Set<string>();
+    for (const line of existing.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed) as Partial<FluxEvidenceRecord>;
+        if (typeof parsed.fingerprint === "string" && parsed.fingerprint) {
+          fingerprints.add(parsed.fingerprint);
+        }
+      } catch {
+        continue;
+      }
+    }
+    appended = normalized.filter((record) => !fingerprints.has(record.fingerprint));
+  }
+  if (appended.length === 0) {
+    return { watermark: "", appended: [] };
+  }
   await fs.mkdir(path.dirname(evidencePath(workspaceRoot, config)), { recursive: true });
   await fs.appendFile(evidencePath(workspaceRoot, config), appended.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
   const watermark = appended[appended.length - 1]!.evidenceId;
