@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { readJsonIfExists, writeJsonAtomic } from "../lib/fs.js";
+import { sha256Hex } from "../utils/hash.js";
 import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
 import { appendEvidence } from "./evidence.js";
@@ -26,15 +27,25 @@ async function loadSeedBundle(workspaceRoot: string, config: FluxConfig): Promis
   return await readJsonIfExists<FluxSeedBundle>(path.resolve(workspaceRoot, config.bootstrapper.seedBundlePath));
 }
 
-async function persistSeedRevision(workspaceRoot: string, config: FluxConfig, seedBundle: FluxSeedBundle): Promise<string> {
+type SeedRevisionPersistResult = {
+  revisionId: string;
+  seedHash: string;
+  changed: boolean;
+};
+
+async function persistSeedRevision(workspaceRoot: string, config: FluxConfig, seedBundle: FluxSeedBundle): Promise<SeedRevisionPersistResult> {
   const revisionId = newId("seed_rev");
   const currentDir = fluxSeedRoot(workspaceRoot, config);
   const revisionPath = path.join(currentDir, "revisions", `${revisionId}.json`);
+  const currentMetaPath = path.join(currentDir, "current_meta.json");
+  const previousMeta = await readJsonIfExists<Record<string, unknown>>(currentMetaPath);
+  const seedHash = sha256Hex(JSON.stringify(seedBundle));
+  const changed = String(previousMeta?.seedHash ?? "") !== seedHash;
   await fs.mkdir(path.dirname(revisionPath), { recursive: true });
   await writeJsonAtomic(path.resolve(workspaceRoot, config.bootstrapper.seedBundlePath), seedBundle);
   await writeJsonAtomic(revisionPath, seedBundle);
-  await writeJsonAtomic(path.join(currentDir, "current_meta.json"), { revisionId, updatedAt: nowIso() });
-  return revisionId;
+  await writeJsonAtomic(currentMetaPath, { revisionId, seedHash, updatedAt: nowIso() });
+  return { revisionId, seedHash, changed };
 }
 
 export async function runBootstrapperQueueItem(args: {
@@ -103,7 +114,8 @@ export async function runBootstrapperQueueItem(args: {
   const attestation = JSON.parse(turn.assistantText || "{}") as Record<string, unknown>;
   const seedBundle = await loadSeedBundle(args.workspaceRoot, args.config);
   if (!seedBundle) throw new Error(`missing seed bundle at ${args.config.bootstrapper.seedBundlePath}`);
-  const seedRevisionId = await persistSeedRevision(args.workspaceRoot, args.config, seedBundle);
+  const persistedSeed = await persistSeedRevision(args.workspaceRoot, args.config, seedBundle);
+  const seedRevisionId = persistedSeed.revisionId;
   const replayProvision = await runFluxProblemCommand(args.config.problem.provisionInstance, {
     workspaceRoot: args.workspaceRoot,
     queueItem: args.queueItem,
@@ -145,13 +157,16 @@ export async function runBootstrapperQueueItem(args: {
 
   const decision = String(attestation.decision ?? "");
   if (decision === "replay_satisfactory") {
-    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "solver", {
-      id: newId("q"),
-      sessionType: "solver",
-      createdAt: nowIso(),
-      reason: "bootstrapper_approved_seed",
-      payload: { seedBundle, seedRevisionId },
-    });
+    if (persistedSeed.changed) {
+      await enqueueFluxQueueItem(args.workspaceRoot, args.config, "solver", {
+        id: newId("q"),
+        sessionType: "solver",
+        createdAt: nowIso(),
+        reason: "bootstrapper_approved_seed",
+        dedupeKey: `solver-seed:${persistedSeed.seedHash}`,
+        payload: { seedBundle, seedRevisionId, seedHash: persistedSeed.seedHash },
+      });
+    }
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),
@@ -159,7 +174,10 @@ export async function runBootstrapperQueueItem(args: {
       workspaceRoot: args.workspaceRoot,
       sessionType: "bootstrapper",
       sessionId,
-      summary: `seed revision ${seedRevisionId} approved`,
+      summary: persistedSeed.changed
+        ? `seed revision ${seedRevisionId} approved`
+        : `seed revision ${seedRevisionId} approved without solver requeue (unchanged seed)`,
+      payload: { seedHash: persistedSeed.seedHash, changed: persistedSeed.changed },
     }]);
   } else {
     const template = await loadFluxPromptTemplate(args.workspaceRoot, args.config.bootstrapper.replay.continueMessageTemplateFile);

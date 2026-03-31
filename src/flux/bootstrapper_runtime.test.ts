@@ -5,7 +5,7 @@ import path from "node:path";
 import { loadFluxConfig } from "./config.js";
 import { readFluxEvents } from "./events.js";
 import { runBootstrapperQueueItem } from "./bootstrapper_runtime.js";
-import { loadFluxQueue } from "./queue.js";
+import { loadFluxQueue, saveFluxQueue } from "./queue.js";
 import { saveFluxState } from "./state.js";
 import type { FluxRunState } from "./types.js";
 
@@ -165,5 +165,57 @@ retention:
     const events = await readFluxEvents(workspaceRoot, config);
     expect(solverQueue.items).toHaveLength(1);
     expect(events.some((event) => event.kind === "bootstrapper.attested_satisfactory")).toBe(true);
+  });
+
+  test("does not queue another solver attempt for an unchanged approved seed", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "replay_satisfactory",
+      summary: "looks good",
+      seed_bundle_updated: true,
+      notes: "ship it",
+    });
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    const queueItem = {
+      id: "q_boot_same",
+      sessionType: "bootstrapper" as const,
+      createdAt: new Date().toISOString(),
+      reason: "model_accepted",
+      payload: { messageForBootstrapper: "use model" },
+    };
+    await runBootstrapperQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem,
+    });
+    let solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+    expect(solverQueue.items).toHaveLength(1);
+    await saveFluxQueue(workspaceRoot, config, { ...solverQueue, items: [] });
+    await runBootstrapperQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: { ...queueItem, id: "q_boot_same_2" },
+    });
+    solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+    expect(solverQueue.items).toHaveLength(0);
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(events.some((event) => event.kind === "bootstrapper.attested_satisfactory" && event.payload?.changed === false)).toBe(true);
   });
 });
