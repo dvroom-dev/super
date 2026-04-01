@@ -1,6 +1,6 @@
 import { createProvider } from "../providers/factory.js";
 import type { ProviderConfig, ProviderEvent } from "../providers/types.js";
-import { promptContentFromText } from "../utils/prompt_content.js";
+import { imagePart, promptContentFromText, type PromptContent } from "../utils/prompt_content.js";
 import { newId } from "../utils/ids.js";
 import { appendProviderRawEvent, saveFluxSession, writeFluxPromptPayload } from "./session_store.js";
 import type { FluxConfig, FluxSessionRecord, FluxSessionType } from "./types.js";
@@ -18,6 +18,7 @@ export async function runFluxProviderTurn(args: {
   session: FluxSessionRecord;
   sessionType: FluxSessionType;
   promptText: string;
+  promptImages?: string[];
   reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
   outputSchema?: Record<string, unknown>;
   workingDirectory: string;
@@ -40,11 +41,16 @@ export async function runFluxProviderTurn(args: {
     skipGitRepoCheck: true,
   };
   const provider = createProvider(providerConfig);
-  const prompt = promptContentFromText(args.promptText);
+  const prompt: PromptContent = promptContentFromText(args.promptText);
+  for (const imagePath of args.promptImages ?? []) {
+    const part = imagePart(imagePath);
+    if (part) prompt.push(part);
+  }
   const turnIndex = Date.now();
   if (args.config.observability.capturePrompts) {
     await writeFluxPromptPayload(args.workspaceRoot, args.config, args.sessionType, args.session.sessionId, turnIndex, {
       promptText: args.promptText,
+      promptImages: args.promptImages ?? [],
       outputSchema: args.outputSchema ?? null,
       workingDirectory: args.workingDirectory,
     });

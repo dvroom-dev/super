@@ -266,6 +266,12 @@ export async function runSolverQueueItem(args: {
     seedReplayResult,
     instancePromptText: typeof provisioned.prompt_text === "string" ? String(provisioned.prompt_text) : undefined,
   });
+  const promptImageValues = (provisioned as Record<string, unknown>).prompt_images;
+  const promptImages = Array.isArray(promptImageValues)
+    ? promptImageValues
+        .filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value: string) => String(value))
+    : [];
   await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
     messageId: newId("msg"),
     ts: nowIso(),
@@ -310,6 +316,7 @@ export async function runSolverQueueItem(args: {
     session,
     sessionType: "solver",
     promptText: currentPromptText,
+    promptImages,
     reasoningEffort: args.config.solver.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
     workingDirectory,
     env: typeof provisioned.env === "object" && provisioned.env ? provisioned.env as Record<string, string> : undefined,
