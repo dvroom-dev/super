@@ -311,16 +311,29 @@ export async function runBootstrapperQueueItem(args: {
       sessionType: "bootstrapper",
       sessionId,
       summary: `bootstrapper requested another pass for ${seedRevisionId}`,
-      payload: { seedHash, seedRevisionId },
+      payload: { seedHash, seedRevisionId, changed: persistedSeed.changed },
     }]);
-    await enqueueBootstrapperContinuation({
-      workspaceRoot: args.workspaceRoot,
-      config: args.config,
-      sessionId,
-      reason: "bootstrapper_retry_after_model_rehearsal",
-      payload: { rehearsalResult, seedRevisionId, seedHash },
-      modelRehearsalResult: rehearsalResult,
-    });
+    if (persistedSeed.changed) {
+      await enqueueBootstrapperContinuation({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        sessionId,
+        reason: "bootstrapper_retry_after_model_rehearsal",
+        payload: { rehearsalResult, seedRevisionId, seedHash },
+        modelRehearsalResult: rehearsalResult,
+      });
+    } else {
+      await appendFluxEvents(args.workspaceRoot, args.config, [{
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "bootstrapper.waiting_for_new_inputs",
+        workspaceRoot: args.workspaceRoot,
+        sessionType: "bootstrapper",
+        sessionId,
+        summary: `bootstrapper made no seed changes for ${seedRevisionId}; waiting for new model/evidence inputs`,
+        payload: { seedHash, seedRevisionId },
+      }]);
+    }
     await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
     return;
   }
