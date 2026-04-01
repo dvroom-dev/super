@@ -234,4 +234,78 @@ process.stdin.on("end", () => {
     expect(modelerQueue.items).toHaveLength(0);
     expect(events.some((event) => event.kind === "modeler.acceptance_failed" && event.payload?.blocked === true)).toBe(true);
   });
+
+  test("publishes bootstrapper progress when contiguous matched prefix improves before full acceptance", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "updated_model",
+      summary: "matched one more sequence",
+      message_for_bootstrapper: "sequence 1 now matches; prioritize the first failing sequence next",
+      artifacts_updated: ["model_lib.py"],
+      evidence_watermark: "wm3",
+    });
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_partial.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  process.stdout.write(JSON.stringify({
+    accepted: false,
+    message: "seq_0002 still fails",
+    model_output: input.modelOutput,
+    compare_payload: {
+      level: 1,
+      all_match: false,
+      reports: [
+        { sequence_id: "seq_0001", matched: true },
+        { sequence_id: "seq_0002", matched: false, divergence_reason: "intermediate_frame_mismatch" },
+        { sequence_id: "seq_0003", matched: true }
+      ]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText.replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q3",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm3" },
+      },
+    });
+    const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(bootstrapQueue.items).toHaveLength(1);
+    expect(bootstrapQueue.items[0]?.reason).toBe("model_progress_advanced");
+    expect((bootstrapQueue.items[0]?.payload.modelProgress as Record<string, unknown>)?.contiguousMatchedSequences).toBe(1);
+    expect(modelerQueue.items).toHaveLength(1);
+    expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(true);
+  });
 });

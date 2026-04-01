@@ -60,6 +60,89 @@ function isBlockedModelOutput(modelOutput: Record<string, unknown>): boolean {
   return String(modelOutput.decision ?? "").trim().toLowerCase() === "blocked";
 }
 
+type ModelProgress = {
+  level: number;
+  contiguousMatchedSequences: number;
+  firstFailingSequenceId: string | null;
+  firstFailingReason: string | null;
+};
+
+function sequenceNumber(sequenceId: string): number | null {
+  const match = sequenceId.match(/seq_(\d+)/i);
+  return match ? Number(match[1]) : null;
+}
+
+function computeModelProgress(comparePayload: Record<string, unknown>): ModelProgress {
+  const reports = Array.isArray(comparePayload.reports) ? comparePayload.reports : [];
+  const skipped = Array.isArray(comparePayload.skipped_sequences) ? comparePayload.skipped_sequences : [];
+  const bySequence = new Map<number, { matched: boolean; reason: string | null; sequenceId: string }>();
+  for (const report of reports) {
+    if (!report || typeof report !== "object" || Array.isArray(report)) continue;
+    const record = report as Record<string, unknown>;
+    const sequenceId = String(record.sequence_id ?? "");
+    const order = sequenceNumber(sequenceId);
+    if (!order) continue;
+    bySequence.set(order, {
+      matched: Boolean(record.matched),
+      reason: String(record.divergence_reason ?? "") || null,
+      sequenceId,
+    });
+  }
+  for (const skippedRecord of skipped) {
+    if (!skippedRecord || typeof skippedRecord !== "object" || Array.isArray(skippedRecord)) continue;
+    const record = skippedRecord as Record<string, unknown>;
+    const sequenceId = String(record.sequence_id ?? "");
+    const order = sequenceNumber(sequenceId);
+    if (!order || bySequence.has(order)) continue;
+    bySequence.set(order, {
+      matched: false,
+      reason: String(record.reason ?? record.end_reason ?? "") || null,
+      sequenceId,
+    });
+  }
+  const ordered = [...bySequence.entries()].sort((left, right) => left[0] - right[0]);
+  let contiguousMatchedSequences = 0;
+  let firstFailingSequenceId: string | null = null;
+  let firstFailingReason: string | null = null;
+  for (const [order, item] of ordered) {
+    const expected = contiguousMatchedSequences + 1;
+    if (order !== expected || !item.matched) {
+      firstFailingSequenceId = item.sequenceId || `seq_${String(expected).padStart(4, "0")}`;
+      firstFailingReason = item.reason;
+      break;
+    }
+    contiguousMatchedSequences = order;
+  }
+  return {
+    level: Number(comparePayload.level ?? 1) || 1,
+    contiguousMatchedSequences,
+    firstFailingSequenceId,
+    firstFailingReason,
+  };
+}
+
+async function loadBestProgress(workspaceRoot: string, config: FluxConfig): Promise<ModelProgress | null> {
+  try {
+    const raw = await fs.readFile(path.join(fluxModelRoot(workspaceRoot, config), "current", "progress.json"), "utf8");
+    return JSON.parse(raw) as ModelProgress;
+  } catch {
+    return null;
+  }
+}
+
+async function saveBestProgress(workspaceRoot: string, config: FluxConfig, progress: ModelProgress): Promise<void> {
+  await writeJsonAtomic(path.join(fluxModelRoot(workspaceRoot, config), "current", "progress.json"), {
+    ...progress,
+    updatedAt: nowIso(),
+  });
+}
+
+function isProgressAdvance(previous: ModelProgress | null, next: ModelProgress): boolean {
+  if (!previous) return next.contiguousMatchedSequences > 0;
+  if (next.level !== previous.level) return next.level > previous.level && next.contiguousMatchedSequences > 0;
+  return next.contiguousMatchedSequences > previous.contiguousMatchedSequences;
+}
+
 async function persistAcceptedModel(
   workspaceRoot: string,
   config: FluxConfig,
@@ -154,6 +237,45 @@ export async function runModelerQueueItem(args: {
   const parsedModelOutput = parseJsonObjectFromAssistantText(turn.assistantText || "");
   const modelOutput = parsedModelOutput ?? fallbackModelOutput(args.queueItem.payload, turn.assistantText, turn.interrupted);
   const acceptance = await runModelAcceptance({ workspaceRoot: args.workspaceRoot, config: args.config, modelOutput });
+  const comparePayload = acceptance.payload.compare_payload && typeof acceptance.payload.compare_payload === "object" && !Array.isArray(acceptance.payload.compare_payload)
+    ? acceptance.payload.compare_payload as Record<string, unknown>
+    : {};
+  const currentProgress = computeModelProgress(comparePayload);
+  const previousProgress = await loadBestProgress(args.workspaceRoot, args.config);
+  const progressAdvanced = isProgressAdvance(previousProgress, currentProgress);
+  if (progressAdvanced) {
+    await saveBestProgress(args.workspaceRoot, args.config, currentProgress);
+    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
+      id: newId("q"),
+      sessionType: "bootstrapper",
+      createdAt: nowIso(),
+      reason: "model_progress_advanced",
+      dedupeKey: `model-progress:${currentProgress.level}:${currentProgress.contiguousMatchedSequences}`,
+      payload: {
+        modelProgress: currentProgress,
+        comparePayload,
+        messageForBootstrapper: String(modelOutput.message_for_bootstrapper ?? ""),
+        modelOutput,
+        sourceEvidence: args.queueItem.payload.latestEvidence ?? null,
+        sourceEvidenceWatermark: String(args.queueItem.payload.evidenceWatermark ?? modelOutput.evidence_watermark ?? ""),
+      },
+    });
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "modeler.progress_advanced",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "modeler",
+      sessionId,
+      summary: `modeled contiguous sequence prefix through ${currentProgress.firstFailingSequenceId ? currentProgress.contiguousMatchedSequences : currentProgress.contiguousMatchedSequences}`,
+      payload: {
+        level: currentProgress.level,
+        contiguousMatchedSequences: currentProgress.contiguousMatchedSequences,
+        firstFailingSequenceId: currentProgress.firstFailingSequenceId,
+        firstFailingReason: currentProgress.firstFailingReason,
+      },
+    }]);
+  }
   if (!acceptance.accepted) {
     const blocked = isBlockedModelOutput(modelOutput);
     if (!blocked) {
@@ -173,7 +295,11 @@ export async function runModelerQueueItem(args: {
         sessionType: "modeler",
         createdAt: nowIso(),
         reason: "acceptance_failed_resume",
-        payload: { acceptance: compactAcceptancePayload(acceptance.payload) },
+        payload: {
+          acceptance: compactAcceptancePayload(acceptance.payload),
+          latestEvidence: args.queueItem.payload.latestEvidence ?? null,
+          evidenceWatermark: args.queueItem.payload.evidenceWatermark ?? null,
+        },
       });
     }
     await appendFluxEvents(args.workspaceRoot, args.config, [{
@@ -200,6 +326,8 @@ export async function runModelerQueueItem(args: {
         modelOutput,
         sourceEvidence: args.queueItem.payload.latestEvidence ?? null,
         sourceEvidenceWatermark: String(args.queueItem.payload.evidenceWatermark ?? modelOutput.evidence_watermark ?? ""),
+        modelProgress: currentProgress,
+        comparePayload,
       },
     });
     await appendFluxEvents(args.workspaceRoot, args.config, [{

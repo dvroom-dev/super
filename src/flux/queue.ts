@@ -41,6 +41,14 @@ export async function enqueueFluxQueueItem(
   item: FluxQueueItem,
 ): Promise<FluxQueueSnapshot> {
   const snapshot = await loadFluxQueue(workspaceRoot, config, sessionType);
+  if (sessionType === "solver" || sessionType === "modeler") {
+    if (item.dedupeKey && snapshot.items.some((entry) => entry.dedupeKey === item.dedupeKey)) {
+      return snapshot;
+    }
+    snapshot.items = [item];
+    await saveFluxQueue(workspaceRoot, config, snapshot);
+    return snapshot;
+  }
   if (item.dedupeKey && snapshot.items.some((entry) => entry.dedupeKey === item.dedupeKey)) {
     return snapshot;
   }
