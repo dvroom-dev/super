@@ -4,7 +4,9 @@ import { readFluxEvents } from "../flux/events.js";
 import { formatFluxEvents, formatFluxQueue, formatFluxState } from "../flux/inspect.js";
 import { requestFluxStop, runFluxOrchestrator } from "../flux/orchestrator.js";
 import { FLUX_SESSION_TYPES, loadFluxQueue } from "../flux/queue.js";
+import { appendFluxRuntimeLog, recordFluxFatalProcessState } from "../flux/runtime_log.js";
 import { loadFluxState } from "../flux/state.js";
+import { newId } from "../utils/ids.js";
 
 type FluxCommand = "run" | "status" | "queue" | "inspect" | "stop";
 
@@ -52,7 +54,46 @@ async function main() {
   const workspaceRoot = path.resolve(options.workspaceRoot);
   const config = await loadFluxConfig(workspaceRoot, options.configPath);
   if (options.command === "run") {
-    await runFluxOrchestrator(workspaceRoot, path.resolve(workspaceRoot, options.configPath), config);
+    let fatalRecorded = false;
+    const recordFatal = (kind: string, detail: string) => {
+      if (fatalRecorded) return;
+      fatalRecorded = true;
+      recordFluxFatalProcessState({
+        workspaceRoot,
+        config,
+        event: {
+          eventId: newId("evt"),
+          ts: new Date().toISOString(),
+          kind,
+          workspaceRoot,
+          summary: detail,
+          payload: { pid: process.pid },
+        },
+        detail,
+      });
+    };
+    const onUncaughtException = (err: unknown) => {
+      const detail = `uncaughtException: ${err instanceof Error ? err.stack ?? err.message : String(err)}`;
+      recordFatal("orchestrator.crashed", detail);
+      process.stderr.write(`${detail}\n`);
+      process.exit(1);
+    };
+    const onUnhandledRejection = (reason: unknown) => {
+      const detail = `unhandledRejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`;
+      recordFatal("orchestrator.crashed", detail);
+      process.stderr.write(`${detail}\n`);
+      process.exit(1);
+    };
+    process.on("uncaughtException", onUncaughtException);
+    process.on("unhandledRejection", onUnhandledRejection);
+    appendFluxRuntimeLog(workspaceRoot, config, `flux run starting pid=${process.pid}`);
+    try {
+      await runFluxOrchestrator(workspaceRoot, path.resolve(workspaceRoot, options.configPath), config);
+    } finally {
+      process.off("uncaughtException", onUncaughtException);
+      process.off("unhandledRejection", onUnhandledRejection);
+      appendFluxRuntimeLog(workspaceRoot, config, `flux run exiting pid=${process.pid}`);
+    }
     return;
   }
   if (options.command === "status") {

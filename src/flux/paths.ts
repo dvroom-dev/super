@@ -17,6 +17,18 @@ export function fluxEventsPath(workspaceRoot: string, config: FluxConfig): strin
   return path.join(fluxRoot(workspaceRoot, config), "events.jsonl");
 }
 
+export function fluxLogsDir(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxRoot(workspaceRoot, config), "logs");
+}
+
+export function fluxFatalLogPath(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxLogsDir(workspaceRoot, config), "fatal.log");
+}
+
+export function fluxOrchestratorLogPath(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxLogsDir(workspaceRoot, config), "orchestrator.log");
+}
+
 export function fluxQueuesDir(workspaceRoot: string, config: FluxConfig): string {
   return path.join(fluxRoot(workspaceRoot, config), "queues");
 }

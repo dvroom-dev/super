@@ -7,6 +7,7 @@ import { dequeueNextSolver, ensureInitialSolverQueued, shouldStartSolver } from 
 import { requestActiveSolverInterrupt, runSolverQueueItem } from "./solver_runtime.js";
 import { loadFluxQueue, saveFluxQueue } from "./queue.js";
 import { runBootstrapperQueueItem } from "./bootstrapper_runtime.js";
+import { appendFluxRuntimeLog } from "./runtime_log.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -45,6 +46,7 @@ export async function requestFluxStop(workspaceRoot: string, config: FluxConfig)
     workspaceRoot,
     summary: "stop requested via CLI",
   }]);
+  appendFluxRuntimeLog(workspaceRoot, config, "stop requested via CLI");
 }
 
 export async function runFluxOrchestrator(workspaceRoot: string, configPath: string, config: FluxConfig): Promise<void> {
@@ -62,6 +64,7 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
     summary: "flux orchestrator started",
     payload: { pid: process.pid },
   }]);
+  appendFluxRuntimeLog(workspaceRoot, config, `orchestrator started pid=${process.pid}`);
   await ensureInitialSolverQueued(workspaceRoot, config);
 
   let stopping = false;
@@ -81,6 +84,7 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
       workspaceRoot,
       summary: reason,
     }]);
+    appendFluxRuntimeLog(workspaceRoot, config, reason);
   };
 
   const onSignal = (signal: NodeJS.Signals) => {
