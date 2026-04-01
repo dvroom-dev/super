@@ -175,12 +175,17 @@ export async function runSolverQueueItem(args: {
   state: FluxRunState;
   signal?: AbortSignal;
 }): Promise<void> {
-  const attemptId = newId("attempt");
-  const provisioned = await runFluxProblemCommand(args.config.problem.provisionInstance, {
-    workspaceRoot: args.workspaceRoot,
-    queueItem: args.queueItem,
-    attemptId,
-  });
+  const preplayedInstance = args.queueItem.payload.preplayedInstance;
+  const attemptId = typeof args.queueItem.payload.attemptId === "string"
+    ? String(args.queueItem.payload.attemptId)
+    : newId("attempt");
+  const provisioned = preplayedInstance && typeof preplayedInstance === "object" && !Array.isArray(preplayedInstance)
+    ? preplayedInstance as Record<string, unknown>
+    : await runFluxProblemCommand(args.config.problem.provisionInstance, {
+        workspaceRoot: args.workspaceRoot,
+        queueItem: args.queueItem,
+        attemptId,
+      });
   const instanceId = String(provisioned.instance_id ?? newId("instance"));
   const workingDirectory = path.resolve(args.workspaceRoot, String(provisioned.working_directory ?? args.workspaceRoot));
   const sessionId = `solver_${attemptId}`;
@@ -234,10 +239,14 @@ export async function runSolverQueueItem(args: {
       });
     }
   }
-  let seedReplayResult: Record<string, unknown> | null = null;
+  let seedReplayResult: Record<string, unknown> | null = args.queueItem.payload.preplayedReplayResult
+    && typeof args.queueItem.payload.preplayedReplayResult === "object"
+    && !Array.isArray(args.queueItem.payload.preplayedReplayResult)
+    ? args.queueItem.payload.preplayedReplayResult as Record<string, unknown>
+    : null;
   let replayBaselineSteps = 0;
-  if (seedBundle?.replayPlan?.length) {
-    seedReplayResult = await runFluxProblemCommand(args.config.problem.replaySeed, {
+  if (!preplayedInstance && seedBundle?.replayPlan?.length) {
+    seedReplayResult = await runFluxProblemCommand(args.config.problem.replaySeedOnRealGame, {
       workspaceRoot: args.workspaceRoot,
       attemptId,
       instanceId,
@@ -255,8 +264,8 @@ export async function runSolverQueueItem(args: {
       workspaceRoot: args.workspaceRoot,
       sessionType: "solver",
       sessionId,
-      summary: `replayed seed bundle before solver turn`,
-      payload: { attemptId, instanceId },
+      summary: preplayedInstance ? "attached preplayed seed state before solver turn" : "replayed seed bundle before solver turn",
+      payload: { attemptId, instanceId, preplayed: Boolean(preplayedInstance) },
     }]);
   }
   const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.solver.promptFile);

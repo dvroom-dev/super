@@ -96,7 +96,8 @@ export async function loadFluxConfig(workspaceRoot: string, configPath: string):
       syncModelWorkspace: problem.sync_model_workspace == null
         ? undefined
         : asCommandSpec(problem.sync_model_workspace, "problem.sync_model_workspace"),
-      replaySeed: asCommandSpec(problem.replay_seed, "problem.replay_seed"),
+      rehearseSeedOnModel: asCommandSpec(problem.rehearse_seed_on_model, "problem.rehearse_seed_on_model"),
+      replaySeedOnRealGame: asCommandSpec(problem.replay_seed_on_real_game, "problem.replay_seed_on_real_game"),
       mergeEvidence: {
         strategy: asString(asRecord(problem.merge_evidence, "problem.merge_evidence").strategy, "problem.merge_evidence.strategy") as any,
       },
@@ -152,6 +153,10 @@ export async function loadFluxConfig(workspaceRoot: string, configPath: string):
       turnTimeoutMs: bootstrapper.turn_timeout_ms == null ? undefined : asNumber(bootstrapper.turn_timeout_ms, "bootstrapper.turn_timeout_ms"),
       outputSchema: asString(bootstrapper.output_schema, "bootstrapper.output_schema"),
       seedBundlePath: asString(bootstrapper.seed_bundle_path, "bootstrapper.seed_bundle_path"),
+      requireModelRehearsalBeforeFinalize: asBoolean(
+        bootstrapper.require_model_rehearsal_before_finalize,
+        "bootstrapper.require_model_rehearsal_before_finalize",
+      ),
       replay: {
         maxAttemptsPerEvent: asNumber(asRecord(bootstrapper.replay, "bootstrapper.replay").max_attempts_per_event, "bootstrapper.replay.max_attempts_per_event"),
         continueMessageTemplateFile: asString(

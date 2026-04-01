@@ -15,13 +15,13 @@ export function schemaForName(name: string): Record<string, unknown> | undefined
       },
     };
   }
-  if (name === "bootstrap_attestation_v1") {
+  if (name === "bootstrap_seed_decision_v1") {
     return {
       type: "object",
       additionalProperties: false,
       required: ["decision", "summary", "seed_bundle_updated", "notes"],
       properties: {
-        decision: { enum: ["retry_with_updated_seed", "replay_satisfactory"] },
+        decision: { enum: ["continue_refining", "finalize_seed"] },
         summary: { type: "string" },
         seed_bundle_updated: { type: "boolean" },
         notes: { type: "string" },

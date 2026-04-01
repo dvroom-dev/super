@@ -43,10 +43,22 @@ process.stdin.on("end", () => process.stdout.write("{}"));`);
 process.stdin.resume();
 process.stdin.on("data", () => {});
 process.stdin.on("end", () => process.stdout.write(JSON.stringify({ evidence: [] })));`);
-    const replay = await writeScript("replay.js", `#!/usr/bin/env node
+    const rehearse = await writeScript("rehearse.js", `#!/usr/bin/env node
 process.stdin.resume();
 process.stdin.on("data", () => {});
-process.stdin.on("end", () => process.stdout.write(JSON.stringify({ replay_ok: true, evidence: [{ summary: "replay evidence", effect: "ok" }] })));`);
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({ rehearsal_ok: true, tool_results: [{ tool: "model", ok: true }], model_state: { current_level: 2 } })));`);
+    const replay = await writeScript("replay.js", `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  process.stdout.write(JSON.stringify({
+    replay_ok: true,
+    tool_results: [{ tool: "real", ok: true }],
+    instance: input.instance || {},
+  }));
+});`);
     await fs.mkdir(path.join(workspaceRoot, "flux", "seed"), { recursive: true });
     await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "current.json"), JSON.stringify({
       version: 1,
@@ -77,7 +89,9 @@ problem:
     command: ["${destroy}"]
   observe_evidence:
     command: ["${observe}"]
-  replay_seed:
+  rehearse_seed_on_model:
+    command: ["${rehearse}"]
+  replay_seed_on_real_game:
     command: ["${replay}"]
   merge_evidence:
     strategy: dedupe_by_fingerprint
@@ -106,8 +120,9 @@ bootstrapper:
   prompt_file: prompts/bootstrapper.md
   session_scope: run
   resume_policy: always
-  output_schema: bootstrap_attestation_v1
+  output_schema: bootstrap_seed_decision_v1
   seed_bundle_path: flux/seed/current.json
+  require_model_rehearsal_before_finalize: true
   replay:
     max_attempts_per_event: 1
     continue_message_template_file: prompts/bootstrapper_continue.md
@@ -125,17 +140,7 @@ retention:
 `, "utf8");
   });
 
-  test("queues a solver attempt when replay is satisfactory", async () => {
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
-      "```json",
-      JSON.stringify({
-        decision: "replay_satisfactory",
-        summary: "looks good",
-        seed_bundle_updated: true,
-        notes: "ship it",
-      }, null, 2),
-      "```",
-    ].join("\n");
+  test("runs model rehearsal before finalizing and queues solver on a later finalize pass", async () => {
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     const state: FluxRunState = {
       version: 1,
@@ -153,6 +158,12 @@ retention:
       },
     };
     await saveFluxState(workspaceRoot, config, state);
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "finalize_seed",
+      summary: "ready to finalize",
+      seed_bundle_updated: true,
+      notes: "ship it",
+    });
     await runBootstrapperQueueItem({
       workspaceRoot,
       config,
@@ -165,15 +176,44 @@ retention:
         payload: { messageForBootstrapper: "use model" },
       },
     });
-    const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+    let solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+    let bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     const events = await readFluxEvents(workspaceRoot, config);
+    expect(solverQueue.items).toHaveLength(0);
+    expect(bootstrapQueue.items).toHaveLength(1);
+    expect(events.some((event) => event.kind === "bootstrapper.model_rehearsal_passed")).toBe(true);
+    await saveFluxQueue(workspaceRoot, config, { ...bootstrapQueue, items: [] });
+
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "finalize_seed",
+      summary: "ready to finalize",
+      seed_bundle_updated: false,
+      notes: "ship it",
+    });
+    await runBootstrapperQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_boot_retry",
+        sessionType: "bootstrapper",
+        createdAt: new Date().toISOString(),
+        reason: "bootstrapper_retry_after_model_rehearsal",
+        payload: { rehearsalResult: { rehearsal_ok: true } },
+      },
+    });
+    solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+    bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     expect(solverQueue.items).toHaveLength(1);
-    expect(events.some((event) => event.kind === "bootstrapper.attested_satisfactory")).toBe(true);
+    expect(bootstrapQueue.items).toHaveLength(0);
+    const finalEvents = await readFluxEvents(workspaceRoot, config);
+    expect(finalEvents.some((event) => event.kind === "bootstrapper.real_replay_passed")).toBe(true);
+    expect(finalEvents.some((event) => event.kind === "bootstrapper.attested_satisfactory")).toBe(true);
   });
 
-  test("does not queue another solver attempt for an unchanged approved seed", async () => {
+  test("does not queue another solver attempt for an unchanged approved finalized seed", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
-      decision: "replay_satisfactory",
+      decision: "finalize_seed",
       summary: "looks good",
       seed_bundle_updated: true,
       notes: "ship it",
@@ -209,6 +249,22 @@ retention:
       queueItem,
     });
     let solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+    expect(solverQueue.items).toHaveLength(0);
+    const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    expect(bootstrapQueue.items).toHaveLength(1);
+    await runBootstrapperQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_boot_same_finalize",
+        sessionType: "bootstrapper",
+        createdAt: new Date().toISOString(),
+        reason: "bootstrapper_retry_after_model_rehearsal",
+        payload: { rehearsalResult: { rehearsal_ok: true } },
+      },
+    });
+    solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     expect(solverQueue.items).toHaveLength(1);
     await saveFluxQueue(workspaceRoot, config, { ...solverQueue, items: [] });
     await runBootstrapperQueueItem({
@@ -220,6 +276,6 @@ retention:
     solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     expect(solverQueue.items).toHaveLength(0);
     const events = await readFluxEvents(workspaceRoot, config);
-    expect(events.some((event) => event.kind === "bootstrapper.attested_satisfactory" && event.payload?.changed === false)).toBe(true);
+    expect(events.some((event) => event.kind === "bootstrapper.attested_satisfactory" && event.payload?.changed === false && event.payload?.queuedSolver === false)).toBe(true);
   });
 });

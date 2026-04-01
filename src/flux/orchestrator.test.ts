@@ -68,7 +68,9 @@ problem:
     command: ["${destroyPath}"]
   observe_evidence:
     command: ["${observePath}"]
-  replay_seed:
+  rehearse_seed_on_model:
+    command: ["${replayPath}"]
+  replay_seed_on_real_game:
     command: ["${replayPath}"]
   merge_evidence:
     strategy: dedupe_by_fingerprint
@@ -97,8 +99,9 @@ bootstrapper:
   prompt_file: prompts/bootstrapper.md
   session_scope: run
   resume_policy: always
-  output_schema: bootstrap_attestation_v1
+  output_schema: bootstrap_seed_decision_v1
   seed_bundle_path: flux/seed/current.json
+  require_model_rehearsal_before_finalize: true
   replay:
     max_attempts_per_event: 1
     continue_message_template_file: prompts/bootstrapper_continue.md

@@ -34,7 +34,8 @@ export type FluxProblemConfig = {
   destroyInstance: FluxCommandSpec;
   observeEvidence: FluxCommandSpec;
   syncModelWorkspace?: FluxCommandSpec;
-  replaySeed: FluxCommandSpec;
+  rehearseSeedOnModel: FluxCommandSpec;
+  replaySeedOnRealGame: FluxCommandSpec;
   mergeEvidence: {
     strategy: "append" | "dedupe_by_fingerprint";
   };
@@ -83,6 +84,7 @@ export type FluxModelerConfig = FluxWorkerConfig & {
 export type FluxBootstrapperConfig = FluxWorkerConfig & {
   outputSchema: string;
   seedBundlePath: string;
+  requireModelRehearsalBeforeFinalize: boolean;
   replay: {
     maxAttemptsPerEvent: number;
     continueMessageTemplateFile: string;
@@ -132,6 +134,13 @@ export type FluxProblemInstance = {
   promptText?: string;
   env?: Record<string, string>;
   metadata?: Record<string, unknown>;
+};
+
+export type FluxSeedMetadata = {
+  targetFrontierLevel?: number;
+  rehearsalStatus?: "not_run" | "passed" | "failed";
+  lastModelRehearsalSeedHash?: string;
+  lastRealReplaySeedHash?: string;
 };
 
 export type FluxMessageRecord = {
@@ -191,6 +200,7 @@ export type FluxSeedBundle = {
     args: Record<string, unknown>;
   }>;
   assertions: Array<Record<string, unknown>>;
+  metadata?: FluxSeedMetadata;
 };
 
 export type FluxQueueSnapshot = {
