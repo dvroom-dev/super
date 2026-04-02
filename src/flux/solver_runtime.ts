@@ -2,7 +2,7 @@ import path from "node:path";
 import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
 import { appendEvidence } from "./evidence.js";
-import { formatSeedBundleForPrompt } from "./json_session_format.js";
+import { formatEvidenceForPrompt, formatSeedBundleForPrompt, formatSeedReplayResultForPrompt } from "./json_session_format.js";
 import { runFluxProblemCommand } from "./problem_shell.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate } from "./prompt_templates.js";
@@ -46,13 +46,11 @@ function buildInitialSolverPrompt(args: {
   seedReplayResult?: Record<string, unknown> | null;
 }): string {
   const parts = [args.template.trim()];
-  if (args.seedBundle) parts.push(formatSeedBundleForPrompt(args.seedBundle));
+  if (args.seedBundle && args.seedBundle.syntheticMessages.length === 0) {
+    parts.push(formatSeedBundleForPrompt(args.seedBundle));
+  }
   if (args.seedReplayResult) {
-    parts.push([
-      "Seed replay results on this fresh instance:",
-      "",
-      JSON.stringify(args.seedReplayResult, null, 2),
-    ].join("\n"));
+    parts.push(formatSeedReplayResultForPrompt(args.seedReplayResult));
   }
   if (args.instancePromptText) parts.push(args.instancePromptText.trim());
   return parts.filter(Boolean).join("\n\n");
@@ -145,18 +143,26 @@ function isLevelSolvedFromEvidence(evidenceRecords: Record<string, unknown>[]): 
   return currentLevel > 1 || levelsCompleted > 0 || status === "FINISHED" || status === "GAME_OVER";
 }
 
-function buildContinuationPrompt(evidenceRecords: Record<string, unknown>[]): string {
+export function buildContinuationPrompt(evidenceRecords: Record<string, unknown>[]): string {
   const latest = evidenceRecords[evidenceRecords.length - 1] ?? {};
+  const latestState = latest.state && typeof latest.state === "object" && !Array.isArray(latest.state)
+    ? latest.state as Record<string, unknown>
+    : {};
+  const currentLevel = Number(latestState.current_level ?? 0) || 0;
+  const levelsCompleted = Number(latestState.levels_completed ?? 0) || 0;
+  const frontierLine = currentLevel > 1 || levelsCompleted > 0
+    ? `- You are already at frontier level ${currentLevel || "unknown"}. Do not redo the solved prefix unless live evidence contradicts it.`
+    : "- You are still working on level 1.";
   return [
     "Continue solving from the current live state.",
     "",
-    "You have not solved level 1 yet.",
+    frontierLine,
     "- Do not stop to summarize.",
     "- Keep taking real actions until the level is solved or you are explicitly interrupted.",
     "- Prefer continuing from the current state over resetting.",
     "",
     "Latest observed evidence:",
-    JSON.stringify(latest, null, 2),
+    formatEvidenceForPrompt(latest),
   ].join("\n");
 }
 
@@ -176,9 +182,10 @@ export async function runSolverQueueItem(args: {
   signal?: AbortSignal;
 }): Promise<void> {
   const preplayedInstance = args.queueItem.payload.preplayedInstance;
-  const attemptId = typeof args.queueItem.payload.attemptId === "string"
-    ? String(args.queueItem.payload.attemptId)
-    : newId("attempt");
+  const rawAttemptId = typeof args.queueItem.payload.attemptId === "string"
+    ? String(args.queueItem.payload.attemptId).trim()
+    : "";
+  const attemptId = rawAttemptId || newId("attempt");
   const provisioned = preplayedInstance && typeof preplayedInstance === "object" && !Array.isArray(preplayedInstance)
     ? preplayedInstance as Record<string, unknown>
     : await runFluxProblemCommand(args.config.problem.provisionInstance, {

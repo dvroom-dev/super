@@ -7,7 +7,7 @@ import { readFluxEvents } from "./events.js";
 import { FLUX_SESSION_TYPES, loadFluxQueue } from "./queue.js";
 import { ensureInitialSolverQueued, dequeueNextSolver } from "./scheduler.js";
 import { loadFluxState, saveFluxState } from "./state.js";
-import { runSolverQueueItem } from "./solver_runtime.js";
+import { buildContinuationPrompt, runSolverQueueItem } from "./solver_runtime.js";
 import type { FluxRunState } from "./types.js";
 
 async function writeJsonScript(filePath: string, source: string) {
@@ -400,5 +400,104 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
     const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
     expect(solverQueue.items).toHaveLength(1);
     expect(modelerQueue.items).toHaveLength(0);
+  });
+
+  test("preplayed solver startup uses a real attempt id and compact prompt", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "seeded solver output";
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: {
+        id: "q_preplayed",
+        sessionType: "solver",
+        createdAt: new Date().toISOString(),
+        reason: "bootstrapper_finalized_seed",
+        payload: {
+          attemptId: "",
+          preplayedInstance: {
+            instance_id: "seed_rev_demo",
+            working_directory: workspaceRoot,
+            env: {},
+            metadata: { solver_dir: workspaceRoot, state_dir: workspaceRoot },
+          },
+          seedBundle: {
+            version: 1,
+            generatedAt: new Date().toISOString(),
+            syntheticMessages: [
+              { role: "assistant", text: "Replay the verified prefix, then solve from the frontier." },
+            ],
+            replayPlan: [{ tool: "shell", args: { cmd: ["arc_action", "ACTION1"] } }],
+            assertions: [],
+          },
+          preplayedReplayResult: {
+            replay_ok: true,
+            tool_results: [{
+              tool: "shell",
+              stdout: "x".repeat(5000),
+            }],
+            evidence: [{
+              summary: "state=NOT_FINISHED level=2 completed=1 actions=17 last_action=ACTION1",
+              state: {
+                current_level: 2,
+                levels_completed: 1,
+                state: "NOT_FINISHED",
+                total_steps: 17,
+                current_attempt_steps: 1,
+                last_action_name: "ACTION1",
+                available_actions: [1, 2, 3, 4],
+              },
+            }],
+          },
+        },
+      },
+      state,
+    });
+    const solverSessionsDir = path.join(workspaceRoot, ".ai-flux", "sessions", "solver");
+    const sessionNames = await fs.readdir(solverSessionsDir);
+    const actualSessionName = sessionNames.find((name) => name.startsWith("solver_attempt_"));
+    expect(actualSessionName).toBeTruthy();
+    expect(sessionNames.includes("solver_")).toBe(false);
+    const messagesPath = path.join(solverSessionsDir, actualSessionName!, "messages.jsonl");
+    const messages = (await fs.readFile(messagesPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    const initialUserPrompt = messages.find((message) => message.kind === "user")?.text ?? "";
+    expect(initialUserPrompt).toContain("Seed preplay already ran on this instance.");
+    expect(initialUserPrompt).toContain("Current live state after preplay: level 2");
+    expect(initialUserPrompt).not.toContain("\"tool_results\"");
+    expect(initialUserPrompt.length).toBeLessThan(12000);
+  });
+
+  test("continuation prompt is frontier-aware", () => {
+    const prompt = buildContinuationPrompt([{
+      summary: "state=NOT_FINISHED level=2 completed=1 actions=17 last_action=ACTION1",
+      state: {
+        current_level: 2,
+        levels_completed: 1,
+        state: "NOT_FINISHED",
+        total_steps: 17,
+        current_attempt_steps: 1,
+        last_action_name: "ACTION1",
+        available_actions: [1, 2, 3, 4],
+      },
+    }]);
+    expect(prompt).toContain("You are already at frontier level 2.");
+    expect(prompt).toContain("last action ACTION1");
+    expect(prompt).not.toContain("You have not solved level 1 yet.");
   });
 });
