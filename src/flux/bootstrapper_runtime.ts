@@ -9,6 +9,7 @@ import { runFluxProblemCommand } from "./problem_shell.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate, renderTemplate } from "./prompt_templates.js";
 import { runFluxProviderTurn } from "./provider_session.js";
+import { validateFluxSeedBundle } from "./seed_bundle.js";
 import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxProblemInstance, FluxQueueItem, FluxRunState, FluxSeedBundle, FluxSessionRecord } from "./types.js";
 import { fluxSeedRoot } from "./paths.js";
@@ -44,7 +45,8 @@ function bootstrapperSessionId(): string {
 }
 
 async function loadSeedBundle(workspaceRoot: string, config: FluxConfig): Promise<FluxSeedBundle | null> {
-  return await readJsonIfExists<FluxSeedBundle>(path.resolve(workspaceRoot, config.bootstrapper.seedBundlePath));
+  const seedBundle = await readJsonIfExists<unknown>(path.resolve(workspaceRoot, config.bootstrapper.seedBundlePath));
+  return seedBundle ? validateFluxSeedBundle(seedBundle) : null;
 }
 
 async function loadSeedMeta(workspaceRoot: string, config: FluxConfig): Promise<SeedMeta> {

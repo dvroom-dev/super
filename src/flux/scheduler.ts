@@ -2,6 +2,7 @@ import path from "node:path";
 import { readJsonIfExists } from "../lib/fs.js";
 import { newId } from "../utils/ids.js";
 import { enqueueFluxQueueItem, loadFluxQueue, saveFluxQueue } from "./queue.js";
+import { validateFluxSeedBundle } from "./seed_bundle.js";
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSeedBundle } from "./types.js";
 
 function hasSeedMaterial(seedBundle: FluxSeedBundle | null): seedBundle is FluxSeedBundle {
@@ -17,7 +18,8 @@ function hasSeedMaterial(seedBundle: FluxSeedBundle | null): seedBundle is FluxS
 
 async function loadCurrentSeedBundle(workspaceRoot: string, config: FluxConfig): Promise<FluxSeedBundle | null> {
   const seedPath = path.resolve(workspaceRoot, config.bootstrapper.seedBundlePath);
-  const seedBundle = await readJsonIfExists<FluxSeedBundle>(seedPath);
+  const rawSeedBundle = await readJsonIfExists<unknown>(seedPath);
+  const seedBundle = rawSeedBundle ? validateFluxSeedBundle(rawSeedBundle) : null;
   return hasSeedMaterial(seedBundle) ? seedBundle : null;
 }
 
