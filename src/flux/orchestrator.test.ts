@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs/promises";
+import pathSync from "node:path";
 import os from "node:os";
 import path from "node:path";
 import { loadFluxConfig } from "./config.js";
 import { readFluxEvents } from "./events.js";
 import { requestFluxStop, runFluxOrchestrator } from "./orchestrator.js";
+import { fluxRunLockPath } from "./paths.js";
 import { loadFluxState } from "./state.js";
 
 async function writeConfig(workspaceRoot: string) {
@@ -142,5 +144,15 @@ describe("runFluxOrchestrator", () => {
     expect(state?.status).toBe("stopped");
     expect(events.some((event) => event.kind === "orchestrator.started")).toBe(true);
     expect(events.some((event) => event.kind === "orchestrator.stopped")).toBe(true);
+  });
+
+  test("refuses a second orchestrator for the same workspace when the lock owner is alive", async () => {
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const lockPath = fluxRunLockPath(workspaceRoot, config);
+    await fs.mkdir(pathSync.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }) + "\n", "utf8");
+    await expect(runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config)).rejects.toThrow(
+      /already running/,
+    );
   });
 });

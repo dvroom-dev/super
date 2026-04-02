@@ -29,6 +29,10 @@ export function fluxOrchestratorLogPath(workspaceRoot: string, config: FluxConfi
   return path.join(fluxLogsDir(workspaceRoot, config), "orchestrator.log");
 }
 
+export function fluxRunLockPath(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxRoot(workspaceRoot, config), "run.lock.json");
+}
+
 export function fluxQueuesDir(workspaceRoot: string, config: FluxConfig): string {
   return path.join(fluxRoot(workspaceRoot, config), "queues");
 }

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { newId } from "../utils/ids.js";
 import type { FluxConfig, FluxRunState } from "./types.js";
 import { appendFluxEvents } from "./events.js";
@@ -8,6 +10,7 @@ import { requestActiveSolverInterrupt, runSolverQueueItem } from "./solver_runti
 import { loadFluxQueue, saveFluxQueue } from "./queue.js";
 import { runBootstrapperQueueItem } from "./bootstrapper_runtime.js";
 import { appendFluxRuntimeLog } from "./runtime_log.js";
+import { fluxRunLockPath } from "./paths.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -32,6 +35,56 @@ function initialState(workspaceRoot: string, configPath: string): FluxRunState {
   };
 }
 
+type FluxWorkspaceLock = {
+  release: () => void;
+};
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquireWorkspaceLock(workspaceRoot: string, config: FluxConfig): FluxWorkspaceLock {
+  const lockPath = fluxRunLockPath(workspaceRoot, config);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  try {
+    const fd = fs.openSync(lockPath, "wx");
+    fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, acquiredAt: nowIso() }, null, 2) + "\n", "utf8");
+    return {
+      release: () => {
+        try {
+          fs.closeSync(fd);
+        } catch {}
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {}
+      },
+    };
+  } catch (error: unknown) {
+    if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw error;
+    }
+  }
+  try {
+    const raw = fs.readFileSync(lockPath, "utf8");
+    const payload = JSON.parse(raw) as { pid?: number };
+    const pid = Number(payload.pid ?? 0) || 0;
+    if (pid > 0 && processIsAlive(pid)) {
+      throw new Error(`flux orchestrator already running for workspace ${workspaceRoot} (pid ${pid})`);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("already running")) throw error;
+  }
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {}
+  return acquireWorkspaceLock(workspaceRoot, config);
+}
+
 export async function requestFluxStop(workspaceRoot: string, config: FluxConfig): Promise<void> {
   const state = await loadFluxState(workspaceRoot, config);
   if (!state) throw new Error("no flux state found");
@@ -50,6 +103,7 @@ export async function requestFluxStop(workspaceRoot: string, config: FluxConfig)
 }
 
 export async function runFluxOrchestrator(workspaceRoot: string, configPath: string, config: FluxConfig): Promise<void> {
+  const workspaceLock = acquireWorkspaceLock(workspaceRoot, config);
   let state = await loadFluxState(workspaceRoot, config) ?? initialState(workspaceRoot, configPath);
   state.pid = process.pid;
   state.status = "running";
@@ -189,5 +243,6 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    workspaceLock.release();
   }
 }
