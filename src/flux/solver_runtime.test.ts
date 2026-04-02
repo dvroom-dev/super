@@ -499,5 +499,7 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
     expect(prompt).toContain("You are already at frontier level 2.");
     expect(prompt).toContain("last action ACTION1");
     expect(prompt).not.toContain("You have not solved level 1 yet.");
+    expect(prompt).toContain("Treat compare and BFS output as diagnostic only.");
+    expect(prompt).toContain("switch branch instead of repeating the same action again");
   });
 });
