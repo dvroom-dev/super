@@ -311,4 +311,69 @@ process.stdin.on("end", () => {
     expect(modelerQueue.items).toHaveLength(1);
     expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(true);
   });
+
+  test("does not requeue modeler on infrastructure acceptance failures", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "updated_model",
+      summary: "no model change",
+      message_for_bootstrapper: "",
+      artifacts_updated: [],
+      evidence_watermark: "wm4",
+    });
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_infra.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    accepted: false,
+    message: "compare_sequences failed: shutil.Error ... No such file or directory",
+    infrastructure_failure: {
+      type: "sequence_surface_race",
+      message: "compare_sequences failed: shutil.Error ... No such file or directory"
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText.replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q4",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm4" },
+      },
+    });
+    const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(modelerQueue.items).toHaveLength(0);
+    expect(events.some((event) =>
+      event.kind === "modeler.acceptance_failed"
+      && (event.payload?.infrastructureFailure as Record<string, unknown> | undefined)?.type === "sequence_surface_race"
+    )).toBe(true);
+  });
 });

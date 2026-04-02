@@ -278,7 +278,8 @@ export async function runModelerQueueItem(args: {
   }
   if (!acceptance.accepted) {
     const blocked = isBlockedModelOutput(modelOutput);
-    if (!blocked) {
+    const infrastructureFailure = acceptance.infrastructureFailure;
+    if (!blocked && !infrastructureFailure) {
       const template = await loadFluxPromptTemplate(args.workspaceRoot, args.config.modeler.acceptance.continueMessageTemplateFile);
       const continueText = renderTemplate(template, {
         acceptance_message: acceptance.message || JSON.stringify(acceptance.payload, null, 2),
@@ -310,7 +311,10 @@ export async function runModelerQueueItem(args: {
       sessionType: "modeler",
       sessionId,
       summary: acceptance.message || (blocked ? "model acceptance blocked" : "model acceptance failed"),
-      payload: { blocked },
+      payload: {
+        blocked,
+        infrastructureFailure,
+      },
     }]);
   } else {
     const revisionId = await persistAcceptedModel(args.workspaceRoot, args.config, modelOutput);
