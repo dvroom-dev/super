@@ -64,7 +64,7 @@ process.stdin.on("end", () => {
   } catch {}
   count += 1;
   fs.writeFileSync(counterPath, String(count), "utf8");
-  const currentLevel = hasInstance && count >= 2 ? 2 : 1;
+  const won = hasInstance && count >= 2;
   process.stdout.write(JSON.stringify({
     evidence: [{
       summary: "moved tile",
@@ -72,9 +72,10 @@ process.stdin.on("end", () => {
       action_count: hasInstance ? count : 0,
       changed_pixels: hasInstance ? 1 : 0,
       state: {
-        current_level: currentLevel,
-        levels_completed: currentLevel > 1 ? 1 : 0,
-        state: currentLevel > 1 ? "NOT_FINISHED" : "NOT_FINISHED",
+        current_level: won ? 8 : 1,
+        levels_completed: won ? 7 : 0,
+        win_levels: 7,
+        state: won ? "WIN" : "NOT_FINISHED",
         total_steps: hasInstance ? count : 0,
         current_attempt_steps: hasInstance ? count : 0,
       }
@@ -322,7 +323,8 @@ process.stdin.on("end", () => {
       },
     };
     await saveFluxState(workspaceRoot, config, state);
-    await runSolverQueueItem({
+    process.env.MOCK_PROVIDER_DELAY_MS = "100";
+    const runPromise = runSolverQueueItem({
       workspaceRoot,
       config,
       queueItem: {
@@ -334,10 +336,31 @@ process.stdin.on("end", () => {
       },
       state,
     });
+    let sessionId = "";
+    let sawContinuation = false;
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline && !sawContinuation) {
+      const latestState = await loadFluxState(workspaceRoot, config);
+      sessionId = latestState?.active.solver.sessionId ?? sessionId;
+      if (sessionId) {
+        const messagesPath = path.join(workspaceRoot, ".ai-flux", "sessions", "solver", sessionId, "messages.jsonl");
+        try {
+          const messagesText = await fs.readFile(messagesPath, "utf8");
+          sawContinuation = messagesText.includes("Continue solving from the current live state.");
+        } catch {}
+      }
+      if (!sawContinuation) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    expect(sawContinuation).toBe(true);
+    requestActiveSolverInterrupt(sessionId);
+    await runPromise;
     const sessionDirRoot = path.join(workspaceRoot, ".ai-flux", "sessions", "solver");
     const [sessionDir] = await fs.readdir(sessionDirRoot);
     const messages = await fs.readFile(path.join(sessionDirRoot, sessionDir, "messages.jsonl"), "utf8");
     expect(messages).toContain("Continue solving from the current live state.");
+    delete process.env.MOCK_PROVIDER_DELAY_MS;
   });
 
   test("requeues solver when observed evidence comes only from seed replay", async () => {
@@ -623,6 +646,90 @@ process.stdin.on("end", () => {
       .split("\n")
       .map((line) => JSON.parse(line));
     expect(messages.some((message) => message.kind === "user" && String(message.text).includes("Your last turn did not produce new game progress"))).toBe(true);
+    delete process.env.MOCK_PROVIDER_DELAY_MS;
+  });
+
+  test("advancing to a new level does not mark the solver as solved", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    process.env.MOCK_PROVIDER_DELAY_MS = "100";
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const observeScript = path.join(workspaceRoot, "scripts", "observe.js");
+    await fs.writeFile(observeScript, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const counterPath = path.join(input.workspaceRoot || process.cwd(), ".observe-level-counter");
+  let count = 0;
+  try {
+    count = Number(fs.readFileSync(counterPath, "utf8")) || 0;
+  } catch {}
+  count += 1;
+  fs.writeFileSync(counterPath, String(count), "utf8");
+  const payloads = [
+    { action_count: 1, changed_pixels: 1, state: { current_level: 1, levels_completed: 0, state: "NOT_FINISHED", total_steps: 1, current_attempt_steps: 1, win_levels: 7 } },
+    { action_count: 2, changed_pixels: 1, state: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED", total_steps: 2, current_attempt_steps: 2, win_levels: 7 } },
+    { action_count: 2, changed_pixels: 0, state: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED", total_steps: 2, current_attempt_steps: 2, win_levels: 7 } },
+  ];
+  process.stdout.write(JSON.stringify({ evidence: [payloads[Math.min(count - 1, payloads.length - 1)]] }));
+});`, "utf8");
+    await fs.chmod(observeScript, 0o755);
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    const runPromise = runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: {
+        id: "q_level_transition",
+        sessionType: "solver",
+        createdAt: new Date().toISOString(),
+        reason: "level_transition",
+        payload: {},
+      },
+      state,
+    });
+    let sessionId = "";
+    let sawLevel2Nudge = false;
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline && !sawLevel2Nudge) {
+      const latestState = await loadFluxState(workspaceRoot, config);
+      sessionId = latestState?.active.solver.sessionId ?? sessionId;
+      if (sessionId) {
+        const messagesPath = path.join(workspaceRoot, ".ai-flux", "sessions", "solver", sessionId, "messages.jsonl");
+        try {
+          const messagesText = await fs.readFile(messagesPath, "utf8");
+          sawLevel2Nudge =
+            messagesText.includes("You are already at frontier level 2.") &&
+            messagesText.includes("Your last turn did not produce new game progress from the current state.");
+        } catch {}
+      }
+      if (!sawLevel2Nudge) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    expect(sawLevel2Nudge).toBe(true);
+    requestActiveSolverInterrupt(sessionId);
+    await runPromise;
+    const sessionPath = path.join(workspaceRoot, ".ai-flux", "sessions", "solver", sessionId, "session.json");
+    const session = JSON.parse(await fs.readFile(sessionPath, "utf8"));
+    expect(session.stopReason).not.toBe("solved");
     delete process.env.MOCK_PROVIDER_DELAY_MS;
   });
 });

@@ -244,7 +244,18 @@ describe("runFluxOrchestrator", () => {
     );
 
     const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    const deadline = Date.now() + 2000;
+    let liveSessionId = "";
+    while (Date.now() < deadline && !liveSessionId) {
+      const current = await loadFluxState(workspaceRoot, config);
+      const sessionId = current?.active.solver.sessionId;
+      if (sessionId && sessionId !== "solver_attempt_done") {
+        liveSessionId = sessionId;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(liveSessionId).toMatch(/^solver_attempt_/);
     await requestFluxStop(workspaceRoot, config);
     await runPromise;
 

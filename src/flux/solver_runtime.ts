@@ -137,10 +137,10 @@ function isLevelSolvedFromEvidence(evidenceRecords: Record<string, unknown>[]): 
   const state = latest?.state;
   if (!state || typeof state !== "object" || Array.isArray(state)) return false;
   const record = state as Record<string, unknown>;
-  const currentLevel = Number(record.current_level ?? 0) || 0;
+  const status = String(record.state ?? "").toUpperCase();
   const levelsCompleted = Number(record.levels_completed ?? 0) || 0;
-  const status = String(record.state ?? "");
-  return currentLevel > 1 || levelsCompleted > 0 || status === "FINISHED" || status === "GAME_OVER";
+  const winLevels = Number(record.win_levels ?? 0) || 0;
+  return status === "WIN" || status === "FINISHED" || (winLevels > 0 && levelsCompleted >= winLevels);
 }
 
 export function buildContinuationPrompt(
