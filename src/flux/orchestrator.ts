@@ -36,6 +36,44 @@ function initialState(workspaceRoot: string, configPath: string): FluxRunState {
   };
 }
 
+async function recordSessionFailure(
+  workspaceRoot: string,
+  config: FluxConfig,
+  sessionType: "solver" | "modeler" | "bootstrapper",
+  summary: string,
+): Promise<void> {
+  const latestState = await loadFluxState(workspaceRoot, config);
+  const active = latestState?.active?.[sessionType];
+  const sessionId = active?.sessionId;
+  if (sessionId) {
+    const session = await loadFluxSession(workspaceRoot, config, sessionType, sessionId);
+    if (session) {
+      session.status = "failed";
+      session.stopReason = summary;
+      session.updatedAt = nowIso();
+      await saveFluxSession(workspaceRoot, config, session);
+    }
+  }
+  if (latestState) {
+    latestState.active[sessionType] = {
+      sessionId,
+      status: "idle",
+      updatedAt: nowIso(),
+    };
+    latestState.updatedAt = nowIso();
+    await saveFluxState(workspaceRoot, config, latestState);
+  }
+  await appendFluxEvents(workspaceRoot, config, [{
+    eventId: newId("evt"),
+    ts: nowIso(),
+    kind: "session.failed",
+    workspaceRoot,
+    sessionType,
+    sessionId,
+    summary,
+  }]);
+}
+
 async function reconcileStateForRestart(workspaceRoot: string, config: FluxConfig, state: FluxRunState): Promise<FluxRunState> {
   const nextState: FluxRunState = {
     ...state,
@@ -225,14 +263,7 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
         if (nextSolver) {
           const runPromise = runSolverQueueItem({ workspaceRoot, config, queueItem: nextSolver, state })
             .catch(async (err) => {
-              await appendFluxEvents(workspaceRoot, config, [{
-                eventId: newId("evt"),
-                ts: nowIso(),
-                kind: "session.failed",
-                workspaceRoot,
-                sessionType: "solver",
-                summary: String(err?.message ?? err),
-              }]);
+              await recordSessionFailure(workspaceRoot, config, "solver", String(err?.message ?? err));
             })
             .finally(() => {
               activeRuns.delete("solver");
@@ -247,14 +278,7 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
           await saveFluxQueue(workspaceRoot, config, queue);
           const runPromise = runModelerQueueItem({ workspaceRoot, config, queueItem: next, state })
             .catch(async (err) => {
-              await appendFluxEvents(workspaceRoot, config, [{
-                eventId: newId("evt"),
-                ts: nowIso(),
-                kind: "session.failed",
-                workspaceRoot,
-                sessionType: "modeler",
-                summary: String(err?.message ?? err),
-              }]);
+              await recordSessionFailure(workspaceRoot, config, "modeler", String(err?.message ?? err));
             })
             .finally(() => activeRuns.delete("modeler"));
           activeRuns.set("modeler", runPromise);
@@ -267,14 +291,7 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
           await saveFluxQueue(workspaceRoot, config, queue);
           const runPromise = runBootstrapperQueueItem({ workspaceRoot, config, queueItem: next, state })
             .catch(async (err) => {
-              await appendFluxEvents(workspaceRoot, config, [{
-                eventId: newId("evt"),
-                ts: nowIso(),
-                kind: "session.failed",
-                workspaceRoot,
-                sessionType: "bootstrapper",
-                summary: String(err?.message ?? err),
-              }]);
+              await recordSessionFailure(workspaceRoot, config, "bootstrapper", String(err?.message ?? err));
             })
             .finally(() => activeRuns.delete("bootstrapper"));
           activeRuns.set("bootstrapper", runPromise);

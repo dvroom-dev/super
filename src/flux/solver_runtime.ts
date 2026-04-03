@@ -485,5 +485,8 @@ export async function runSolverQueueItem(args: {
     instanceId: undefined,
     updatedAt: nowIso(),
   };
+  if (session.stopReason === "solved") {
+    latestState.stopRequested = true;
+  }
   await saveFluxState(args.workspaceRoot, args.config, latestState);
 }
