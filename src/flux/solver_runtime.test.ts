@@ -7,7 +7,7 @@ import { readFluxEvents } from "./events.js";
 import { FLUX_SESSION_TYPES, loadFluxQueue } from "./queue.js";
 import { ensureInitialSolverQueued, dequeueNextSolver } from "./scheduler.js";
 import { loadFluxState, saveFluxState } from "./state.js";
-import { buildContinuationPrompt, runSolverQueueItem } from "./solver_runtime.js";
+import { buildContinuationPrompt, requestActiveSolverInterrupt, runSolverQueueItem } from "./solver_runtime.js";
 import type { FluxRunState } from "./types.js";
 
 async function writeJsonScript(filePath: string, source: string) {
@@ -49,18 +49,35 @@ process.stdin.resume();
 process.stdin.on("data", () => {});
 process.stdin.on("end", () => process.stdout.write("{}"));`);
     await writeJsonScript(path.join(workspaceRoot, "scripts", "observe.js"), `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
 process.stdin.resume();
 let data = "";
 process.stdin.on("data", (chunk) => data += chunk.toString());
 process.stdin.on("end", () => {
   const input = JSON.parse(data || "{}");
   const hasInstance = !!(input.instance && input.instance.metadata);
+  const counterPath = path.join(input.workspaceRoot || process.cwd(), ".observe-counter");
+  let count = 0;
+  try {
+    count = Number(fs.readFileSync(counterPath, "utf8")) || 0;
+  } catch {}
+  count += 1;
+  fs.writeFileSync(counterPath, String(count), "utf8");
+  const currentLevel = hasInstance && count >= 2 ? 2 : 1;
   process.stdout.write(JSON.stringify({
     evidence: [{
       summary: "moved tile",
       effect: "ok",
-      action_count: hasInstance ? 1 : 0,
-      changed_pixels: hasInstance ? 1 : 0
+      action_count: hasInstance ? count : 0,
+      changed_pixels: hasInstance ? 1 : 0,
+      state: {
+        current_level: currentLevel,
+        levels_completed: currentLevel > 1 ? 1 : 0,
+        state: currentLevel > 1 ? "NOT_FINISHED" : "NOT_FINISHED",
+        total_steps: hasInstance ? count : 0,
+        current_attempt_steps: hasInstance ? count : 0,
+      }
     }]
   }));
 });`);
@@ -271,15 +288,15 @@ process.stdin.on("end", () => {
   const count = Number(fs.readFileSync(counterPath, "utf8")) || 0;
   const next = count + 1;
   fs.writeFileSync(counterPath, String(next));
-  const steps = 1;
+  const steps = next >= 2 ? 2 : 1;
   process.stdout.write(JSON.stringify({
     evidence: [{
       summary: "step evidence",
       action_count: steps,
       changed_pixels: steps,
       state: {
-        current_level: 1,
-        levels_completed: 0,
+        current_level: steps >= 2 ? 2 : 1,
+        levels_completed: steps >= 2 ? 1 : 0,
         state: "NOT_FINISHED",
         current_attempt_steps: steps,
         total_steps: steps
@@ -501,5 +518,111 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
     expect(prompt).not.toContain("You have not solved level 1 yet.");
     expect(prompt).toContain("Treat compare and BFS output as diagnostic only.");
     expect(prompt).toContain("switch branch instead of repeating the same action again");
+  });
+
+  test("continuation prompt adds a stronger no-progress nudge when requested", () => {
+    const prompt = buildContinuationPrompt([{
+      summary: "state=NOT_FINISHED level=1 completed=0 actions=14 last_action=ACTION1",
+      state: {
+        current_level: 1,
+        levels_completed: 0,
+        state: "NOT_FINISHED",
+        total_steps: 14,
+        current_attempt_steps: 0,
+        last_action_name: "ACTION1",
+        available_actions: [1, 2, 3, 4],
+      },
+    }], { noProgress: true });
+    expect(prompt).toContain("Your last turn did not produce new game progress from the current state.");
+    expect(prompt).toContain("Immediately try a different concrete branch from the current live state.");
+    expect(prompt).toContain("If one action is now a no-op at the frontier");
+  });
+
+  test("solver continues after a stalled turn with a stronger nudge instead of stopping immediately", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    process.env.MOCK_PROVIDER_DELAY_MS = "100";
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const observeScript = path.join(workspaceRoot, "scripts", "observe.js");
+    await fs.writeFile(observeScript, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const counterPath = path.join(input.workspaceRoot || process.cwd(), ".observe-counter");
+  let count = 0;
+  try {
+    count = Number(fs.readFileSync(counterPath, "utf8")) || 0;
+  } catch {}
+  count += 1;
+  fs.writeFileSync(counterPath, String(count), "utf8");
+  const payloads = [
+    { action_count: 1, changed_pixels: 1, state: { current_level: 1, levels_completed: 0, state: "NOT_FINISHED", total_steps: 1, current_attempt_steps: 1 } },
+    { action_count: 1, changed_pixels: 0, state: { current_level: 1, levels_completed: 0, state: "NOT_FINISHED", total_steps: 1, current_attempt_steps: 1 } },
+  ];
+  process.stdout.write(JSON.stringify({ evidence: [payloads[Math.min(count - 1, payloads.length - 1)]] }));
+});`, "utf8");
+    await fs.chmod(observeScript, 0o755);
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    const runPromise = runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: {
+        id: "q_nudge",
+        sessionType: "solver",
+        createdAt: new Date().toISOString(),
+        reason: "stalled_turn",
+        payload: {},
+      },
+      state,
+    });
+    let sessionId = "";
+    let sawNudgePrompt = false;
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline && !sawNudgePrompt) {
+      const latestState = await loadFluxState(workspaceRoot, config);
+      sessionId = latestState?.active.solver.sessionId ?? sessionId;
+      if (sessionId) {
+        const messagesPath = path.join(workspaceRoot, ".ai-flux", "sessions", "solver", sessionId, "messages.jsonl");
+        try {
+          const messagesText = await fs.readFile(messagesPath, "utf8");
+          sawNudgePrompt = messagesText.includes("Your last turn did not produce new game progress from the current state.");
+        } catch {}
+      }
+      if (!sawNudgePrompt) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    expect(sawNudgePrompt).toBe(true);
+    expect(sessionId).toBeTruthy();
+    requestActiveSolverInterrupt(sessionId);
+    await runPromise;
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(events.some((event) => event.kind === "solver.no_progress_nudged")).toBe(true);
+    const solverSessionDir = path.join(workspaceRoot, ".ai-flux", "sessions", "solver");
+    const sessionName = (await fs.readdir(solverSessionDir)).find((name) => name.startsWith("solver_attempt_"));
+    const messages = (await fs.readFile(path.join(solverSessionDir, sessionName!, "messages.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(messages.some((message) => message.kind === "user" && String(message.text).includes("Your last turn did not produce new game progress"))).toBe(true);
+    delete process.env.MOCK_PROVIDER_DELAY_MS;
   });
 });

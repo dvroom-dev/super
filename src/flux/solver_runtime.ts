@@ -143,7 +143,10 @@ function isLevelSolvedFromEvidence(evidenceRecords: Record<string, unknown>[]): 
   return currentLevel > 1 || levelsCompleted > 0 || status === "FINISHED" || status === "GAME_OVER";
 }
 
-export function buildContinuationPrompt(evidenceRecords: Record<string, unknown>[]): string {
+export function buildContinuationPrompt(
+  evidenceRecords: Record<string, unknown>[],
+  options?: { noProgress?: boolean },
+): string {
   const latest = evidenceRecords[evidenceRecords.length - 1] ?? {};
   const latestState = latest.state && typeof latest.state === "object" && !Array.isArray(latest.state)
     ? latest.state as Record<string, unknown>
@@ -153,10 +156,18 @@ export function buildContinuationPrompt(evidenceRecords: Record<string, unknown>
   const frontierLine = currentLevel > 1 || levelsCompleted > 0
     ? `- You are already at frontier level ${currentLevel || "unknown"}. Do not redo the solved prefix unless live evidence contradicts it.`
     : "- You are still working on level 1.";
+  const noProgressLines = options?.noProgress ? [
+    "- Your last turn did not produce new game progress from the current state.",
+    "- Do not stop or summarize.",
+    "- Immediately try a different concrete branch from the current live state.",
+    "- If your last action sequence only reconfirmed an already-known blockage, change the earliest branch choice now.",
+    "- If one action is now a no-op at the frontier, try a different action or a different ordering from the same state before considering reset.",
+  ] : [];
   return [
     "Continue solving from the current live state.",
     "",
     frontierLine,
+    ...noProgressLines,
     "- Do not stop to summarize.",
     "- Keep taking real actions until the level is solved or you are explicitly interrupted.",
     "- Prefer continuing from the current state over resetting.",
@@ -381,8 +392,37 @@ export async function runSolverQueueItem(args: {
       break;
     }
     if (!madeProgressThisTurn) {
-      solverStopReason = "no_progress_after_turn";
-      break;
+      currentPromptText = buildContinuationPrompt(postTurnEvidenceRecords, { noProgress: true });
+      await appendFluxEvents(args.workspaceRoot, args.config, [{
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "solver.no_progress_nudged",
+        workspaceRoot: args.workspaceRoot,
+        sessionType: "solver",
+        sessionId,
+        summary: "solver made no progress; continuing with stronger nudge",
+        payload: { attemptId, instanceId, watermark: latestWatermark || null },
+      }]);
+      await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
+        messageId: newId("msg"),
+        ts: nowIso(),
+        turnIndex: turnIndex + 1,
+        kind: "user",
+        text: currentPromptText,
+      });
+      turnIndex += 2;
+      turn = await runFluxProviderTurn({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        session,
+        sessionType: "solver",
+        promptText: currentPromptText,
+        reasoningEffort: args.config.solver.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
+        workingDirectory,
+        env: typeof provisioned.env === "object" && provisioned.env ? provisioned.env as Record<string, string> : undefined,
+        signal: controller.signal,
+      });
+      continue;
     }
     currentPromptText = buildContinuationPrompt(postTurnEvidenceRecords);
     await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {

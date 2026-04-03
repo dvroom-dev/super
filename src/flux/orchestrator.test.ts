@@ -214,4 +214,43 @@ describe("runFluxOrchestrator", () => {
     expect(state?.active.solver.status).toBe("idle");
     expect(events.some((event) => event.kind === "orchestrator.recovered")).toBe(true);
   });
+
+  test("does not overwrite newer solver state with stale in-memory state during loop save", async () => {
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const ts = new Date().toISOString();
+    await fs.mkdir(path.join(workspaceRoot, "flux"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "state.json"),
+      JSON.stringify({
+        version: 1,
+        workspaceRoot,
+        configPath: path.join(workspaceRoot, "flux.yaml"),
+        pid: process.pid,
+        startedAt: ts,
+        updatedAt: ts,
+        status: "running",
+        stopRequested: false,
+        active: {
+          solver: {
+            sessionId: "solver_attempt_done",
+            status: "idle",
+            updatedAt: ts,
+          },
+          modeler: { status: "idle", updatedAt: ts },
+          bootstrapper: { status: "idle", updatedAt: ts },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await requestFluxStop(workspaceRoot, config);
+    await runPromise;
+
+    const state = await loadFluxState(workspaceRoot, config);
+    expect(state?.active.solver.status).toBe("idle");
+    expect(state?.active.solver.sessionId).toMatch(/^solver_attempt_/);
+    expect(state?.active.solver.sessionId).not.toBe("solver_attempt_done");
+  });
 });

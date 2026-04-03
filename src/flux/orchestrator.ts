@@ -234,7 +234,12 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
     while (true) {
       await new Promise((resolve) => setTimeout(resolve, config.orchestrator.tickMs));
       state = await loadFluxState(workspaceRoot, config) ?? state;
-      if (state.stopRequested) break;
+      if (state.stopRequested) {
+        if (state.active.solver.status === "running" && state.active.solver.sessionId) {
+          requestActiveSolverInterrupt(state.active.solver.sessionId);
+        }
+        break;
+      }
       if (state.active.solver.status === "running") {
         const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
         if (solverQueue.items.length > 0 && state.active.solver.sessionId) {
@@ -297,8 +302,9 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
           activeRuns.set("bootstrapper", runPromise);
         }
       }
-      state.updatedAt = nowIso();
-      await saveFluxState(workspaceRoot, config, state);
+      const latestState = await loadFluxState(workspaceRoot, config) ?? state;
+      latestState.updatedAt = nowIso();
+      await saveFluxState(workspaceRoot, config, latestState);
     }
     await Promise.allSettled(activeRuns.values());
     await stop("stop requested");
