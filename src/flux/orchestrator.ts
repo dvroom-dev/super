@@ -11,6 +11,7 @@ import { loadFluxQueue, saveFluxQueue } from "./queue.js";
 import { runBootstrapperQueueItem } from "./bootstrapper_runtime.js";
 import { appendFluxRuntimeLog } from "./runtime_log.js";
 import { fluxRunLockPath } from "./paths.js";
+import { loadFluxSession, saveFluxSession } from "./session_store.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -33,6 +34,49 @@ function initialState(workspaceRoot: string, configPath: string): FluxRunState {
       bootstrapper: { status: "idle", updatedAt: ts },
     },
   };
+}
+
+async function reconcileStateForRestart(workspaceRoot: string, config: FluxConfig, state: FluxRunState): Promise<FluxRunState> {
+  const nextState: FluxRunState = {
+    ...state,
+    active: { ...state.active },
+  };
+  const recovered: Array<{ sessionType: "solver" | "modeler" | "bootstrapper"; sessionId?: string; previousStatus: string }> = [];
+  for (const sessionType of ["solver", "modeler", "bootstrapper"] as const) {
+    const active = state.active[sessionType];
+    if (active.status === "idle") continue;
+    recovered.push({
+      sessionType,
+      sessionId: active.sessionId,
+      previousStatus: active.status,
+    });
+    nextState.active[sessionType] = {
+      sessionId: active.sessionId,
+      status: "idle",
+      updatedAt: nowIso(),
+    };
+    if (active.sessionId) {
+      const session = await loadFluxSession(workspaceRoot, config, sessionType, active.sessionId);
+      if (session) {
+        session.status = sessionType === "solver" ? "stopped" : "idle";
+        session.stopReason = sessionType === "solver" ? "orchestrator_restarted" : session.stopReason;
+        session.updatedAt = nowIso();
+        await saveFluxSession(workspaceRoot, config, session);
+      }
+    }
+  }
+  if (recovered.length > 0) {
+    await appendFluxEvents(workspaceRoot, config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "orchestrator.recovered",
+      workspaceRoot,
+      summary: `recovered stale active session state for ${recovered.map((item) => item.sessionType).join(", ")}`,
+      payload: { recovered },
+    }]);
+    appendFluxRuntimeLog(workspaceRoot, config, `recovered stale state: ${JSON.stringify(recovered)}`);
+  }
+  return nextState;
 }
 
 type FluxWorkspaceLock = {
@@ -105,6 +149,7 @@ export async function requestFluxStop(workspaceRoot: string, config: FluxConfig)
 export async function runFluxOrchestrator(workspaceRoot: string, configPath: string, config: FluxConfig): Promise<void> {
   const workspaceLock = acquireWorkspaceLock(workspaceRoot, config);
   let state = await loadFluxState(workspaceRoot, config) ?? initialState(workspaceRoot, configPath);
+  state = await reconcileStateForRestart(workspaceRoot, config, state);
   state.pid = process.pid;
   state.status = "running";
   state.stopRequested = false;

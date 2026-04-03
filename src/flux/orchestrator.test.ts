@@ -155,4 +155,63 @@ describe("runFluxOrchestrator", () => {
       /already running/,
     );
   });
+
+  test("reconciles stale active session state on restart", async () => {
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    await fs.mkdir(path.join(workspaceRoot, ".ai-flux", "sessions", "solver", "solver_attempt_old"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-flux", "sessions", "solver", "solver_attempt_old", "session.json"),
+      JSON.stringify({
+        sessionId: "solver_attempt_old",
+        sessionType: "solver",
+        status: "running",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        provider: "mock",
+        model: "mock-model",
+        resumePolicy: "never",
+        sessionScope: "per_attempt",
+        activeAttemptId: "attempt_old",
+      }, null, 2),
+      "utf8",
+    );
+    await fs.mkdir(path.join(workspaceRoot, "flux"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "state.json"),
+      JSON.stringify({
+        version: 1,
+        workspaceRoot,
+        configPath: path.join(workspaceRoot, "flux.yaml"),
+        pid: 999999,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: "stopped",
+        stopRequested: true,
+        active: {
+          solver: {
+            sessionId: "solver_attempt_old",
+            status: "running",
+            queueItemId: "q_old",
+            pid: 999999,
+            attemptId: "attempt_old",
+            instanceId: "instance_old",
+            updatedAt: new Date().toISOString(),
+          },
+          modeler: { status: "idle", updatedAt: new Date().toISOString() },
+          bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await requestFluxStop(workspaceRoot, config);
+    await runPromise;
+
+    const state = await loadFluxState(workspaceRoot, config);
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(state?.active.solver.status).toBe("idle");
+    expect(events.some((event) => event.kind === "orchestrator.recovered")).toBe(true);
+  });
 });

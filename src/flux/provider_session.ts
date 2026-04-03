@@ -1,4 +1,5 @@
 import { createProvider } from "../providers/factory.js";
+import type { ProviderFilesystemPolicy } from "../providers/filesystem_permissions.js";
 import type { ProviderConfig, ProviderEvent } from "../providers/types.js";
 import { imagePart, promptContentFromText, type PromptContent } from "../utils/prompt_content.js";
 import { newId } from "../utils/ids.js";
@@ -25,6 +26,12 @@ export async function runFluxProviderTurn(args: {
   env?: Record<string, string>;
   signal?: AbortSignal;
 }): Promise<FluxProviderTurnResult> {
+  const filesystemPolicy: ProviderFilesystemPolicy = {
+    read: { allow: [args.workingDirectory] },
+    write: { allow: [args.workingDirectory] },
+    create: { allow: [args.workingDirectory] },
+    allowNewFiles: true,
+  };
   const providerConfig: ProviderConfig = {
     provider: args.session.provider as any,
     model: args.session.model,
@@ -34,6 +41,10 @@ export async function runFluxProviderTurn(args: {
     sandboxMode: args.config.runtimeDefaults.sandboxMode,
     approvalPolicy: args.config.runtimeDefaults.approvalPolicy,
     permissionProfile: "workspace_no_network",
+    providerFilesystemPolicy: filesystemPolicy,
+    providerOptions: {
+      allowedTools: ["Bash"],
+    },
     env: {
       ...args.config.runtimeDefaults.env,
       ...(args.env ?? {}),
