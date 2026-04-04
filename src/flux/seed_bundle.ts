@@ -4,6 +4,29 @@ function describe(index: number, field: string): string {
   return `syntheticMessages[${index}].${field}`;
 }
 
+function validateReplayPath(index: number, tool: string, pathText: unknown): void {
+  if (typeof pathText !== "string" || pathText.trim().length === 0) {
+    throw new Error(`seed bundle replayPlan[${index}].args.path must be a non-empty string for ${tool}`);
+  }
+  const normalized = pathText.trim();
+  if (normalized.startsWith("/") || normalized.match(/^[A-Za-z]:[\\/]/)) {
+    throw new Error(`seed bundle replayPlan[${index}].args.path must be relative, got ${JSON.stringify(pathText)}`);
+  }
+  const parts = normalized.split("/").filter((part) => part.length > 0 && part !== ".");
+  if (parts.length === 0) {
+    throw new Error(`seed bundle replayPlan[${index}].args.path must not be empty`);
+  }
+  if (parts.includes("..")) {
+    throw new Error(`seed bundle replayPlan[${index}].args.path must not escape the game workspace`);
+  }
+  const forbiddenRoots = new Set(["flux", ".ai-flux", "config", "prompts", "scripts", ".ctxs", "runs"]);
+  if (forbiddenRoots.has(parts[0]!)) {
+    throw new Error(
+      `seed bundle replayPlan[${index}].args.path must target solver/game workspace artifacts, not ${JSON.stringify(parts[0])}`,
+    );
+  }
+}
+
 export function validateFluxSeedBundle(seedBundle: unknown): FluxSeedBundle {
   if (!seedBundle || typeof seedBundle !== "object" || Array.isArray(seedBundle)) {
     throw new Error("seed bundle must be an object");
@@ -48,8 +71,22 @@ export function validateFluxSeedBundle(seedBundle: unknown): FluxSeedBundle {
     if (typeof replayStep.tool !== "string" || replayStep.tool.trim().length === 0) {
       throw new Error(`seed bundle replayPlan[${index}].tool must be a non-empty string`);
     }
+    const tool = replayStep.tool.trim();
+    if (tool !== "shell" && tool !== "read_file" && tool !== "write_file") {
+      throw new Error(`seed bundle replayPlan[${index}].tool must be shell, read_file, or write_file`);
+    }
     if (!replayStep.args || typeof replayStep.args !== "object" || Array.isArray(replayStep.args)) {
       throw new Error(`seed bundle replayPlan[${index}].args must be an object`);
+    }
+    const args = replayStep.args as Record<string, unknown>;
+    if (tool === "shell") {
+      const cmd = args.cmd;
+      if (!Array.isArray(cmd) || cmd.length === 0 || cmd.some((item) => typeof item !== "string" || item.length === 0)) {
+        throw new Error(`seed bundle replayPlan[${index}].args.cmd must be a non-empty string array for shell`);
+      }
+    }
+    if (tool === "read_file" || tool === "write_file") {
+      validateReplayPath(index, tool, args.path);
     }
   });
   return record as unknown as FluxSeedBundle;
