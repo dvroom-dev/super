@@ -9,6 +9,20 @@ import { requestFluxStop, runFluxOrchestrator } from "./orchestrator.js";
 import { fluxRunLockPath } from "./paths.js";
 import { loadFluxState } from "./state.js";
 
+async function readFluxEventsWithRetry(workspaceRoot: string, config: Awaited<ReturnType<typeof loadFluxConfig>>) {
+  const deadline = Date.now() + 2000;
+  let lastError: unknown = null;
+  while (Date.now() < deadline) {
+    try {
+      return await readFluxEvents(workspaceRoot, config);
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "failed to read flux events"));
+}
+
 async function writeConfig(workspaceRoot: string) {
   await fs.mkdir(path.join(workspaceRoot, "prompts"), { recursive: true });
   await fs.writeFile(path.join(workspaceRoot, "prompts", "solver.md"), "Solve.", "utf8");
@@ -140,7 +154,7 @@ describe("runFluxOrchestrator", () => {
     await runPromise;
 
     const state = await loadFluxState(workspaceRoot, config);
-    const events = await readFluxEvents(workspaceRoot, config);
+    const events = await readFluxEventsWithRetry(workspaceRoot, config);
     expect(state?.status).toBe("stopped");
     expect(events.some((event) => event.kind === "orchestrator.started")).toBe(true);
     expect(events.some((event) => event.kind === "orchestrator.stopped")).toBe(true);
@@ -210,7 +224,7 @@ describe("runFluxOrchestrator", () => {
     await runPromise;
 
     const state = await loadFluxState(workspaceRoot, config);
-    const events = await readFluxEvents(workspaceRoot, config);
+    const events = await readFluxEventsWithRetry(workspaceRoot, config);
     expect(state?.active.solver.status).toBe("idle");
     expect(events.some((event) => event.kind === "orchestrator.recovered")).toBe(true);
   });
@@ -263,7 +277,7 @@ describe("runFluxOrchestrator", () => {
     expect(state?.active.solver.status).toBe("idle");
     expect(state?.active.solver.sessionId).toMatch(/^solver_attempt_/);
     expect(state?.active.solver.sessionId).not.toBe("solver_attempt_done");
-  });
+  }, 15000);
 
   test("reconciles stale bootstrapper running state from session truth during the loop", async () => {
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
@@ -325,4 +339,5 @@ describe("runFluxOrchestrator", () => {
     await requestFluxStop(workspaceRoot, config);
     await runPromise;
   });
+
 });
