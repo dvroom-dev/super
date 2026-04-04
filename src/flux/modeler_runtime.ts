@@ -193,10 +193,141 @@ async function saveBestProgress(workspaceRoot: string, config: FluxConfig, progr
   });
 }
 
+async function loadCurrentModelRevisionId(workspaceRoot: string, config: FluxConfig): Promise<string | null> {
+  try {
+    const raw = await fs.readFile(path.join(fluxModelRoot(workspaceRoot, config), "current", "meta.json"), "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const revisionId = parsed.revisionId;
+    return typeof revisionId === "string" && revisionId.trim().length > 0 ? revisionId : null;
+  } catch {
+    return null;
+  }
+}
+
 function isProgressAdvance(previous: ModelProgress | null, next: ModelProgress): boolean {
   if (!previous) return next.contiguousMatchedSequences > 0;
   if (next.level !== previous.level) return next.level > previous.level && next.contiguousMatchedSequences > 0;
   return next.contiguousMatchedSequences > previous.contiguousMatchedSequences;
+}
+
+async function publishBootstrapSignals(args: {
+  workspaceRoot: string;
+  config: FluxConfig;
+  comparePayload: Record<string, unknown>;
+  currentProgress: ModelProgress;
+  previousProgress: ModelProgress | null;
+  modelOutput: Record<string, unknown>;
+  modelRevisionId?: string | null;
+  promptPayload: Record<string, unknown>;
+  sessionId: string;
+}): Promise<void> {
+  const progressAdvanced = isProgressAdvance(args.previousProgress, args.currentProgress);
+  if (progressAdvanced) {
+    await saveBestProgress(args.workspaceRoot, args.config, args.currentProgress);
+    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
+      id: newId("q"),
+      sessionType: "bootstrapper",
+      createdAt: nowIso(),
+      reason: "model_progress_advanced",
+      dedupeKey: `model-progress:${args.currentProgress.level}:${args.currentProgress.contiguousMatchedSequences}`,
+      payload: {},
+    });
+    await saveBootstrapperTriggerContext(args.workspaceRoot, args.config, "model_progress_advanced", {
+      modelProgress: args.currentProgress,
+      comparePayload: args.comparePayload,
+      modelRevisionId: args.modelRevisionId ?? undefined,
+      messageForBootstrapper: String(args.modelOutput.message_for_bootstrapper ?? ""),
+      modelOutput: args.modelOutput,
+      sourceEvidence: args.promptPayload.latestEvidence ?? null,
+      sourceEvidenceWatermark: String(args.promptPayload.evidenceWatermark ?? args.modelOutput.evidence_watermark ?? ""),
+    });
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "modeler.progress_advanced",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "modeler",
+      sessionId: args.sessionId,
+      summary: `modeled contiguous sequence prefix through ${args.currentProgress.firstFailingSequenceId ? args.currentProgress.contiguousMatchedSequences : args.currentProgress.contiguousMatchedSequences}`,
+      payload: {
+        level: args.currentProgress.level,
+        contiguousMatchedSequences: args.currentProgress.contiguousMatchedSequences,
+        firstFailingSequenceId: args.currentProgress.firstFailingSequenceId,
+        firstFailingReason: args.currentProgress.firstFailingReason,
+      },
+    }]);
+  }
+  const triggerKey = acceptanceBootstrapTriggerKey(args.comparePayload, args.currentProgress);
+  const lastTriggerKey = await loadLastBootstrapTriggerKey(args.workspaceRoot, args.config);
+  if (lastTriggerKey !== triggerKey) {
+    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
+      id: newId("q"),
+      sessionType: "bootstrapper",
+      createdAt: nowIso(),
+      reason: "model_accepted",
+      dedupeKey: triggerKey,
+      payload: {},
+    });
+    await saveBootstrapperTriggerContext(args.workspaceRoot, args.config, "model_accepted", {
+      modelRevisionId: args.modelRevisionId ?? undefined,
+      messageForBootstrapper: String(args.modelOutput.message_for_bootstrapper ?? ""),
+      modelOutput: args.modelOutput,
+      sourceEvidence: args.promptPayload.latestEvidence ?? null,
+      sourceEvidenceWatermark: String(args.promptPayload.evidenceWatermark ?? args.modelOutput.evidence_watermark ?? ""),
+      modelProgress: args.currentProgress,
+      comparePayload: args.comparePayload,
+    });
+    await saveLastBootstrapTriggerKey(args.workspaceRoot, args.config, triggerKey);
+  }
+}
+
+async function publishProgressAdvance(args: {
+  workspaceRoot: string;
+  config: FluxConfig;
+  currentProgress: ModelProgress;
+  previousProgress: ModelProgress | null;
+  comparePayload: Record<string, unknown>;
+  modelOutput: Record<string, unknown>;
+  promptPayload: Record<string, unknown>;
+  sessionId: string;
+  modelRevisionId?: string | null;
+}): Promise<void> {
+  if (!isProgressAdvance(args.previousProgress, args.currentProgress)) {
+    return;
+  }
+  await saveBestProgress(args.workspaceRoot, args.config, args.currentProgress);
+  await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
+    id: newId("q"),
+    sessionType: "bootstrapper",
+    createdAt: nowIso(),
+    reason: "model_progress_advanced",
+    dedupeKey: `model-progress:${args.currentProgress.level}:${args.currentProgress.contiguousMatchedSequences}`,
+    payload: {},
+  });
+  await saveBootstrapperTriggerContext(args.workspaceRoot, args.config, "model_progress_advanced", {
+    modelProgress: args.currentProgress,
+    comparePayload: args.comparePayload,
+    modelRevisionId: args.modelRevisionId ?? undefined,
+    messageForBootstrapper: String(args.modelOutput.message_for_bootstrapper ?? ""),
+    modelOutput: args.modelOutput,
+    sourceEvidence: args.promptPayload.latestEvidence ?? null,
+    sourceEvidenceWatermark: String(args.promptPayload.evidenceWatermark ?? args.modelOutput.evidence_watermark ?? ""),
+  });
+  await appendFluxEvents(args.workspaceRoot, args.config, [{
+    eventId: newId("evt"),
+    ts: nowIso(),
+    kind: "modeler.progress_advanced",
+    workspaceRoot: args.workspaceRoot,
+    sessionType: "modeler",
+    sessionId: args.sessionId,
+    summary: `modeled contiguous sequence prefix through ${args.currentProgress.firstFailingSequenceId ? args.currentProgress.contiguousMatchedSequences : args.currentProgress.contiguousMatchedSequences}`,
+    payload: {
+      level: args.currentProgress.level,
+      contiguousMatchedSequences: args.currentProgress.contiguousMatchedSequences,
+      firstFailingSequenceId: args.currentProgress.firstFailingSequenceId,
+      firstFailingReason: args.currentProgress.firstFailingReason,
+    },
+  }]);
 }
 
 async function persistAcceptedModel(
@@ -263,6 +394,86 @@ export async function runModelerQueueItem(args: {
     : ((triggerContext.payload && typeof triggerContext.payload === "object" && !Array.isArray(triggerContext.payload))
       ? triggerContext.payload as Record<string, unknown>
       : {});
+  const preflightModelOutput = {
+    decision: "checked_current_model",
+    summary: "preflight compare of current model against latest evidence",
+    message_for_bootstrapper: "",
+    artifacts_updated: [],
+    evidence_watermark: String(promptPayload.evidenceWatermark ?? ""),
+  };
+  const preflightAcceptance = await runModelAcceptance({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    modelOutput: preflightModelOutput,
+  });
+  const preflightComparePayload = preflightAcceptance.payload.compare_payload
+    && typeof preflightAcceptance.payload.compare_payload === "object"
+    && !Array.isArray(preflightAcceptance.payload.compare_payload)
+    ? preflightAcceptance.payload.compare_payload as Record<string, unknown>
+    : {};
+  const previousProgress = await loadBestProgress(args.workspaceRoot, args.config);
+  const preflightProgress = computeModelProgress(preflightComparePayload);
+  if (preflightAcceptance.accepted) {
+    const currentRevisionId = await loadCurrentModelRevisionId(args.workspaceRoot, args.config);
+    await publishBootstrapSignals({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      comparePayload: preflightComparePayload,
+      currentProgress: preflightProgress,
+      previousProgress,
+      modelOutput: preflightModelOutput,
+      modelRevisionId: currentRevisionId,
+      promptPayload,
+      sessionId,
+    });
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "modeler.acceptance_passed",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "modeler",
+      sessionId,
+      summary: "current model already matches latest evidence",
+      payload: { revisionId: currentRevisionId },
+    }]);
+    session.status = "idle";
+    session.stopReason = undefined;
+    session.updatedAt = nowIso();
+    await saveFluxSession(args.workspaceRoot, args.config, session);
+    latestState.active.modeler = {
+      sessionId,
+      status: "idle",
+      updatedAt: nowIso(),
+    };
+    await saveFluxState(args.workspaceRoot, args.config, latestState);
+    return;
+  }
+  if (preflightAcceptance.infrastructureFailure) {
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "modeler.acceptance_failed",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "modeler",
+      sessionId,
+      summary: preflightAcceptance.message || "model preflight compare failed",
+      payload: {
+        blocked: false,
+        infrastructureFailure: preflightAcceptance.infrastructureFailure,
+      },
+    }]);
+    session.status = "idle";
+    session.stopReason = undefined;
+    session.updatedAt = nowIso();
+    await saveFluxSession(args.workspaceRoot, args.config, session);
+    latestState.active.modeler = {
+      sessionId,
+      status: "idle",
+      updatedAt: nowIso(),
+    };
+    await saveFluxState(args.workspaceRoot, args.config, latestState);
+    return;
+  }
   const promptText = [
     promptTemplate.trim(),
     `Modeling trigger: ${args.queueItem.reason}`,
@@ -304,43 +515,17 @@ export async function runModelerQueueItem(args: {
     ? acceptance.payload.compare_payload as Record<string, unknown>
     : {};
   const currentProgress = computeModelProgress(comparePayload);
-  const previousProgress = await loadBestProgress(args.workspaceRoot, args.config);
-  const progressAdvanced = isProgressAdvance(previousProgress, currentProgress);
-  if (progressAdvanced) {
-    await saveBestProgress(args.workspaceRoot, args.config, currentProgress);
-    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
-      id: newId("q"),
-      sessionType: "bootstrapper",
-      createdAt: nowIso(),
-      reason: "model_progress_advanced",
-      dedupeKey: `model-progress:${currentProgress.level}:${currentProgress.contiguousMatchedSequences}`,
-      payload: {},
-    });
-    await saveBootstrapperTriggerContext(args.workspaceRoot, args.config, "model_progress_advanced", {
-      modelProgress: currentProgress,
-      comparePayload,
-      messageForBootstrapper: String(modelOutput.message_for_bootstrapper ?? ""),
-      modelOutput,
-      sourceEvidence: promptPayload.latestEvidence ?? null,
-      sourceEvidenceWatermark: String(promptPayload.evidenceWatermark ?? modelOutput.evidence_watermark ?? ""),
-    });
-    await appendFluxEvents(args.workspaceRoot, args.config, [{
-      eventId: newId("evt"),
-      ts: nowIso(),
-      kind: "modeler.progress_advanced",
-      workspaceRoot: args.workspaceRoot,
-      sessionType: "modeler",
-      sessionId,
-      summary: `modeled contiguous sequence prefix through ${currentProgress.firstFailingSequenceId ? currentProgress.contiguousMatchedSequences : currentProgress.contiguousMatchedSequences}`,
-      payload: {
-        level: currentProgress.level,
-        contiguousMatchedSequences: currentProgress.contiguousMatchedSequences,
-        firstFailingSequenceId: currentProgress.firstFailingSequenceId,
-        firstFailingReason: currentProgress.firstFailingReason,
-      },
-    }]);
-  }
   if (!acceptance.accepted) {
+    await publishProgressAdvance({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      currentProgress,
+      previousProgress,
+      comparePayload,
+      modelOutput,
+      promptPayload,
+      sessionId,
+    });
     const blocked = isBlockedModelOutput(modelOutput);
     const infrastructureFailure = acceptance.infrastructureFailure;
     if (!blocked && !infrastructureFailure) {
@@ -383,28 +568,17 @@ export async function runModelerQueueItem(args: {
     }]);
   } else {
     const revisionId = await persistAcceptedModel(args.workspaceRoot, args.config, modelOutput);
-    const triggerKey = acceptanceBootstrapTriggerKey(comparePayload, currentProgress);
-    const lastTriggerKey = await loadLastBootstrapTriggerKey(args.workspaceRoot, args.config);
-    if (lastTriggerKey !== triggerKey) {
-      await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
-        id: newId("q"),
-        sessionType: "bootstrapper",
-        createdAt: nowIso(),
-        reason: "model_accepted",
-        dedupeKey: triggerKey,
-        payload: {},
-      });
-      await saveBootstrapperTriggerContext(args.workspaceRoot, args.config, "model_accepted", {
-          modelRevisionId: revisionId,
-          messageForBootstrapper: String(modelOutput.message_for_bootstrapper ?? ""),
-          modelOutput,
-          sourceEvidence: promptPayload.latestEvidence ?? null,
-          sourceEvidenceWatermark: String(promptPayload.evidenceWatermark ?? modelOutput.evidence_watermark ?? ""),
-          modelProgress: currentProgress,
-          comparePayload,
-        });
-      await saveLastBootstrapTriggerKey(args.workspaceRoot, args.config, triggerKey);
-    }
+    await publishBootstrapSignals({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      comparePayload,
+      currentProgress,
+      previousProgress,
+      modelOutput,
+      modelRevisionId: revisionId,
+      promptPayload,
+      sessionId,
+    });
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),

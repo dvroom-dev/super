@@ -123,7 +123,7 @@ retention:
 `, "utf8");
   });
 
-  test("publishes accepted model updates to the bootstrapper queue", async () => {
+  test("skips the LLM turn when the current model already matches the latest evidence", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = [
       "```json",
       JSON.stringify({
@@ -173,10 +173,12 @@ retention:
     const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     const bootstrapTrigger = JSON.parse(await fs.readFile(fluxBootstrapTriggerPath(workspaceRoot, config), "utf8"));
     const events = await readFluxEvents(workspaceRoot, config);
+    const promptDir = path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "prompts");
     expect(bootstrapQueue.items).toHaveLength(1);
     expect(bootstrapTrigger.payload.sourceEvidenceWatermark).toBe("wm1");
     expect((bootstrapTrigger.payload.sourceEvidence as Record<string, unknown>)?.summary).toBe("current_level=2");
     expect(events.some((event) => event.kind === "modeler.acceptance_passed")).toBe(true);
+    expect(await fs.readdir(promptDir)).toHaveLength(0);
   });
 
   test("does not hot-loop blocked modeler turns", async () => {
