@@ -25,6 +25,17 @@ function validateReplayPath(index: number, tool: string, pathText: unknown): voi
       `seed bundle replayPlan[${index}].args.path must target solver/game workspace artifacts, not ${JSON.stringify(parts[0])}`,
     );
   }
+  if (parts.includes("sequences") || parts.includes("sequence_compare")) {
+    throw new Error(
+      `seed bundle replayPlan[${index}].args.path must not target generated sequence artifacts; carry that evidence in seed messages instead`,
+    );
+  }
+  const basename = parts[parts.length - 1]!;
+  if (basename === "current_compare.json" || basename === "current_compare.md" || basename === "current_meta.json") {
+    throw new Error(
+      `seed bundle replayPlan[${index}].args.path must not target generated compare/meta artifacts; carry that evidence in seed messages instead`,
+    );
+  }
 }
 
 export function validateFluxSeedBundle(seedBundle: unknown): FluxSeedBundle {

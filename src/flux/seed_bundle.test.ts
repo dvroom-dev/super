@@ -12,9 +12,9 @@ function baseSeed() {
 }
 
 describe("validateFluxSeedBundle", () => {
-  test("accepts gameplay-relative read_file paths", () => {
+  test("accepts fresh-run-stable gameplay-relative read_file paths", () => {
     const seed = baseSeed();
-    seed.replayPlan.push({ tool: "read_file", args: { path: "agent/game_ls20/level_1/sequences/seq_0001.json" } });
+    seed.replayPlan.push({ tool: "read_file", args: { path: "agent/game_ls20/level_1/initial_state.hex" } });
     expect(validateFluxSeedBundle(seed).replayPlan).toHaveLength(1);
   });
 
@@ -34,5 +34,17 @@ describe("validateFluxSeedBundle", () => {
     const seed = baseSeed();
     seed.replayPlan.push({ tool: "write_file", args: { path: "../outside.txt", content: "x" } });
     expect(() => validateFluxSeedBundle(seed)).toThrow(/must not escape the game workspace/);
+  });
+
+  test("rejects generated sequence artifacts in replay steps", () => {
+    const seed = baseSeed();
+    seed.replayPlan.push({ tool: "read_file", args: { path: "agent/game_ls20/level_1/sequences/seq_0001.json" } });
+    expect(() => validateFluxSeedBundle(seed)).toThrow(/must not target generated sequence artifacts/);
+  });
+
+  test("rejects generated compare artifacts in replay steps", () => {
+    const seed = baseSeed();
+    seed.replayPlan.push({ tool: "read_file", args: { path: "agent/game_ls20/current_compare.json" } });
+    expect(() => validateFluxSeedBundle(seed)).toThrow(/must not target generated compare\/meta artifacts/);
   });
 });

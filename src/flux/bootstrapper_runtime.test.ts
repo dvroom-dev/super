@@ -278,4 +278,49 @@ retention:
     const events = await readFluxEvents(workspaceRoot, config);
     expect(events.some((event) => event.kind === "bootstrapper.attested_satisfactory" && event.payload?.changed === false && event.payload?.queuedSolver === false)).toBe(true);
   });
+
+  test("fails loudly when bootstrap seed references generated artifacts in replayPlan", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "finalize_seed",
+      summary: "ship it",
+      seed_bundle_updated: false,
+      notes: "done",
+    });
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "current.json"), JSON.stringify({
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      syntheticMessages: [{ role: "assistant", text: "Do A" }],
+      replayPlan: [{ tool: "read_file", args: { path: "agent/game_ls20/level_1/sequences/seq_0001.json" } }],
+      assertions: [],
+    }, null, 2), "utf8");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await expect(runBootstrapperQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_boot_bad_seed",
+        sessionType: "bootstrapper",
+        createdAt: new Date().toISOString(),
+        reason: "model_accepted",
+        payload: { messageForBootstrapper: "use model" },
+      },
+    })).rejects.toThrow(/must not target generated sequence artifacts/);
+  });
 });
