@@ -121,6 +121,40 @@ function computeModelProgress(comparePayload: Record<string, unknown>): ModelPro
   };
 }
 
+function acceptanceBootstrapTriggerKey(comparePayload: Record<string, unknown>, progress: ModelProgress): string {
+  const reports = Array.isArray(comparePayload.reports) ? comparePayload.reports : [];
+  const firstReport = reports[0] && typeof reports[0] === "object" && !Array.isArray(reports[0])
+    ? reports[0] as Record<string, unknown>
+    : {};
+  return [
+    "bootstrap-accepted",
+    String(comparePayload.level ?? progress.level ?? 1),
+    String(progress.contiguousMatchedSequences),
+    String(Boolean(comparePayload.all_match)),
+    String(firstReport.sequence_id ?? ""),
+    String(firstReport.divergence_step ?? ""),
+    String(firstReport.divergence_reason ?? ""),
+    String(firstReport.report_file ?? ""),
+  ].join(":");
+}
+
+async function loadLastBootstrapTriggerKey(workspaceRoot: string, config: FluxConfig): Promise<string | null> {
+  try {
+    const raw = await fs.readFile(path.join(fluxModelRoot(workspaceRoot, config), "current", "bootstrap_trigger.json"), "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return typeof parsed.key === "string" && parsed.key.trim().length > 0 ? parsed.key : null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveLastBootstrapTriggerKey(workspaceRoot: string, config: FluxConfig, key: string): Promise<void> {
+  await writeJsonAtomic(path.join(fluxModelRoot(workspaceRoot, config), "current", "bootstrap_trigger.json"), {
+    key,
+    updatedAt: nowIso(),
+  });
+}
+
 async function loadBestProgress(workspaceRoot: string, config: FluxConfig): Promise<ModelProgress | null> {
   try {
     const raw = await fs.readFile(path.join(fluxModelRoot(workspaceRoot, config), "current", "progress.json"), "utf8");
@@ -319,22 +353,27 @@ export async function runModelerQueueItem(args: {
     }]);
   } else {
     const revisionId = await persistAcceptedModel(args.workspaceRoot, args.config, modelOutput);
-    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
-      id: newId("q"),
-      sessionType: "bootstrapper",
-      createdAt: nowIso(),
-      reason: "model_accepted",
-      dedupeKey: `model:${revisionId}`,
-      payload: {
-        modelRevisionId: revisionId,
-        messageForBootstrapper: String(modelOutput.message_for_bootstrapper ?? ""),
-        modelOutput,
-        sourceEvidence: args.queueItem.payload.latestEvidence ?? null,
-        sourceEvidenceWatermark: String(args.queueItem.payload.evidenceWatermark ?? modelOutput.evidence_watermark ?? ""),
-        modelProgress: currentProgress,
-        comparePayload,
-      },
-    });
+    const triggerKey = acceptanceBootstrapTriggerKey(comparePayload, currentProgress);
+    const lastTriggerKey = await loadLastBootstrapTriggerKey(args.workspaceRoot, args.config);
+    if (lastTriggerKey !== triggerKey) {
+      await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
+        id: newId("q"),
+        sessionType: "bootstrapper",
+        createdAt: nowIso(),
+        reason: "model_accepted",
+        dedupeKey: triggerKey,
+        payload: {
+          modelRevisionId: revisionId,
+          messageForBootstrapper: String(modelOutput.message_for_bootstrapper ?? ""),
+          modelOutput,
+          sourceEvidence: args.queueItem.payload.latestEvidence ?? null,
+          sourceEvidenceWatermark: String(args.queueItem.payload.evidenceWatermark ?? modelOutput.evidence_watermark ?? ""),
+          modelProgress: currentProgress,
+          comparePayload,
+        },
+      });
+      await saveLastBootstrapTriggerKey(args.workspaceRoot, args.config, triggerKey);
+    }
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),

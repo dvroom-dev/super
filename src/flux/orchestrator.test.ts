@@ -219,7 +219,16 @@ describe("runFluxOrchestrator", () => {
     );
 
     const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const deadline = Date.now() + 2000;
+    let recovered = false;
+    while (Date.now() < deadline && !recovered) {
+      const current = await loadFluxState(workspaceRoot, config);
+      recovered = current?.active.solver.status === "idle";
+      if (!recovered) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    expect(recovered).toBe(true);
     await requestFluxStop(workspaceRoot, config);
     await runPromise;
 

@@ -5,7 +5,7 @@ import path from "node:path";
 import { loadFluxConfig } from "./config.js";
 import { readFluxEvents } from "./events.js";
 import { runModelerQueueItem } from "./modeler_runtime.js";
-import { loadFluxQueue } from "./queue.js";
+import { loadFluxQueue, saveFluxQueue } from "./queue.js";
 import { saveFluxState } from "./state.js";
 import type { FluxRunState } from "./types.js";
 
@@ -375,5 +375,67 @@ process.stdin.on("end", () => {
       event.kind === "modeler.acceptance_failed"
       && (event.payload?.infrastructureFailure as Record<string, unknown> | undefined)?.type === "sequence_surface_race"
     )).toBe(true);
+  });
+
+  test("does not rerun bootstrapper for identical accepted frontier state", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```json",
+      JSON.stringify({
+        decision: "updated_model",
+        summary: "same accepted frontier",
+        message_for_bootstrapper: "same frontier",
+        artifacts_updated: ["model.py"],
+        evidence_watermark: "wm5",
+      }, null, 2),
+      "```",
+    ].join("\n");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q5a",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm5" },
+      },
+    });
+    let bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    expect(bootstrapQueue.items).toHaveLength(1);
+    await saveFluxQueue(workspaceRoot, config, { ...bootstrapQueue, items: [] });
+
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q5b",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm5b" },
+      },
+    });
+    bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    expect(bootstrapQueue.items).toHaveLength(0);
   });
 });
