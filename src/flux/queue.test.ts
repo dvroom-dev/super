@@ -84,7 +84,7 @@ retention:
 `, "utf8");
   });
 
-  test("keeps only the latest queued solver and modeler items", async () => {
+  test("keeps only the latest queued flag for every worker and strips queued payload state", async () => {
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     await enqueueFluxQueueItem(workspaceRoot, config, "solver", {
       id: "solver_1",
@@ -114,11 +114,31 @@ retention:
       reason: "second",
       payload: { evidence: 2 },
     });
+    await enqueueFluxQueueItem(workspaceRoot, config, "bootstrapper", {
+      id: "bootstrapper_1",
+      sessionType: "bootstrapper",
+      createdAt: new Date().toISOString(),
+      reason: "first",
+      payload: { model: 1 },
+    });
+    await enqueueFluxQueueItem(workspaceRoot, config, "bootstrapper", {
+      id: "bootstrapper_2",
+      sessionType: "bootstrapper",
+      createdAt: new Date().toISOString(),
+      reason: "second",
+      payload: { model: 2 },
+    });
     const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+    const bootstrapperQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     expect(solverQueue.items).toHaveLength(1);
     expect(solverQueue.items[0]?.id).toBe("solver_2");
+    expect(solverQueue.items[0]?.payload).toEqual({});
     expect(modelerQueue.items).toHaveLength(1);
     expect(modelerQueue.items[0]?.id).toBe("modeler_2");
+    expect(modelerQueue.items[0]?.payload).toEqual({});
+    expect(bootstrapperQueue.items).toHaveLength(1);
+    expect(bootstrapperQueue.items[0]?.id).toBe("bootstrapper_2");
+    expect(bootstrapperQueue.items[0]?.payload).toEqual({});
   });
 });

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readJsonIfExists, writeJsonAtomic } from "../lib/fs.js";
 import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
 import { appendEvidence } from "./evidence.js";
@@ -7,8 +8,10 @@ import { runFluxProblemCommand } from "./problem_shell.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate } from "./prompt_templates.js";
 import { runFluxProviderTurn } from "./provider_session.js";
+import { validateFluxSeedBundle } from "./seed_bundle.js";
 import { appendFluxMessage, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSeedBundle, FluxSessionRecord } from "./types.js";
+import { fluxModelTriggerPath, fluxSolverLaunchPath } from "./paths.js";
 import { loadFluxState, saveFluxState } from "./state.js";
 
 type ActiveSolverControl = {
@@ -54,6 +57,35 @@ function buildInitialSolverPrompt(args: {
   }
   if (args.instancePromptText) parts.push(args.instancePromptText.trim());
   return parts.filter(Boolean).join("\n\n");
+}
+
+async function loadSolverLaunchContext(workspaceRoot: string, config: FluxConfig): Promise<Record<string, unknown>> {
+  return await readJsonIfExists<Record<string, unknown>>(fluxSolverLaunchPath(workspaceRoot, config)) ?? {};
+}
+
+async function loadCurrentSeedBundle(workspaceRoot: string, config: FluxConfig): Promise<FluxSeedBundle | null> {
+  const raw = await readJsonIfExists<unknown>(path.resolve(workspaceRoot, config.bootstrapper.seedBundlePath));
+  if (!raw) return null;
+  const seed = validateFluxSeedBundle(raw);
+  const hasMaterial = seed.syntheticMessages.length > 0
+    || seed.replayPlan.length > 0
+    || seed.assertions.length > 0
+    || typeof seed.modelRevisionId === "string"
+    || typeof seed.evidenceWatermark === "string";
+  return hasMaterial ? seed : null;
+}
+
+async function saveModelerTriggerContext(
+  workspaceRoot: string,
+  config: FluxConfig,
+  reason: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await writeJsonAtomic(fluxModelTriggerPath(workspaceRoot, config), {
+    reason,
+    payload,
+    updatedAt: nowIso(),
+  });
 }
 
 async function observeAndPublishSolverEvidence(args: {
@@ -113,19 +145,20 @@ async function observeAndPublishSolverEvidence(args: {
       payload: { attemptId: args.attemptId, instanceId: args.instanceId, watermark, count: evidenceList.length, reason: args.reason },
     }]);
     if (hasRealActionEvidence) {
+      await saveModelerTriggerContext(args.workspaceRoot, args.config, args.reason === "solver_running" ? "solver_new_evidence" : "solver_stopped", {
+        attemptId: args.attemptId,
+        instanceId: args.instanceId,
+        evidenceWatermark: watermark,
+        evidenceCount: evidenceList.length,
+        latestEvidence: evidenceRecords[evidenceRecords.length - 1] ?? null,
+      });
       await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
         id: newId("q"),
         sessionType: "modeler",
         createdAt: nowIso(),
         reason: args.reason === "solver_running" ? "solver_new_evidence" : "solver_stopped",
         dedupeKey: `evidence:${watermark}`,
-        payload: {
-          attemptId: args.attemptId,
-          instanceId: args.instanceId,
-          evidenceWatermark: watermark,
-          evidenceCount: evidenceList.length,
-          latestEvidence: evidenceRecords[evidenceRecords.length - 1] ?? null,
-        },
+        payload: {},
       });
     }
   }
@@ -195,9 +228,12 @@ export async function runSolverQueueItem(args: {
   state: FluxRunState;
   signal?: AbortSignal;
 }): Promise<void> {
-  const preplayedInstance = args.queueItem.payload.preplayedInstance;
-  const rawAttemptId = typeof args.queueItem.payload.attemptId === "string"
-    ? String(args.queueItem.payload.attemptId).trim()
+  const launchContext = Object.keys(args.queueItem.payload).length > 0
+    ? args.queueItem.payload
+    : await loadSolverLaunchContext(args.workspaceRoot, args.config);
+  const preplayedInstance = launchContext.preplayedInstance;
+  const rawAttemptId = typeof launchContext.attemptId === "string"
+    ? String(launchContext.attemptId).trim()
     : "";
   const attemptId = rawAttemptId || newId("attempt");
   const provisioned = preplayedInstance && typeof preplayedInstance === "object" && !Array.isArray(preplayedInstance)
@@ -247,7 +283,7 @@ export async function runSolverQueueItem(args: {
   };
   await saveFluxSession(args.workspaceRoot, args.config, session);
 
-  const seedBundle = args.queueItem.payload.seedBundle as FluxSeedBundle | undefined;
+  const seedBundle = (launchContext.seedBundle as FluxSeedBundle | undefined) ?? await loadCurrentSeedBundle(args.workspaceRoot, args.config) ?? undefined;
   if (seedBundle?.syntheticMessages?.length) {
     for (const [index, message] of seedBundle.syntheticMessages.entries()) {
       await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
@@ -260,10 +296,10 @@ export async function runSolverQueueItem(args: {
       });
     }
   }
-  let seedReplayResult: Record<string, unknown> | null = args.queueItem.payload.preplayedReplayResult
-    && typeof args.queueItem.payload.preplayedReplayResult === "object"
-    && !Array.isArray(args.queueItem.payload.preplayedReplayResult)
-    ? args.queueItem.payload.preplayedReplayResult as Record<string, unknown>
+  let seedReplayResult: Record<string, unknown> | null = launchContext.preplayedReplayResult
+    && typeof launchContext.preplayedReplayResult === "object"
+    && !Array.isArray(launchContext.preplayedReplayResult)
+    ? launchContext.preplayedReplayResult as Record<string, unknown>
     : null;
   let replayBaselineSteps = 0;
   if (!preplayedInstance && seedBundle?.replayPlan?.length) {

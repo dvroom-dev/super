@@ -53,6 +53,18 @@ export function fluxSeedRoot(workspaceRoot: string, config: FluxConfig): string 
   return path.join(fluxRoot(workspaceRoot, config), "seed");
 }
 
+export function fluxModelTriggerPath(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxModelRoot(workspaceRoot, config), "current", "trigger.json");
+}
+
+export function fluxBootstrapTriggerPath(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxSeedRoot(workspaceRoot, config), "current_trigger.json");
+}
+
+export function fluxSolverLaunchPath(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxSeedRoot(workspaceRoot, config), "current_launch.json");
+}
+
 export function fluxSessionDir(
   workspaceRoot: string,
   config: FluxConfig,
