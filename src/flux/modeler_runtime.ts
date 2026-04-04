@@ -12,7 +12,7 @@ import { runFluxProviderTurn } from "./provider_session.js";
 import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSessionRecord } from "./types.js";
 import { fluxModelRoot, fluxModelTriggerPath, fluxBootstrapTriggerPath } from "./paths.js";
-import { loadFluxState, saveFluxState } from "./state.js";
+import { loadFluxState, mutateFluxState, saveFluxState } from "./state.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -369,15 +369,17 @@ export async function runModelerQueueItem(args: {
   session.stopReason = undefined;
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
-  const latestState = await loadFluxState(args.workspaceRoot, args.config) ?? args.state;
-  latestState.active.modeler = {
-    sessionId,
-    status: "running",
-    queueItemId: args.queueItem.id,
-    pid: process.pid,
-    updatedAt: nowIso(),
-  };
-  await saveFluxState(args.workspaceRoot, args.config, latestState);
+  const latestState = await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
+    const next = current ?? args.state;
+    next.active.modeler = {
+      sessionId,
+      status: "running",
+      queueItemId: args.queueItem.id,
+      pid: process.pid,
+      updatedAt: nowIso(),
+    };
+    return next;
+  });
 
   if (args.config.problem.syncModelWorkspace) {
     await runFluxProblemCommand(args.config.problem.syncModelWorkspace, {
@@ -440,12 +442,15 @@ export async function runModelerQueueItem(args: {
     session.stopReason = undefined;
     session.updatedAt = nowIso();
     await saveFluxSession(args.workspaceRoot, args.config, session);
-    latestState.active.modeler = {
-      sessionId,
-      status: "idle",
-      updatedAt: nowIso(),
-    };
-    await saveFluxState(args.workspaceRoot, args.config, latestState);
+    await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
+      const next = current ?? latestState;
+      next.active.modeler = {
+        sessionId,
+        status: "idle",
+        updatedAt: nowIso(),
+      };
+      return next;
+    });
     return;
   }
   if (preflightAcceptance.infrastructureFailure) {
@@ -466,12 +471,15 @@ export async function runModelerQueueItem(args: {
     session.stopReason = undefined;
     session.updatedAt = nowIso();
     await saveFluxSession(args.workspaceRoot, args.config, session);
-    latestState.active.modeler = {
-      sessionId,
-      status: "idle",
-      updatedAt: nowIso(),
-    };
-    await saveFluxState(args.workspaceRoot, args.config, latestState);
+    await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
+      const next = current ?? latestState;
+      next.active.modeler = {
+        sessionId,
+        status: "idle",
+        updatedAt: nowIso(),
+      };
+      return next;
+    });
     return;
   }
   const promptText = [
@@ -594,10 +602,13 @@ export async function runModelerQueueItem(args: {
   session.stopReason = undefined;
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
-  latestState.active.modeler = {
-    sessionId,
-    status: "idle",
-    updatedAt: nowIso(),
-  };
-  await saveFluxState(args.workspaceRoot, args.config, latestState);
+  await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
+    const next = current ?? latestState;
+    next.active.modeler = {
+      sessionId,
+      status: "idle",
+      updatedAt: nowIso(),
+    };
+    return next;
+  });
 }

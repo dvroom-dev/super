@@ -13,7 +13,7 @@ import { validateFluxSeedBundle } from "./seed_bundle.js";
 import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxProblemInstance, FluxQueueItem, FluxRunState, FluxSeedBundle, FluxSessionRecord } from "./types.js";
 import { fluxBootstrapTriggerPath, fluxSeedRoot, fluxSolverLaunchPath } from "./paths.js";
-import { loadFluxState, saveFluxState } from "./state.js";
+import { loadFluxState, mutateFluxState, saveFluxState } from "./state.js";
 
 type SeedMeta = {
   revisionId?: string;
@@ -190,13 +190,15 @@ async function setBootstrapperIdle(
   session.stopReason = undefined;
   session.updatedAt = nowIso();
   await saveFluxSession(workspaceRoot, config, session);
-  const latestState = await loadFluxState(workspaceRoot, config) ?? state;
-  latestState.active.bootstrapper = {
-    sessionId: session.sessionId,
-    status: "idle",
-    updatedAt: nowIso(),
-  };
-  await saveFluxState(workspaceRoot, config, latestState);
+  await mutateFluxState(workspaceRoot, config, async (current) => {
+    const latestState = current ?? state;
+    latestState.active.bootstrapper = {
+      sessionId: session.sessionId,
+      status: "idle",
+      updatedAt: nowIso(),
+    };
+    return latestState;
+  });
 }
 
 export async function runBootstrapperQueueItem(args: {
@@ -222,15 +224,17 @@ export async function runBootstrapperQueueItem(args: {
   session.stopReason = undefined;
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
-  const latestState = await loadFluxState(args.workspaceRoot, args.config) ?? args.state;
-  latestState.active.bootstrapper = {
-    sessionId,
-    status: "running",
-    queueItemId: args.queueItem.id,
-    pid: process.pid,
-    updatedAt: nowIso(),
-  };
-  await saveFluxState(args.workspaceRoot, args.config, latestState);
+  const latestState = await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
+    const next = current ?? args.state;
+    next.active.bootstrapper = {
+      sessionId,
+      status: "running",
+      queueItemId: args.queueItem.id,
+      pid: process.pid,
+      updatedAt: nowIso(),
+    };
+    return next;
+  });
 
   const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.bootstrapper.promptFile);
   const triggerContext = await loadBootstrapperTriggerContext(args.workspaceRoot, args.config);

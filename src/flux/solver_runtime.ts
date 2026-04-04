@@ -12,7 +12,7 @@ import { validateFluxSeedBundle } from "./seed_bundle.js";
 import { appendFluxMessage, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSeedBundle, FluxSessionRecord } from "./types.js";
 import { fluxModelTriggerPath, fluxSolverLaunchPath } from "./paths.js";
-import { loadFluxState, saveFluxState } from "./state.js";
+import { loadFluxState, mutateFluxState, saveFluxState } from "./state.js";
 
 type ActiveSolverControl = {
   controller: AbortController;
@@ -246,17 +246,19 @@ export async function runSolverQueueItem(args: {
   const instanceId = String(provisioned.instance_id ?? newId("instance"));
   const workingDirectory = path.resolve(args.workspaceRoot, String(provisioned.working_directory ?? args.workspaceRoot));
   const sessionId = `solver_${attemptId}`;
-  const startingState = await loadFluxState(args.workspaceRoot, args.config) ?? args.state;
-  startingState.active.solver = {
-    sessionId,
-    status: "running",
-    queueItemId: args.queueItem.id,
-    pid: process.pid,
-    attemptId,
-    instanceId,
-    updatedAt: nowIso(),
-  };
-  await saveFluxState(args.workspaceRoot, args.config, startingState);
+  const startingState = await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
+    const next = current ?? args.state;
+    next.active.solver = {
+      sessionId,
+      status: "running",
+      queueItemId: args.queueItem.id,
+      pid: process.pid,
+      attemptId,
+      instanceId,
+      updatedAt: nowIso(),
+    };
+    return next;
+  });
   await appendFluxEvents(args.workspaceRoot, args.config, [{
     eventId: newId("evt"),
     ts: nowIso(),
@@ -551,20 +553,22 @@ export async function runSolverQueueItem(args: {
       payload: { attemptId, instanceId },
     }]);
   }
-  const latestState = await loadFluxState(args.workspaceRoot, args.config) ?? startingState;
-  if (latestState.active.solver.sessionId === sessionId || !latestState.active.solver.sessionId) {
-    latestState.active.solver = {
-      sessionId,
-      status: "idle",
-      queueItemId: undefined,
-      pid: undefined,
-      attemptId: undefined,
-      instanceId: undefined,
-      updatedAt: nowIso(),
-    };
-  }
-  if (session.stopReason === "solved") {
-    latestState.stopRequested = true;
-  }
-  await saveFluxState(args.workspaceRoot, args.config, latestState);
+  await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
+    const latestState = current ?? startingState;
+    if (latestState.active.solver.sessionId === sessionId || !latestState.active.solver.sessionId) {
+      latestState.active.solver = {
+        sessionId,
+        status: "idle",
+        queueItemId: undefined,
+        pid: undefined,
+        attemptId: undefined,
+        instanceId: undefined,
+        updatedAt: nowIso(),
+      };
+    }
+    if (session.stopReason === "solved") {
+      latestState.stopRequested = true;
+    }
+    return latestState;
+  });
 }
