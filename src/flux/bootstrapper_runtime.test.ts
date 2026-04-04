@@ -65,7 +65,7 @@ process.stdin.on("end", () => {
       version: 1,
       generatedAt: new Date().toISOString(),
       syntheticMessages: [{ role: "assistant", text: "Do A" }],
-      replayPlan: [{ tool: "shell", args: { cmd: ["echo", "A"] } }],
+      replayPlan: [{ tool: "shell", args: { cmd: ["arc_action", "ACTION1"] } }],
       assertions: [],
     }, null, 2), "utf8");
     await fs.writeFile(path.join(workspaceRoot, "flux.yaml"), `
@@ -323,6 +323,51 @@ retention:
         payload: { messageForBootstrapper: "use model" },
       },
     })).rejects.toThrow(/must not target generated sequence artifacts/);
+  });
+
+  test("fails loudly when bootstrap seed uses shell snippets instead of replayable argv", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "finalize_seed",
+      summary: "ship it",
+      seed_bundle_updated: false,
+      notes: "done",
+    });
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "current.json"), JSON.stringify({
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      syntheticMessages: [{ role: "assistant", text: "Do A" }],
+      replayPlan: [{ tool: "shell", args: { cmd: ["cd agent/game_ls20 && python - <<'PY'"] } }],
+      assertions: [],
+    }, null, 2), "utf8");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await expect(runBootstrapperQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_boot_bad_shell_seed",
+        sessionType: "bootstrapper",
+        createdAt: new Date().toISOString(),
+        reason: "model_accepted",
+        payload: { messageForBootstrapper: "use model" },
+      },
+    })).rejects.toThrow(/direct program token, not a shell snippet/);
   });
 
   test("clears stale bootstrap failure stopReason after a later successful pass", async () => {

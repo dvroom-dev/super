@@ -30,6 +30,18 @@ describe("validateFluxSeedBundle", () => {
     expect(() => validateFluxSeedBundle(seed)).toThrow(/args\.cmd must be a non-empty string array/);
   });
 
+  test("rejects shell snippet strings disguised as argv", () => {
+    const seed = baseSeed();
+    seed.replayPlan.push({ tool: "shell", args: { cmd: ["cd agent/game_ls20 && python - <<'PY'"] } });
+    expect(() => validateFluxSeedBundle(seed)).toThrow(/direct program token, not a shell snippet/);
+  });
+
+  test("rejects non-replayable shell programs", () => {
+    const seed = baseSeed();
+    seed.replayPlan.push({ tool: "shell", args: { cmd: ["python3", "-c", "print('hi')"] } });
+    expect(() => validateFluxSeedBundle(seed)).toThrow(/must be one of arc_action, arc_repl, arc_level/);
+  });
+
   test("rejects parent traversal in replay paths", () => {
     const seed = baseSeed();
     seed.replayPlan.push({ tool: "write_file", args: { path: "../outside.txt", content: "x" } });

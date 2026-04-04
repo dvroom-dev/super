@@ -1,7 +1,31 @@
 import type { FluxSeedBundle } from "./types.js";
 
+const ALLOWED_REPLAY_SHELL_PROGRAMS = new Set(["arc_action", "arc_repl", "arc_level"]);
+
 function describe(index: number, field: string): string {
   return `syntheticMessages[${index}].${field}`;
+}
+
+function validateReplayShellStep(index: number, cmdValue: unknown): void {
+  if (!Array.isArray(cmdValue) || cmdValue.length === 0) {
+    throw new Error(`seed bundle replayPlan[${index}].args.cmd must be a non-empty string array for shell`);
+  }
+  if (cmdValue.some((item) => typeof item !== "string" || item.length === 0)) {
+    throw new Error(`seed bundle replayPlan[${index}].args.cmd must be a non-empty string array for shell`);
+  }
+  const cmd = cmdValue as string[];
+  const program = cmd[0]!.trim();
+  if (program.length === 0) {
+    throw new Error(`seed bundle replayPlan[${index}].args.cmd[0] must be a non-empty program name`);
+  }
+  if (/\s/.test(program)) {
+    throw new Error(`seed bundle replayPlan[${index}].args.cmd[0] must be a direct program token, not a shell snippet`);
+  }
+  if (!ALLOWED_REPLAY_SHELL_PROGRAMS.has(program)) {
+    throw new Error(
+      `seed bundle replayPlan[${index}].args.cmd[0] must be one of ${Array.from(ALLOWED_REPLAY_SHELL_PROGRAMS).join(", ")}`,
+    );
+  }
 }
 
 function validateReplayPath(index: number, tool: string, pathText: unknown): void {
@@ -91,10 +115,7 @@ export function validateFluxSeedBundle(seedBundle: unknown): FluxSeedBundle {
     }
     const args = replayStep.args as Record<string, unknown>;
     if (tool === "shell") {
-      const cmd = args.cmd;
-      if (!Array.isArray(cmd) || cmd.length === 0 || cmd.some((item) => typeof item !== "string" || item.length === 0)) {
-        throw new Error(`seed bundle replayPlan[${index}].args.cmd must be a non-empty string array for shell`);
-      }
+      validateReplayShellStep(index, args.cmd);
     }
     if (tool === "read_file" || tool === "write_file") {
       validateReplayPath(index, tool, args.path);
