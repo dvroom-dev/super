@@ -117,6 +117,35 @@ async function reconcileStateForRestart(workspaceRoot: string, config: FluxConfi
   return nextState;
 }
 
+async function reconcileActiveSessionTruth(
+  workspaceRoot: string,
+  config: FluxConfig,
+  state: FluxRunState,
+  activeRuns: Map<"solver" | "modeler" | "bootstrapper", Promise<void>>,
+): Promise<FluxRunState> {
+  const nextState: FluxRunState = {
+    ...state,
+    active: { ...state.active },
+  };
+  let changed = false;
+  for (const sessionType of ["solver", "modeler", "bootstrapper"] as const) {
+    const active = nextState.active[sessionType];
+    if (active.status === "idle" || activeRuns.has(sessionType) || !active.sessionId) continue;
+    const session = await loadFluxSession(workspaceRoot, config, sessionType, active.sessionId);
+    if (!session || session.status === "running") continue;
+    nextState.active[sessionType] = {
+      sessionId: active.sessionId,
+      status: "idle",
+      updatedAt: nowIso(),
+    };
+    changed = true;
+  }
+  if (!changed) return state;
+  nextState.updatedAt = nowIso();
+  await saveFluxState(workspaceRoot, config, nextState);
+  return nextState;
+}
+
 type FluxWorkspaceLock = {
   release: () => void;
 };
@@ -205,7 +234,7 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
   await ensureInitialSolverQueued(workspaceRoot, config);
 
   let stopping = false;
-  const activeRuns = new Map<string, Promise<void>>();
+  const activeRuns = new Map<"solver" | "modeler" | "bootstrapper", Promise<void>>();
   const stop = async (reason: string) => {
     if (stopping) return;
     stopping = true;
@@ -234,6 +263,7 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
     while (true) {
       await new Promise((resolve) => setTimeout(resolve, config.orchestrator.tickMs));
       state = await loadFluxState(workspaceRoot, config) ?? state;
+      state = await reconcileActiveSessionTruth(workspaceRoot, config, state, activeRuns);
       if (state.stopRequested) {
         if (state.active.solver.status === "running" && state.active.solver.sessionId) {
           requestActiveSolverInterrupt(state.active.solver.sessionId);

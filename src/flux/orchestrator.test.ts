@@ -264,4 +264,65 @@ describe("runFluxOrchestrator", () => {
     expect(state?.active.solver.sessionId).toMatch(/^solver_attempt_/);
     expect(state?.active.solver.sessionId).not.toBe("solver_attempt_done");
   });
+
+  test("reconciles stale bootstrapper running state from session truth during the loop", async () => {
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const ts = new Date().toISOString();
+    await fs.mkdir(path.join(workspaceRoot, ".ai-flux", "sessions", "bootstrapper", "bootstrapper_run"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-flux", "sessions", "bootstrapper", "bootstrapper_run", "session.json"),
+      JSON.stringify({
+        sessionId: "bootstrapper_run",
+        sessionType: "bootstrapper",
+        status: "idle",
+        createdAt: ts,
+        updatedAt: ts,
+        provider: "mock",
+        model: "mock-model",
+        resumePolicy: "always",
+        sessionScope: "run",
+      }, null, 2),
+      "utf8",
+    );
+    await fs.mkdir(path.join(workspaceRoot, "flux"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "state.json"),
+      JSON.stringify({
+        version: 1,
+        workspaceRoot,
+        configPath: path.join(workspaceRoot, "flux.yaml"),
+        pid: process.pid,
+        startedAt: ts,
+        updatedAt: ts,
+        status: "running",
+        stopRequested: false,
+        active: {
+          solver: { status: "idle", updatedAt: ts },
+          modeler: { status: "idle", updatedAt: ts },
+          bootstrapper: {
+            sessionId: "bootstrapper_run",
+            status: "running",
+            queueItemId: "q_boot",
+            pid: process.pid,
+            updatedAt: ts,
+          },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
+    const deadline = Date.now() + 2000;
+    let reconciled = false;
+    while (Date.now() < deadline && !reconciled) {
+      const current = await loadFluxState(workspaceRoot, config);
+      reconciled = current?.active.bootstrapper.status === "idle";
+      if (!reconciled) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    expect(reconciled).toBe(true);
+    await requestFluxStop(workspaceRoot, config);
+    await runPromise;
+  });
 });
