@@ -159,6 +159,7 @@ async function setBootstrapperIdle(
   session: FluxSessionRecord,
 ): Promise<void> {
   session.status = "idle";
+  session.stopReason = undefined;
   session.updatedAt = nowIso();
   await saveFluxSession(workspaceRoot, config, session);
   const latestState = await loadFluxState(workspaceRoot, config) ?? state;
@@ -190,6 +191,7 @@ export async function runBootstrapperQueueItem(args: {
     sessionScope: "run",
   };
   session.status = "running";
+  session.stopReason = undefined;
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
   const latestState = await loadFluxState(args.workspaceRoot, args.config) ?? args.state;

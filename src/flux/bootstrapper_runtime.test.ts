@@ -6,6 +6,7 @@ import { loadFluxConfig } from "./config.js";
 import { readFluxEvents } from "./events.js";
 import { runBootstrapperQueueItem } from "./bootstrapper_runtime.js";
 import { loadFluxQueue, saveFluxQueue } from "./queue.js";
+import { loadFluxSession, saveFluxSession } from "./session_store.js";
 import { saveFluxState } from "./state.js";
 import type { FluxRunState } from "./types.js";
 
@@ -322,5 +323,58 @@ retention:
         payload: { messageForBootstrapper: "use model" },
       },
     })).rejects.toThrow(/must not target generated sequence artifacts/);
+  });
+
+  test("clears stale bootstrap failure stopReason after a later successful pass", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "continue_refining",
+      summary: "keep seed",
+      seed_bundle_updated: false,
+      notes: "ok",
+    });
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await saveFluxSession(workspaceRoot, config, {
+      sessionId: "bootstrapper_run",
+      sessionType: "bootstrapper",
+      status: "failed",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      provider: "mock",
+      model: "mock-model",
+      resumePolicy: "always",
+      sessionScope: "run",
+      stopReason: "old failure",
+    });
+    await runBootstrapperQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_boot_recover",
+        sessionType: "bootstrapper",
+        createdAt: new Date().toISOString(),
+        reason: "model_accepted",
+        payload: { messageForBootstrapper: "use model" },
+      },
+    });
+    const session = await loadFluxSession(workspaceRoot, config, "bootstrapper", "bootstrapper_run");
+    expect(session?.status).toBe("idle");
+    expect(session?.stopReason).toBeUndefined();
   });
 });

@@ -179,6 +179,7 @@ export async function runModelerQueueItem(args: {
     sessionScope: "run",
   };
   session.status = "running";
+  session.stopReason = undefined;
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
   const latestState = await loadFluxState(args.workspaceRoot, args.config) ?? args.state;
@@ -346,6 +347,7 @@ export async function runModelerQueueItem(args: {
     }]);
   }
   session.status = "idle";
+  session.stopReason = undefined;
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
   latestState.active.modeler = {
