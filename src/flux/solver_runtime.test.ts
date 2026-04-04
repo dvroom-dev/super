@@ -732,4 +732,123 @@ process.stdin.on("end", () => {
     expect(session.stopReason).not.toBe("solved");
     delete process.env.MOCK_PROVIDER_DELAY_MS;
   });
+
+  test("an interrupted older solver does not clear a newer active solver slot", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    process.env.MOCK_PROVIDER_DELAY_MS = "200";
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const observeScript = path.join(workspaceRoot, "scripts", "observe.js");
+    await fs.writeFile(observeScript, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  evidence: [{
+    summary: "step evidence",
+    action_count: 1,
+    changed_pixels: 1,
+    state: {
+      current_level: 1,
+      levels_completed: 0,
+      state: "NOT_FINISHED",
+      total_steps: 1,
+      current_attempt_steps: 1
+    }
+  }]
+})));`, "utf8");
+    await fs.chmod(observeScript, 0o755);
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+
+    const firstRun = runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: {
+        id: "q_old_solver",
+        sessionType: "solver",
+        createdAt: new Date().toISOString(),
+        reason: "older_solver",
+        payload: {},
+      },
+      state,
+    });
+
+    let firstSessionId = "";
+    const firstDeadline = Date.now() + 2000;
+    while (Date.now() < firstDeadline && !firstSessionId) {
+      const latestState = await loadFluxState(workspaceRoot, config);
+      firstSessionId = latestState?.active.solver.sessionId ?? "";
+      if (!firstSessionId) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(firstSessionId).toBeTruthy();
+
+    const secondRun = runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: {
+        id: "q_new_solver",
+        sessionType: "solver",
+        createdAt: new Date().toISOString(),
+        reason: "newer_solver",
+        payload: {
+          preplayedInstance: {
+            instance_id: "seed_rev_test",
+            working_directory: workspaceRoot,
+            env: {},
+            metadata: { solver_dir: workspaceRoot, state_dir: workspaceRoot },
+          },
+          preplayedReplayResult: {
+            replay_ok: true,
+            evidence: [{
+              summary: "preplayed state",
+              state: {
+                current_level: 2,
+                levels_completed: 1,
+                state: "NOT_FINISHED",
+                total_steps: 9,
+                current_attempt_steps: 0,
+              },
+            }],
+          },
+        },
+      },
+      state,
+    });
+
+    let secondSessionId = "";
+    const secondDeadline = Date.now() + 2000;
+    while (Date.now() < secondDeadline && !secondSessionId) {
+      const latestState = await loadFluxState(workspaceRoot, config);
+      const activeSessionId = latestState?.active.solver.sessionId ?? "";
+      if (activeSessionId && activeSessionId !== firstSessionId) {
+        secondSessionId = activeSessionId;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(secondSessionId).toBeTruthy();
+
+    requestActiveSolverInterrupt(firstSessionId);
+    await firstRun;
+    const afterFirstStop = await loadFluxState(workspaceRoot, config);
+    expect(afterFirstStop?.active.solver.sessionId).toBe(secondSessionId);
+    expect(afterFirstStop?.active.solver.status).toBe("running");
+
+    requestActiveSolverInterrupt(secondSessionId);
+    await secondRun;
+    delete process.env.MOCK_PROVIDER_DELAY_MS;
+  });
 });

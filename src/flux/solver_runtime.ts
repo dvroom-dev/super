@@ -516,15 +516,17 @@ export async function runSolverQueueItem(args: {
     }]);
   }
   const latestState = await loadFluxState(args.workspaceRoot, args.config) ?? startingState;
-  latestState.active.solver = {
-    sessionId,
-    status: "idle",
-    queueItemId: undefined,
-    pid: undefined,
-    attemptId: undefined,
-    instanceId: undefined,
-    updatedAt: nowIso(),
-  };
+  if (latestState.active.solver.sessionId === sessionId || !latestState.active.solver.sessionId) {
+    latestState.active.solver = {
+      sessionId,
+      status: "idle",
+      queueItemId: undefined,
+      pid: undefined,
+      attemptId: undefined,
+      instanceId: undefined,
+      updatedAt: nowIso(),
+    };
+  }
   if (session.stopReason === "solved") {
     latestState.stopRequested = true;
   }
