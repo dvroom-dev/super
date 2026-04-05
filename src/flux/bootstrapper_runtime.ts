@@ -468,12 +468,13 @@ export async function runBootstrapperQueueItem(args: {
         reason: "bootstrapper_finalized_seed",
         seedRevisionId,
         seedHash,
-        attemptId: String((provisioned.attempt_id as string | undefined) ?? ""),
-        preplayedInstance: provisioned as FluxProblemInstance & Record<string, unknown>,
-        preplayedReplayResult: realReplayResult,
-        interruptPolicy,
-      },
-    });
+      attemptId: String((provisioned.attempt_id as string | undefined) ?? ""),
+      preplayedInstance: provisioned as FluxProblemInstance & Record<string, unknown>,
+      preplayedReplayResult: realReplayResult,
+      seedBundle,
+      interruptPolicy,
+    },
+  });
   }
   seedMeta = {
     ...seedMeta,

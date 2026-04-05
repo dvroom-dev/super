@@ -210,6 +210,7 @@ retention:
     solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     expect(solverQueue.items).toHaveLength(1);
+    expect(solverQueue.items[0]?.payload.seedBundle).toBeTruthy();
     expect(bootstrapQueue.items).toHaveLength(0);
     const finalEvents = await readFluxEvents(workspaceRoot, config);
     expect(finalEvents.some((event) => event.kind === "bootstrapper.real_replay_passed")).toBe(true);
