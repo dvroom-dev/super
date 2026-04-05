@@ -232,8 +232,60 @@ export async function runBootstrapperQueueItem(args: {
   const decision = String(decisionPayload.decision ?? "");
   const interruptPolicy = normalizeInterruptPolicy(decisionPayload.solver_action);
   const seedDeltaKind = String(decisionPayload.seed_delta_kind ?? "");
-  const seedBundle = await loadSeedBundle(args.workspaceRoot, args.config);
-  if (!seedBundle) throw new Error(`missing seed bundle at ${args.config.bootstrapper.seedBundlePath}`);
+  let seedBundle: FluxSeedBundle | null = null;
+  try {
+    seedBundle = await loadSeedBundle(args.workspaceRoot, args.config);
+  } catch (error) {
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "bootstrapper.seed_invalid",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "bootstrapper",
+      sessionId,
+      summary: String(error instanceof Error ? error.message : error),
+      payload: {
+        decision,
+        interruptPolicy,
+        seedDeltaKind: seedDeltaKind || null,
+      },
+    }]);
+    await enqueueBootstrapperContinuation({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      sessionId,
+      reason: "bootstrapper_invalid_seed",
+      payload: {
+        ...promptPayload,
+        validationError: String(error instanceof Error ? error.message : error),
+      },
+    });
+    await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
+    return;
+  }
+  if (!seedBundle) {
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "bootstrapper.seed_missing",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "bootstrapper",
+      sessionId,
+      summary: `missing seed bundle at ${args.config.bootstrapper.seedBundlePath}`,
+    }]);
+    await enqueueBootstrapperContinuation({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      sessionId,
+      reason: "bootstrapper_missing_seed",
+      payload: {
+        ...promptPayload,
+        validationError: `missing seed bundle at ${args.config.bootstrapper.seedBundlePath}`,
+      },
+    });
+    await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
+    return;
+  }
   const persistedSeed = await persistSeedRevision(args.workspaceRoot, args.config, seedBundle);
   const seedRevisionId = persistedSeed.revisionId;
   const seedHash = persistedSeed.seedHash;

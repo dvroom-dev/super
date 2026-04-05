@@ -109,7 +109,7 @@ async function publishBootstrapSignals(args: {
     summary: currentSummary,
   });
   const seedMeta = await loadSeedMeta(args.workspaceRoot, args.config);
-  const baselineRevisionId = seedMeta.lastBootstrapperModelRevisionId ?? seedMeta.lastQueuedBootstrapModelRevisionId ?? null;
+  const baselineRevisionId = seedMeta.lastQueuedBootstrapModelRevisionId ?? seedMeta.lastBootstrapperModelRevisionId ?? null;
   const baselineSummary = baselineRevisionId
     ? await loadModelCoverageSummary(args.workspaceRoot, args.config, baselineRevisionId)
     : null;

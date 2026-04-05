@@ -286,7 +286,7 @@ retention:
     expect(events.some((event) => event.kind === "bootstrapper.attested_satisfactory" && event.payload?.changed === false && event.payload?.queuedSolver === false)).toBe(true);
   });
 
-  test("fails loudly when bootstrap seed references generated artifacts in replayPlan", async () => {
+  test("queues a continuation when bootstrap seed references generated artifacts in replayPlan", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
       decision: "finalize_seed",
       summary: "ship it",
@@ -319,7 +319,7 @@ retention:
       },
     };
     await saveFluxState(workspaceRoot, config, state);
-    await expect(runBootstrapperQueueItem({
+    await runBootstrapperQueueItem({
       workspaceRoot,
       config,
       state,
@@ -330,10 +330,16 @@ retention:
         reason: "model_accepted",
         payload: { messageForBootstrapper: "use model" },
       },
-    })).rejects.toThrow(/must not target generated sequence artifacts/);
+    });
+    const queue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(queue.items).toHaveLength(1);
+    expect(queue.items[0]?.reason).toBe("bootstrapper_invalid_seed");
+    expect(String(queue.items[0]?.payload.validationError || "")).toContain("must not target generated sequence artifacts");
+    expect(events.some((event) => event.kind === "bootstrapper.seed_invalid")).toBe(true);
   });
 
-  test("fails loudly when bootstrap seed uses shell snippets instead of replayable argv", async () => {
+  test("queues a continuation when bootstrap seed uses shell snippets instead of replayable argv", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
       decision: "finalize_seed",
       summary: "ship it",
@@ -366,7 +372,7 @@ retention:
       },
     };
     await saveFluxState(workspaceRoot, config, state);
-    await expect(runBootstrapperQueueItem({
+    await runBootstrapperQueueItem({
       workspaceRoot,
       config,
       state,
@@ -377,7 +383,13 @@ retention:
         reason: "model_accepted",
         payload: { messageForBootstrapper: "use model" },
       },
-    })).rejects.toThrow(/direct program token, not a shell snippet/);
+    });
+    const queue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(queue.items).toHaveLength(1);
+    expect(queue.items[0]?.reason).toBe("bootstrapper_invalid_seed");
+    expect(String(queue.items[0]?.payload.validationError || "")).toContain("direct program token, not a shell snippet");
+    expect(events.some((event) => event.kind === "bootstrapper.seed_invalid")).toBe(true);
   });
 
   test("clears stale bootstrap failure stopReason after a later successful pass", async () => {
@@ -433,5 +445,60 @@ retention:
     const session = await loadFluxSession(workspaceRoot, config, "bootstrapper", "bootstrapper_run");
     expect(session?.status).toBe("idle");
     expect(session?.stopReason).toBeUndefined();
+  });
+
+  test("queues a continuation instead of hard-failing when the current seed is invalid", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "finalize_seed",
+      summary: "keep going",
+      seed_bundle_updated: false,
+      notes: "repair seed",
+      solver_action: "no_action",
+      seed_delta_kind: "no_useful_change",
+    });
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "current.json"), JSON.stringify({
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      syntheticMessages: [{ role: "assistant", text: "Do A" }],
+      replayPlan: [{ tool: "shell", args: { cmd: ["reset_level"] } }],
+      assertions: [],
+    }, null, 2), "utf8");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runBootstrapperQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_boot_invalid_seed",
+        sessionType: "bootstrapper",
+        createdAt: new Date().toISOString(),
+        reason: "model_accepted",
+        payload: { messageForBootstrapper: "use model" },
+      },
+    });
+    const queue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    const events = await readFluxEvents(workspaceRoot, config);
+    const session = await loadFluxSession(workspaceRoot, config, "bootstrapper", "bootstrapper_run");
+    expect(queue.items).toHaveLength(1);
+    expect(queue.items[0]?.reason).toBe("bootstrapper_invalid_seed");
+    expect(String(queue.items[0]?.payload.validationError || "")).toContain("must be one of arc_action, arc_repl, arc_level");
+    expect(events.some((event) => event.kind === "bootstrapper.seed_invalid")).toBe(true);
+    expect(session?.status).toBe("idle");
   });
 });

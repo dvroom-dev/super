@@ -593,6 +593,9 @@ process.stdin.on("end", () => {
     });
     let bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     expect(bootstrapQueue.items).toHaveLength(1);
+    const seedMetaPath = path.join(workspaceRoot, "flux", "seed", "current_meta.json");
+    const seedMeta = JSON.parse(await fs.readFile(seedMetaPath, "utf8"));
+    expect(seedMeta.lastQueuedBootstrapModelRevisionId).toBeTruthy();
     await saveFluxQueue(workspaceRoot, config, { ...bootstrapQueue, items: [] });
 
     await runModelerQueueItem({
@@ -608,6 +611,99 @@ process.stdin.on("end", () => {
       },
     });
     bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    expect(bootstrapQueue.items).toHaveLength(0);
+  });
+
+  test("prefers the already queued bootstrap model revision over an older successful baseline", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```json",
+      JSON.stringify({
+        decision: "updated_model",
+        summary: "same accepted frontier again",
+        message_for_bootstrapper: "same frontier",
+        artifacts_updated: ["model.py"],
+        evidence_watermark: "wm_same_again",
+      }, null, 2),
+      "```",
+    ].join("\n");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await fs.mkdir(path.join(workspaceRoot, "flux", "seed"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "seed", "current_meta.json"),
+      JSON.stringify({
+        lastBootstrapperModelRevisionId: "model_rev_old",
+        lastQueuedBootstrapModelRevisionId: "model_rev_same",
+      }, null, 2),
+      "utf8",
+    );
+    await fs.mkdir(path.join(workspaceRoot, "flux", "model", "revisions", "model_rev_old"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "model", "revisions", "model_rev_old", "summary.json"),
+      JSON.stringify({
+        level: 1,
+        allMatch: true,
+        coveredSequenceIds: ["seq_0001"],
+        contiguousMatchedSequences: 1,
+        firstFailingSequenceId: null,
+        firstFailingStep: null,
+        firstFailingReason: null,
+        frontierDiscovered: false,
+        compareKind: "accepted",
+      }, null, 2),
+      "utf8",
+    );
+    await fs.mkdir(path.join(workspaceRoot, "flux", "model", "revisions", "model_rev_same"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "model", "revisions", "model_rev_same", "summary.json"),
+      JSON.stringify({
+        level: 1,
+        allMatch: true,
+        coveredSequenceIds: ["seq_0001"],
+        contiguousMatchedSequences: 1,
+        firstFailingSequenceId: null,
+        firstFailingStep: null,
+        firstFailingReason: null,
+        frontierDiscovered: false,
+        compareKind: "accepted",
+      }, null, 2),
+      "utf8",
+    );
+    await fs.mkdir(path.join(workspaceRoot, "flux", "model", "current"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "model", "current", "meta.json"),
+      JSON.stringify({ revisionId: "model_rev_same" }, null, 2),
+      "utf8",
+    );
+
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_same_model",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm_same_again" },
+      },
+    });
+    const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     expect(bootstrapQueue.items).toHaveLength(0);
   });
 });
