@@ -317,6 +317,109 @@ process.stdin.on("end", () => {
     expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(true);
   });
 
+  test("publishes bootstrapper progress when the first failing step advances within the same sequence", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "updated_model",
+      summary: "same sequence fails later",
+      message_for_bootstrapper: "earliest mismatch moved deeper in the same sequence",
+      artifacts_updated: ["model_lib.py"],
+      evidence_watermark: "wm_same_seq_1",
+    });
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_same_sequence_progress.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const evidenceWatermark = String((input.modelOutput || {}).evidence_watermark || "");
+  const divergenceStep = evidenceWatermark === "wm_same_seq_2" ? 14 : 6;
+  process.stdout.write(JSON.stringify({
+    accepted: false,
+    message: "seq_0001 still fails later",
+    model_output: input.modelOutput,
+    compare_payload: {
+      level: 2,
+      all_match: false,
+      reports: [
+        { sequence_id: "seq_0001", matched: false, divergence_step: divergenceStep, divergence_reason: "intermediate_frame_mismatch" }
+      ]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText.replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_same_1",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm_same_seq_1" },
+      },
+    });
+    let bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    expect(bootstrapQueue.items).toHaveLength(1);
+    await saveFluxQueue(workspaceRoot, config, { ...bootstrapQueue, items: [] });
+
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "updated_model",
+      summary: "same sequence fails later",
+      message_for_bootstrapper: "earliest mismatch moved deeper in the same sequence",
+      artifacts_updated: ["model_lib.py"],
+      evidence_watermark: "wm_same_seq_2",
+    });
+
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_same_2",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm_same_seq_2" },
+      },
+    });
+
+    bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    const bootstrapTrigger = JSON.parse(await fs.readFile(fluxBootstrapTriggerPath(workspaceRoot, config), "utf8"));
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(bootstrapQueue.items).toHaveLength(1);
+    expect(bootstrapQueue.items[0]?.reason).toBe("model_progress_advanced");
+    expect((bootstrapTrigger.payload.modelProgress as Record<string, unknown>)?.firstFailingSequenceId).toBe("seq_0001");
+    expect((bootstrapTrigger.payload.modelProgress as Record<string, unknown>)?.firstFailingStep).toBe(14);
+    expect(events.some((event) =>
+      event.kind === "modeler.progress_advanced"
+      && (event.payload?.firstFailingStep as number | undefined) === 14
+    )).toBe(true);
+  });
+
   test("does not requeue modeler on infrastructure acceptance failures", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
       decision: "updated_model",

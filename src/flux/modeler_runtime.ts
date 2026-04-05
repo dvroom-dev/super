@@ -64,6 +64,7 @@ type ModelProgress = {
   level: number;
   contiguousMatchedSequences: number;
   firstFailingSequenceId: string | null;
+  firstFailingStep: number | null;
   firstFailingReason: string | null;
 };
 
@@ -103,11 +104,22 @@ function computeModelProgress(comparePayload: Record<string, unknown>): ModelPro
   const ordered = [...bySequence.entries()].sort((left, right) => left[0] - right[0]);
   let contiguousMatchedSequences = 0;
   let firstFailingSequenceId: string | null = null;
+  let firstFailingStep: number | null = null;
   let firstFailingReason: string | null = null;
   for (const [order, item] of ordered) {
     const expected = contiguousMatchedSequences + 1;
     if (order !== expected || !item.matched) {
       firstFailingSequenceId = item.sequenceId || `seq_${String(expected).padStart(4, "0")}`;
+      if (item.sequenceId) {
+        const report = reports.find((entry) => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+          return String((entry as Record<string, unknown>).sequence_id ?? "") === item.sequenceId;
+        });
+        if (report && typeof report === "object" && !Array.isArray(report)) {
+          const divergenceStep = Number((report as Record<string, unknown>).divergence_step ?? 0) || 0;
+          firstFailingStep = divergenceStep > 0 ? divergenceStep : null;
+        }
+      }
       firstFailingReason = item.reason;
       break;
     }
@@ -117,6 +129,7 @@ function computeModelProgress(comparePayload: Record<string, unknown>): ModelPro
     level: Number(comparePayload.level ?? 1) || 1,
     contiguousMatchedSequences,
     firstFailingSequenceId,
+    firstFailingStep,
     firstFailingReason,
   };
 }
@@ -205,8 +218,23 @@ async function loadCurrentModelRevisionId(workspaceRoot: string, config: FluxCon
 }
 
 function isProgressAdvance(previous: ModelProgress | null, next: ModelProgress): boolean {
-  if (!previous) return next.contiguousMatchedSequences > 0;
-  if (next.level !== previous.level) return next.level > previous.level && next.contiguousMatchedSequences > 0;
+  if (!previous) {
+    return next.contiguousMatchedSequences > 0 || next.firstFailingStep != null || next.firstFailingSequenceId != null;
+  }
+  if (next.level !== previous.level) {
+    return next.level > previous.level
+      && (next.contiguousMatchedSequences > 0 || next.firstFailingStep != null || next.firstFailingSequenceId != null);
+  }
+  if (
+    previous.firstFailingSequenceId
+    && next.firstFailingSequenceId
+    && previous.firstFailingSequenceId === next.firstFailingSequenceId
+    && previous.firstFailingStep != null
+    && next.firstFailingStep != null
+    && next.firstFailingStep > previous.firstFailingStep
+  ) {
+    return true;
+  }
   return next.contiguousMatchedSequences > previous.contiguousMatchedSequences;
 }
 
@@ -253,6 +281,7 @@ async function publishBootstrapSignals(args: {
         level: args.currentProgress.level,
         contiguousMatchedSequences: args.currentProgress.contiguousMatchedSequences,
         firstFailingSequenceId: args.currentProgress.firstFailingSequenceId,
+        firstFailingStep: args.currentProgress.firstFailingStep,
         firstFailingReason: args.currentProgress.firstFailingReason,
       },
     }]);
@@ -325,6 +354,7 @@ async function publishProgressAdvance(args: {
       level: args.currentProgress.level,
       contiguousMatchedSequences: args.currentProgress.contiguousMatchedSequences,
       firstFailingSequenceId: args.currentProgress.firstFailingSequenceId,
+      firstFailingStep: args.currentProgress.firstFailingStep,
       firstFailingReason: args.currentProgress.firstFailingReason,
     },
   }]);
