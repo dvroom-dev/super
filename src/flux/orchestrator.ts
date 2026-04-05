@@ -295,23 +295,28 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
       if (state.active.solver.status === "running") {
         const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
         if (solverQueue.items.length > 0 && state.active.solver.sessionId) {
-          const interrupted = requestActiveSolverInterrupt(state.active.solver.sessionId);
-          if (interrupted) {
-            await appendFluxEvents(workspaceRoot, config, [{
-              eventId: newId("evt"),
-              ts: nowIso(),
-              kind: "queue.preempt_requested",
-              workspaceRoot,
-              sessionType: "solver",
-              sessionId: state.active.solver.sessionId,
-              summary: "replacement solver queued; interrupting current solver",
-              payload: {
-                queuedSolverCount: solverQueue.items.length,
-                replacementGraceMs: config.orchestrator.solverPreemptGraceMs,
-                attemptId: state.active.solver.attemptId,
-                instanceId: state.active.solver.instanceId,
-              },
-            }]);
+          const nextSolver = solverQueue.items[0];
+          const interruptPolicy = String(nextSolver?.payload?.interruptPolicy ?? "queue_and_interrupt");
+          if (interruptPolicy === "queue_and_interrupt") {
+            const interrupted = requestActiveSolverInterrupt(state.active.solver.sessionId);
+            if (interrupted) {
+              await appendFluxEvents(workspaceRoot, config, [{
+                eventId: newId("evt"),
+                ts: nowIso(),
+                kind: "queue.preempt_requested",
+                workspaceRoot,
+                sessionType: "solver",
+                sessionId: state.active.solver.sessionId,
+                summary: "replacement solver queued; interrupting current solver",
+                payload: {
+                  queuedSolverCount: solverQueue.items.length,
+                  replacementGraceMs: config.orchestrator.solverPreemptGraceMs,
+                  attemptId: state.active.solver.attemptId,
+                  instanceId: state.active.solver.instanceId,
+                  interruptPolicy,
+                },
+              }]);
+            }
           }
         }
       }

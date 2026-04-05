@@ -19,12 +19,14 @@ export function schemaForName(name: string): Record<string, unknown> | undefined
     return {
       type: "object",
       additionalProperties: false,
-      required: ["decision", "summary", "seed_bundle_updated", "notes"],
+      required: ["decision", "summary", "seed_bundle_updated", "notes", "solver_action", "seed_delta_kind"],
       properties: {
         decision: { enum: ["continue_refining", "finalize_seed"] },
         summary: { type: "string" },
         seed_bundle_updated: { type: "boolean" },
         notes: { type: "string" },
+        solver_action: { enum: ["no_action", "queue_without_interrupt", "queue_and_interrupt"] },
+        seed_delta_kind: { type: "string" },
       },
     };
   }

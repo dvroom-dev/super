@@ -49,20 +49,24 @@ export function fluxModelRoot(workspaceRoot: string, config: FluxConfig): string
   return path.join(fluxRoot(workspaceRoot, config), "model");
 }
 
+export function fluxModelRevisionsRoot(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxModelRoot(workspaceRoot, config), "revisions");
+}
+
+export function fluxModelRevisionDir(workspaceRoot: string, config: FluxConfig, revisionId: string): string {
+  return path.join(fluxModelRevisionsRoot(workspaceRoot, config), revisionId);
+}
+
+export function fluxModelRevisionWorkspaceDir(workspaceRoot: string, config: FluxConfig, revisionId: string): string {
+  return path.join(fluxModelRevisionDir(workspaceRoot, config, revisionId), "workspace");
+}
+
+export function fluxModelRevisionSummaryPath(workspaceRoot: string, config: FluxConfig, revisionId: string): string {
+  return path.join(fluxModelRevisionDir(workspaceRoot, config, revisionId), "summary.json");
+}
+
 export function fluxSeedRoot(workspaceRoot: string, config: FluxConfig): string {
   return path.join(fluxRoot(workspaceRoot, config), "seed");
-}
-
-export function fluxModelTriggerPath(workspaceRoot: string, config: FluxConfig): string {
-  return path.join(fluxModelRoot(workspaceRoot, config), "current", "trigger.json");
-}
-
-export function fluxBootstrapTriggerPath(workspaceRoot: string, config: FluxConfig): string {
-  return path.join(fluxSeedRoot(workspaceRoot, config), "current_trigger.json");
-}
-
-export function fluxSolverLaunchPath(workspaceRoot: string, config: FluxConfig): string {
-  return path.join(fluxSeedRoot(workspaceRoot, config), "current_launch.json");
 }
 
 export function fluxSessionDir(

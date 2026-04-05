@@ -5,14 +5,17 @@ import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
 import { parseJsonObjectFromAssistantText, schemaForName } from "./json_session_format.js";
 import { runModelAcceptance } from "./model_acceptance.js";
+import { buildCoverageSummary, classifyModelImprovement, computeModelProgress, type ModelProgress } from "./model_coverage.js";
+import { loadModelCoverageSummary, modelRevisionWorkspaceSource, persistModelRevisionWorkspace, saveModelCoverageSummary } from "./model_revision_store.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate } from "./prompt_templates.js";
 import { runFluxProblemCommand } from "./problem_shell.js";
 import { runFluxProviderTurn } from "./provider_session.js";
+import { loadSeedMeta, saveSeedMeta } from "./seed_meta.js";
 import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSessionRecord } from "./types.js";
-import { fluxModelRoot, fluxModelTriggerPath, fluxBootstrapTriggerPath } from "./paths.js";
-import { loadFluxState, mutateFluxState, saveFluxState } from "./state.js";
+import { fluxModelRoot } from "./paths.js";
+import { mutateFluxState } from "./state.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -35,128 +38,6 @@ function fallbackModelOutput(queuePayload: Record<string, unknown>, assistantTex
 
 function isBlockedModelOutput(modelOutput: Record<string, unknown>): boolean {
   return String(modelOutput.decision ?? "").trim().toLowerCase() === "blocked";
-}
-
-type ModelProgress = {
-  level: number;
-  contiguousMatchedSequences: number;
-  firstFailingSequenceId: string | null;
-  firstFailingStep: number | null;
-  firstFailingReason: string | null;
-};
-
-function sequenceNumber(sequenceId: string): number | null {
-  const match = sequenceId.match(/seq_(\d+)/i);
-  return match ? Number(match[1]) : null;
-}
-
-function computeModelProgress(comparePayload: Record<string, unknown>): ModelProgress {
-  const reports = Array.isArray(comparePayload.reports) ? comparePayload.reports : [];
-  const skipped = Array.isArray(comparePayload.skipped_sequences) ? comparePayload.skipped_sequences : [];
-  const bySequence = new Map<number, { matched: boolean; reason: string | null; sequenceId: string }>();
-  for (const report of reports) {
-    if (!report || typeof report !== "object" || Array.isArray(report)) continue;
-    const record = report as Record<string, unknown>;
-    const sequenceId = String(record.sequence_id ?? "");
-    const order = sequenceNumber(sequenceId);
-    if (!order) continue;
-    bySequence.set(order, {
-      matched: Boolean(record.matched),
-      reason: String(record.divergence_reason ?? "") || null,
-      sequenceId,
-    });
-  }
-  for (const skippedRecord of skipped) {
-    if (!skippedRecord || typeof skippedRecord !== "object" || Array.isArray(skippedRecord)) continue;
-    const record = skippedRecord as Record<string, unknown>;
-    const sequenceId = String(record.sequence_id ?? "");
-    const order = sequenceNumber(sequenceId);
-    if (!order || bySequence.has(order)) continue;
-    bySequence.set(order, {
-      matched: false,
-      reason: String(record.reason ?? record.end_reason ?? "") || null,
-      sequenceId,
-    });
-  }
-  const ordered = [...bySequence.entries()].sort((left, right) => left[0] - right[0]);
-  let contiguousMatchedSequences = 0;
-  let firstFailingSequenceId: string | null = null;
-  let firstFailingStep: number | null = null;
-  let firstFailingReason: string | null = null;
-  for (const [order, item] of ordered) {
-    const expected = contiguousMatchedSequences + 1;
-    if (order !== expected || !item.matched) {
-      firstFailingSequenceId = item.sequenceId || `seq_${String(expected).padStart(4, "0")}`;
-      if (item.sequenceId) {
-        const report = reports.find((entry) => {
-          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
-          return String((entry as Record<string, unknown>).sequence_id ?? "") === item.sequenceId;
-        });
-        if (report && typeof report === "object" && !Array.isArray(report)) {
-          const divergenceStep = Number((report as Record<string, unknown>).divergence_step ?? 0) || 0;
-          firstFailingStep = divergenceStep > 0 ? divergenceStep : null;
-        }
-      }
-      firstFailingReason = item.reason;
-      break;
-    }
-    contiguousMatchedSequences = order;
-  }
-  return {
-    level: Number(comparePayload.level ?? 1) || 1,
-    contiguousMatchedSequences,
-    firstFailingSequenceId,
-    firstFailingStep,
-    firstFailingReason,
-  };
-}
-
-function acceptanceBootstrapTriggerKey(comparePayload: Record<string, unknown>, progress: ModelProgress): string {
-  const reports = Array.isArray(comparePayload.reports) ? comparePayload.reports : [];
-  const firstReport = reports[0] && typeof reports[0] === "object" && !Array.isArray(reports[0])
-    ? reports[0] as Record<string, unknown>
-    : {};
-  return [
-    "bootstrap-accepted",
-    String(comparePayload.level ?? progress.level ?? 1),
-    String(progress.contiguousMatchedSequences),
-    String(Boolean(comparePayload.all_match)),
-    String(firstReport.sequence_id ?? ""),
-    String(firstReport.divergence_step ?? ""),
-    String(firstReport.divergence_reason ?? ""),
-    String(firstReport.report_file ?? ""),
-  ].join(":");
-}
-
-async function loadLastBootstrapTriggerKey(workspaceRoot: string, config: FluxConfig): Promise<string | null> {
-  try {
-    const raw = await fs.readFile(path.join(fluxModelRoot(workspaceRoot, config), "current", "bootstrap_trigger.json"), "utf8");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return typeof parsed.key === "string" && parsed.key.trim().length > 0 ? parsed.key : null;
-  } catch {
-    return null;
-  }
-}
-
-async function saveLastBootstrapTriggerKey(workspaceRoot: string, config: FluxConfig, key: string): Promise<void> {
-  await writeJsonAtomic(path.join(fluxModelRoot(workspaceRoot, config), "current", "bootstrap_trigger.json"), {
-    key,
-    updatedAt: nowIso(),
-  });
-}
-
-async function loadModelerTriggerContext(workspaceRoot: string, config: FluxConfig): Promise<Record<string, unknown>> {
-  return await fs.readFile(fluxModelTriggerPath(workspaceRoot, config), "utf8")
-    .then((raw) => JSON.parse(raw) as Record<string, unknown>)
-    .catch(() => ({}));
-}
-
-async function saveBootstrapperTriggerContext(workspaceRoot: string, config: FluxConfig, reason: string, payload: Record<string, unknown>): Promise<void> {
-  await writeJsonAtomic(fluxBootstrapTriggerPath(workspaceRoot, config), {
-    reason,
-    payload,
-    updatedAt: nowIso(),
-  });
 }
 
 async function loadBestProgress(workspaceRoot: string, config: FluxConfig): Promise<ModelProgress | null> {
@@ -218,26 +99,23 @@ async function publishBootstrapSignals(args: {
   promptPayload: Record<string, unknown>;
   sessionId: string;
 }): Promise<void> {
-  const progressAdvanced = isProgressAdvance(args.previousProgress, args.currentProgress);
-  if (progressAdvanced) {
+  const modelRevisionId = typeof args.modelRevisionId === "string" && args.modelRevisionId ? args.modelRevisionId : null;
+  if (!modelRevisionId) return;
+  const currentSummary = buildCoverageSummary({ comparePayload: args.comparePayload, accepted: true });
+  await saveModelCoverageSummary({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    revisionId: modelRevisionId,
+    summary: currentSummary,
+  });
+  const seedMeta = await loadSeedMeta(args.workspaceRoot, args.config);
+  const baselineRevisionId = seedMeta.lastBootstrapperModelRevisionId ?? seedMeta.lastQueuedBootstrapModelRevisionId ?? null;
+  const baselineSummary = baselineRevisionId
+    ? await loadModelCoverageSummary(args.workspaceRoot, args.config, baselineRevisionId)
+    : null;
+  const improvementKind = classifyModelImprovement(baselineSummary, currentSummary);
+  if (isProgressAdvance(args.previousProgress, args.currentProgress)) {
     await saveBestProgress(args.workspaceRoot, args.config, args.currentProgress);
-    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
-      id: newId("q"),
-      sessionType: "bootstrapper",
-      createdAt: nowIso(),
-      reason: "model_progress_advanced",
-      dedupeKey: `model-progress:${args.currentProgress.level}:${args.currentProgress.contiguousMatchedSequences}`,
-      payload: {},
-    });
-    await saveBootstrapperTriggerContext(args.workspaceRoot, args.config, "model_progress_advanced", {
-      modelProgress: args.currentProgress,
-      comparePayload: args.comparePayload,
-      modelRevisionId: args.modelRevisionId ?? undefined,
-      messageForBootstrapper: String(args.modelOutput.message_for_bootstrapper ?? ""),
-      modelOutput: args.modelOutput,
-      sourceEvidence: args.promptPayload.latestEvidence ?? null,
-      sourceEvidenceWatermark: String(args.promptPayload.evidenceWatermark ?? args.modelOutput.evidence_watermark ?? ""),
-    });
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),
@@ -245,7 +123,7 @@ async function publishBootstrapSignals(args: {
       workspaceRoot: args.workspaceRoot,
       sessionType: "modeler",
       sessionId: args.sessionId,
-      summary: `modeled contiguous sequence prefix through ${args.currentProgress.firstFailingSequenceId ? args.currentProgress.contiguousMatchedSequences : args.currentProgress.contiguousMatchedSequences}`,
+      summary: `modeled contiguous sequence prefix through ${args.currentProgress.contiguousMatchedSequences}`,
       payload: {
         level: args.currentProgress.level,
         contiguousMatchedSequences: args.currentProgress.contiguousMatchedSequences,
@@ -255,28 +133,32 @@ async function publishBootstrapSignals(args: {
       },
     }]);
   }
-  const triggerKey = acceptanceBootstrapTriggerKey(args.comparePayload, args.currentProgress);
-  const lastTriggerKey = await loadLastBootstrapTriggerKey(args.workspaceRoot, args.config);
-  if (lastTriggerKey !== triggerKey) {
-    await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
-      id: newId("q"),
-      sessionType: "bootstrapper",
-      createdAt: nowIso(),
-      reason: "model_accepted",
-      dedupeKey: triggerKey,
-      payload: {},
-    });
-    await saveBootstrapperTriggerContext(args.workspaceRoot, args.config, "model_accepted", {
-      modelRevisionId: args.modelRevisionId ?? undefined,
+  if (improvementKind === "no_improvement") {
+    return;
+  }
+  await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
+    id: newId("q"),
+    sessionType: "bootstrapper",
+    createdAt: nowIso(),
+    reason: improvementKind === "frontier_advanced" ? "model_progress_advanced" : "model_accepted",
+    dedupeKey: `bootstrap:${modelRevisionId}`,
+    payload: {
+      baselineModelRevisionId: modelRevisionId,
+      improvementKind,
+      modelRevisionId,
       messageForBootstrapper: String(args.modelOutput.message_for_bootstrapper ?? ""),
       modelOutput: args.modelOutput,
       sourceEvidence: args.promptPayload.latestEvidence ?? null,
       sourceEvidenceWatermark: String(args.promptPayload.evidenceWatermark ?? args.modelOutput.evidence_watermark ?? ""),
       modelProgress: args.currentProgress,
       comparePayload: args.comparePayload,
-    });
-    await saveLastBootstrapTriggerKey(args.workspaceRoot, args.config, triggerKey);
-  }
+    },
+  });
+  const nextSeedMeta = {
+    ...seedMeta,
+    lastQueuedBootstrapModelRevisionId: modelRevisionId,
+  };
+  await saveSeedMeta(args.workspaceRoot, args.config, nextSeedMeta);
 }
 
 async function publishProgressAdvance(args: {
@@ -294,22 +176,44 @@ async function publishProgressAdvance(args: {
     return;
   }
   await saveBestProgress(args.workspaceRoot, args.config, args.currentProgress);
+  const revisionId = args.modelRevisionId ?? newId("model_rev");
+  const revisionDir = path.join(fluxModelRoot(args.workspaceRoot, args.config), "revisions", revisionId);
+  await fs.mkdir(revisionDir, { recursive: true });
+  await writeJsonAtomic(path.join(revisionDir, "model_update.json"), args.modelOutput);
+  await persistModelRevisionWorkspace({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    revisionId,
+    sourceWorkspaceDir: modelRevisionWorkspaceSource(args.workspaceRoot, args.config),
+  });
+  await saveModelCoverageSummary({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    revisionId,
+    summary: buildCoverageSummary({ comparePayload: args.comparePayload, accepted: false }),
+  });
   await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
     id: newId("q"),
     sessionType: "bootstrapper",
     createdAt: nowIso(),
     reason: "model_progress_advanced",
-    dedupeKey: `model-progress:${args.currentProgress.level}:${args.currentProgress.contiguousMatchedSequences}`,
-    payload: {},
+    dedupeKey: `bootstrap-progress:${revisionId}`,
+    payload: {
+      baselineModelRevisionId: revisionId,
+      improvementKind: "frontier_advanced",
+      modelRevisionId: revisionId,
+      messageForBootstrapper: String(args.modelOutput.message_for_bootstrapper ?? ""),
+      modelOutput: args.modelOutput,
+      sourceEvidence: args.promptPayload.latestEvidence ?? null,
+      sourceEvidenceWatermark: String(args.promptPayload.evidenceWatermark ?? args.modelOutput.evidence_watermark ?? ""),
+      modelProgress: args.currentProgress,
+      comparePayload: args.comparePayload,
+    },
   });
-  await saveBootstrapperTriggerContext(args.workspaceRoot, args.config, "model_progress_advanced", {
-    modelProgress: args.currentProgress,
-    comparePayload: args.comparePayload,
-    modelRevisionId: args.modelRevisionId ?? undefined,
-    messageForBootstrapper: String(args.modelOutput.message_for_bootstrapper ?? ""),
-    modelOutput: args.modelOutput,
-    sourceEvidence: args.promptPayload.latestEvidence ?? null,
-    sourceEvidenceWatermark: String(args.promptPayload.evidenceWatermark ?? args.modelOutput.evidence_watermark ?? ""),
+  const seedMeta = await loadSeedMeta(args.workspaceRoot, args.config);
+  await saveSeedMeta(args.workspaceRoot, args.config, {
+    ...seedMeta,
+    lastQueuedBootstrapModelRevisionId: revisionId,
   });
   await appendFluxEvents(args.workspaceRoot, args.config, [{
     eventId: newId("evt"),
@@ -333,6 +237,7 @@ async function persistAcceptedModel(
   workspaceRoot: string,
   config: FluxConfig,
   modelOutput: Record<string, unknown>,
+  comparePayload: Record<string, unknown>,
 ): Promise<string> {
   const revisionId = newId("model_rev");
   const currentDir = path.join(fluxModelRoot(workspaceRoot, config), "current");
@@ -341,6 +246,18 @@ async function persistAcceptedModel(
   await fs.mkdir(revisionDir, { recursive: true });
   await writeJsonAtomic(path.join(revisionDir, "model_update.json"), modelOutput);
   await writeJsonAtomic(path.join(currentDir, "model_update.json"), modelOutput);
+  await persistModelRevisionWorkspace({
+    workspaceRoot,
+    config,
+    revisionId,
+    sourceWorkspaceDir: modelRevisionWorkspaceSource(workspaceRoot, config),
+  });
+  await saveModelCoverageSummary({
+    workspaceRoot,
+    config,
+    revisionId,
+    summary: buildCoverageSummary({ comparePayload, accepted: true }),
+  });
   await writeJsonAtomic(path.join(currentDir, "meta.json"), { revisionId, updatedAt: nowIso() });
   return revisionId;
 }
@@ -389,12 +306,7 @@ export async function runModelerQueueItem(args: {
   }
 
   const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.modeler.promptFile);
-  const triggerContext = await loadModelerTriggerContext(args.workspaceRoot, args.config);
-  const promptPayload = Object.keys(args.queueItem.payload).length > 0
-    ? args.queueItem.payload
-    : ((triggerContext.payload && typeof triggerContext.payload === "object" && !Array.isArray(triggerContext.payload))
-      ? triggerContext.payload as Record<string, unknown>
-      : {});
+  const promptPayload = args.queueItem.payload;
   const preflightModelOutput = {
     decision: "checked_current_model",
     summary: "preflight compare of current model against latest evidence",
@@ -406,6 +318,9 @@ export async function runModelerQueueItem(args: {
     workspaceRoot: args.workspaceRoot,
     config: args.config,
     modelOutput: preflightModelOutput,
+    modelRevisionId: await loadCurrentModelRevisionId(args.workspaceRoot, args.config),
+    evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : null,
+    evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : null,
   });
   const preflightComparePayload = preflightAcceptance.payload.compare_payload
     && typeof preflightAcceptance.payload.compare_payload === "object"
@@ -415,7 +330,8 @@ export async function runModelerQueueItem(args: {
   const previousProgress = await loadBestProgress(args.workspaceRoot, args.config);
   const preflightProgress = computeModelProgress(preflightComparePayload);
   if (preflightAcceptance.accepted) {
-    const currentRevisionId = await loadCurrentModelRevisionId(args.workspaceRoot, args.config);
+    const currentRevisionId = await loadCurrentModelRevisionId(args.workspaceRoot, args.config)
+      ?? await persistAcceptedModel(args.workspaceRoot, args.config, preflightModelOutput, preflightComparePayload);
     await publishBootstrapSignals({
       workspaceRoot: args.workspaceRoot,
       config: args.config,
@@ -517,7 +433,13 @@ export async function runModelerQueueItem(args: {
   });
   const parsedModelOutput = parseJsonObjectFromAssistantText(turn.assistantText || "");
   const modelOutput = parsedModelOutput ?? fallbackModelOutput(promptPayload, turn.assistantText, turn.interrupted);
-  const acceptance = await runModelAcceptance({ workspaceRoot: args.workspaceRoot, config: args.config, modelOutput });
+  const acceptance = await runModelAcceptance({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    modelOutput,
+    evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : null,
+    evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : null,
+  });
   const comparePayload = acceptance.payload.compare_payload && typeof acceptance.payload.compare_payload === "object" && !Array.isArray(acceptance.payload.compare_payload)
     ? acceptance.payload.compare_payload as Record<string, unknown>
     : {};
@@ -549,7 +471,7 @@ export async function runModelerQueueItem(args: {
       },
     }]);
   } else {
-    const revisionId = await persistAcceptedModel(args.workspaceRoot, args.config, modelOutput);
+    const revisionId = await persistAcceptedModel(args.workspaceRoot, args.config, modelOutput, comparePayload);
     await publishBootstrapSignals({
       workspaceRoot: args.workspaceRoot,
       config: args.config,

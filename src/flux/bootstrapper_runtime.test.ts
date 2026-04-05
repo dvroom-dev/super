@@ -164,6 +164,8 @@ retention:
       summary: "ready to finalize",
       seed_bundle_updated: true,
       notes: "ship it",
+      solver_action: "queue_and_interrupt",
+      seed_delta_kind: "level_completion_advanced",
     });
     await runBootstrapperQueueItem({
       workspaceRoot,
@@ -190,6 +192,8 @@ retention:
       summary: "ready to finalize",
       seed_bundle_updated: false,
       notes: "ship it",
+      solver_action: "queue_and_interrupt",
+      seed_delta_kind: "level_completion_advanced",
     });
     await runBootstrapperQueueItem({
       workspaceRoot,
@@ -218,6 +222,8 @@ retention:
       summary: "looks good",
       seed_bundle_updated: true,
       notes: "ship it",
+      solver_action: "queue_and_interrupt",
+      seed_delta_kind: "level_completion_advanced",
     });
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     const state: FluxRunState = {
@@ -286,6 +292,8 @@ retention:
       summary: "ship it",
       seed_bundle_updated: false,
       notes: "done",
+      solver_action: "queue_and_interrupt",
+      seed_delta_kind: "mechanic_explanation_added",
     });
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "current.json"), JSON.stringify({
@@ -331,6 +339,8 @@ retention:
       summary: "ship it",
       seed_bundle_updated: false,
       notes: "done",
+      solver_action: "queue_and_interrupt",
+      seed_delta_kind: "mechanic_explanation_added",
     });
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "current.json"), JSON.stringify({
@@ -376,6 +386,8 @@ retention:
       summary: "keep seed",
       seed_bundle_updated: false,
       notes: "ok",
+      solver_action: "no_action",
+      seed_delta_kind: "no_useful_change",
     });
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     const state: FluxRunState = {

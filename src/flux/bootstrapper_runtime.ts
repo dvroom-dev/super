@@ -9,31 +9,18 @@ import { runFluxProblemCommand } from "./problem_shell.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate, renderTemplate } from "./prompt_templates.js";
 import { runFluxProviderTurn } from "./provider_session.js";
+import { loadSeedMeta, saveSeedMeta, type FluxSeedMeta } from "./seed_meta.js";
 import { validateFluxSeedBundle } from "./seed_bundle.js";
 import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_store.js";
-import type { FluxConfig, FluxProblemInstance, FluxQueueItem, FluxRunState, FluxSeedBundle, FluxSessionRecord } from "./types.js";
-import { fluxBootstrapTriggerPath, fluxSeedRoot, fluxSolverLaunchPath } from "./paths.js";
-import { loadFluxState, mutateFluxState, saveFluxState } from "./state.js";
-
-type SeedMeta = {
-  revisionId?: string;
-  seedHash?: string;
-  updatedAt?: string;
-  lastModelRehearsalSeedHash?: string;
-  lastModelRehearsalSucceeded?: boolean;
-  lastModelRehearsalAt?: string;
-  lastModelRehearsalResult?: Record<string, unknown>;
-  lastRealReplaySeedHash?: string;
-  lastRealReplaySucceeded?: boolean;
-  lastRealReplayAt?: string;
-  lastRealReplayResult?: Record<string, unknown>;
-};
+import type { FluxConfig, FluxProblemInstance, FluxQueueItem, FluxRunState, FluxSeedBundle, FluxSessionRecord, FluxSolverInterruptPolicy } from "./types.js";
+import { fluxSeedRoot } from "./paths.js";
+import { mutateFluxState } from "./state.js";
 
 type SeedRevisionPersistResult = {
   revisionId: string;
   seedHash: string;
   changed: boolean;
-  meta: SeedMeta;
+  meta: FluxSeedMeta;
 };
 
 function nowIso(): string {
@@ -49,42 +36,6 @@ async function loadSeedBundle(workspaceRoot: string, config: FluxConfig): Promis
   return seedBundle ? validateFluxSeedBundle(seedBundle) : null;
 }
 
-async function loadSeedMeta(workspaceRoot: string, config: FluxConfig): Promise<SeedMeta> {
-  return await readJsonIfExists<SeedMeta>(path.join(fluxSeedRoot(workspaceRoot, config), "current_meta.json")) ?? {};
-}
-
-async function saveSeedMeta(workspaceRoot: string, config: FluxConfig, meta: SeedMeta): Promise<void> {
-  await writeJsonAtomic(path.join(fluxSeedRoot(workspaceRoot, config), "current_meta.json"), meta);
-}
-
-async function loadBootstrapperTriggerContext(workspaceRoot: string, config: FluxConfig): Promise<Record<string, unknown>> {
-  return await readJsonIfExists<Record<string, unknown>>(fluxBootstrapTriggerPath(workspaceRoot, config)) ?? {};
-}
-
-async function saveBootstrapperTriggerContext(
-  workspaceRoot: string,
-  config: FluxConfig,
-  reason: string,
-  payload: Record<string, unknown>,
-): Promise<void> {
-  await writeJsonAtomic(fluxBootstrapTriggerPath(workspaceRoot, config), {
-    reason,
-    payload,
-    updatedAt: nowIso(),
-  });
-}
-
-async function saveSolverLaunchContext(
-  workspaceRoot: string,
-  config: FluxConfig,
-  payload: Record<string, unknown>,
-): Promise<void> {
-  await writeJsonAtomic(fluxSolverLaunchPath(workspaceRoot, config), {
-    ...payload,
-    updatedAt: nowIso(),
-  });
-}
-
 async function persistSeedRevision(workspaceRoot: string, config: FluxConfig, seedBundle: FluxSeedBundle): Promise<SeedRevisionPersistResult> {
   const revisionId = newId("seed_rev");
   const currentDir = fluxSeedRoot(workspaceRoot, config);
@@ -92,7 +43,7 @@ async function persistSeedRevision(workspaceRoot: string, config: FluxConfig, se
   const previousMeta = await loadSeedMeta(workspaceRoot, config);
   const seedHash = sha256Hex(JSON.stringify(seedBundle));
   const changed = String(previousMeta.seedHash ?? "") !== seedHash;
-  const nextMeta: SeedMeta = {
+  const nextMeta: FluxSeedMeta = {
     ...previousMeta,
     revisionId,
     seedHash,
@@ -105,22 +56,22 @@ async function persistSeedRevision(workspaceRoot: string, config: FluxConfig, se
   return { revisionId, seedHash, changed, meta: nextMeta };
 }
 
-function currentSeedHasModelRehearsal(meta: SeedMeta, seedHash: string): boolean {
+function currentSeedHasModelRehearsal(meta: FluxSeedMeta, seedHash: string): boolean {
   return Boolean(meta.lastModelRehearsalSucceeded) && String(meta.lastModelRehearsalSeedHash ?? "") === seedHash;
 }
 
-function currentSeedHasRealReplay(meta: SeedMeta, seedHash: string): boolean {
+function currentSeedHasRealReplay(meta: FluxSeedMeta, seedHash: string): boolean {
   return Boolean(meta.lastRealReplaySucceeded) && String(meta.lastRealReplaySeedHash ?? "") === seedHash;
 }
 
 async function recordModelRehearsal(
   workspaceRoot: string,
   config: FluxConfig,
-  currentMeta: SeedMeta,
+  currentMeta: FluxSeedMeta,
   seedHash: string,
   rehearsalResult: Record<string, unknown>,
-): Promise<SeedMeta> {
-  const nextMeta: SeedMeta = {
+): Promise<FluxSeedMeta> {
+  const nextMeta: FluxSeedMeta = {
     ...currentMeta,
     lastModelRehearsalSeedHash: seedHash,
     lastModelRehearsalSucceeded: Boolean(rehearsalResult.rehearsal_ok ?? rehearsalResult.ok ?? false),
@@ -134,11 +85,11 @@ async function recordModelRehearsal(
 async function recordRealReplay(
   workspaceRoot: string,
   config: FluxConfig,
-  currentMeta: SeedMeta,
+  currentMeta: FluxSeedMeta,
   seedHash: string,
   replayResult: Record<string, unknown>,
-): Promise<SeedMeta> {
-  const nextMeta: SeedMeta = {
+): Promise<FluxSeedMeta> {
+  const nextMeta: FluxSeedMeta = {
     ...currentMeta,
     lastRealReplaySeedHash: seedHash,
     lastRealReplaySucceeded: Boolean(replayResult.replay_ok ?? replayResult.ok ?? false),
@@ -176,8 +127,16 @@ async function enqueueBootstrapperContinuation(args: {
     sessionType: "bootstrapper",
     createdAt: nowIso(),
     reason: args.reason,
-    payload: {},
+    payload: args.payload,
   });
+}
+
+function normalizeInterruptPolicy(value: unknown): FluxSolverInterruptPolicy {
+  const normalized = String(value ?? "").trim();
+  if (normalized === "queue_and_interrupt" || normalized === "queue_without_interrupt" || normalized === "no_action") {
+    return normalized;
+  }
+  return "queue_without_interrupt";
 }
 
 async function setBootstrapperIdle(
@@ -237,12 +196,7 @@ export async function runBootstrapperQueueItem(args: {
   });
 
   const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.bootstrapper.promptFile);
-  const triggerContext = await loadBootstrapperTriggerContext(args.workspaceRoot, args.config);
-  const promptPayload = Object.keys(args.queueItem.payload).length > 0
-    ? args.queueItem.payload
-    : ((triggerContext.payload && typeof triggerContext.payload === "object" && !Array.isArray(triggerContext.payload))
-      ? triggerContext.payload as Record<string, unknown>
-      : {});
+  const promptPayload = args.queueItem.payload;
   const promptText = [
     promptTemplate.trim(),
     `Bootstrap trigger: ${args.queueItem.reason}`,
@@ -276,6 +230,8 @@ export async function runBootstrapperQueueItem(args: {
 
   const decisionPayload = parseJsonObjectFromAssistantText(turn.assistantText || "") ?? {};
   const decision = String(decisionPayload.decision ?? "");
+  const interruptPolicy = normalizeInterruptPolicy(decisionPayload.solver_action);
+  const seedDeltaKind = String(decisionPayload.seed_delta_kind ?? "");
   const seedBundle = await loadSeedBundle(args.workspaceRoot, args.config);
   if (!seedBundle) throw new Error(`missing seed bundle at ${args.config.bootstrapper.seedBundlePath}`);
   const persistedSeed = await persistSeedRevision(args.workspaceRoot, args.config, seedBundle);
@@ -305,6 +261,7 @@ export async function runBootstrapperQueueItem(args: {
       seedBundle,
       seedHash,
       seedRevisionId,
+      modelRevisionId: promptPayload.baselineModelRevisionId,
     });
     seedMeta = await recordModelRehearsal(args.workspaceRoot, args.config, seedMeta, seedHash, rehearsalResult);
     await appendFluxEvents(args.workspaceRoot, args.config, [{
@@ -331,17 +288,17 @@ export async function runBootstrapperQueueItem(args: {
         payload: { seedHash, seedRevisionId },
       }]);
     }
-    await saveBootstrapperTriggerContext(args.workspaceRoot, args.config, "bootstrapper_retry_after_model_rehearsal", {
-      rehearsalResult,
-      seedRevisionId,
-      seedHash,
-    });
     await enqueueBootstrapperContinuation({
       workspaceRoot: args.workspaceRoot,
       config: args.config,
       sessionId,
       reason: "bootstrapper_retry_after_model_rehearsal",
-      payload: {},
+      payload: {
+        ...promptPayload,
+        rehearsalResult,
+        seedRevisionId,
+        seedHash,
+      },
       modelRehearsalResult: rehearsalResult,
     });
     await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
@@ -361,17 +318,17 @@ export async function runBootstrapperQueueItem(args: {
       payload: { seedHash, seedRevisionId, changed: persistedSeed.changed },
     }]);
     if (persistedSeed.changed) {
-      await saveBootstrapperTriggerContext(args.workspaceRoot, args.config, "bootstrapper_retry_after_model_rehearsal", {
-        rehearsalResult,
-        seedRevisionId,
-        seedHash,
-      });
       await enqueueBootstrapperContinuation({
         workspaceRoot: args.workspaceRoot,
         config: args.config,
         sessionId,
         reason: "bootstrapper_retry_after_model_rehearsal",
-        payload: {},
+        payload: {
+          ...promptPayload,
+          rehearsalResult,
+          seedRevisionId,
+          seedHash,
+        },
         modelRehearsalResult: rehearsalResult,
       });
     } else {
@@ -430,41 +387,52 @@ export async function runBootstrapperQueueItem(args: {
       summary: `real replay failed for ${seedRevisionId}`,
       payload: { seedHash, seedRevisionId, realReplayResult },
     }]);
-    await saveBootstrapperTriggerContext(args.workspaceRoot, args.config, "bootstrapper_retry_after_real_replay", {
-      realReplayResult,
-      seedRevisionId,
-      seedHash,
-    });
     await enqueueBootstrapperContinuation({
       workspaceRoot: args.workspaceRoot,
       config: args.config,
       sessionId,
       reason: "bootstrapper_retry_after_real_replay",
-      payload: {},
+      payload: {
+        ...promptPayload,
+        realReplayResult,
+        seedRevisionId,
+        seedHash,
+      },
       realReplayResult,
     });
     await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
     return;
   }
 
-  if (!(hasRealReplay && !persistedSeed.changed)) {
-    await saveSolverLaunchContext(args.workspaceRoot, args.config, {
-      reason: "bootstrapper_finalized_seed",
-      seedRevisionId,
-      seedHash,
-      attemptId: String((provisioned.attempt_id as string | undefined) ?? ""),
-      preplayedInstance: provisioned as FluxProblemInstance & Record<string, unknown>,
-      preplayedReplayResult: realReplayResult,
-    });
+  const shouldQueueSolver = interruptPolicy !== "no_action" && !(hasRealReplay && !persistedSeed.changed);
+  if (shouldQueueSolver) {
     await enqueueFluxQueueItem(args.workspaceRoot, args.config, "solver", {
       id: newId("q"),
       sessionType: "solver",
       createdAt: nowIso(),
       reason: "bootstrapper_finalized_seed",
       dedupeKey: `solver-seed:${seedHash}`,
-      payload: {},
+      payload: {
+        reason: "bootstrapper_finalized_seed",
+        seedRevisionId,
+        seedHash,
+        attemptId: String((provisioned.attempt_id as string | undefined) ?? ""),
+        preplayedInstance: provisioned as FluxProblemInstance & Record<string, unknown>,
+        preplayedReplayResult: realReplayResult,
+        interruptPolicy,
+      },
     });
   }
+  seedMeta = {
+    ...seedMeta,
+    lastBootstrapperModelRevisionId: typeof promptPayload.baselineModelRevisionId === "string" ? promptPayload.baselineModelRevisionId : seedMeta.lastBootstrapperModelRevisionId,
+    lastAttestedSeedRevisionId: seedRevisionId,
+    lastAttestedSeedHash: seedHash,
+    lastQueuedSolverSeedHash: shouldQueueSolver ? seedHash : seedMeta.lastQueuedSolverSeedHash,
+    lastInterruptPolicy: interruptPolicy,
+    lastSeedDeltaKind: seedDeltaKind || seedMeta.lastSeedDeltaKind,
+  };
+  await saveSeedMeta(args.workspaceRoot, args.config, seedMeta);
   await appendFluxEvents(args.workspaceRoot, args.config, [{
     eventId: newId("evt"),
     ts: nowIso(),
@@ -482,7 +450,14 @@ export async function runBootstrapperQueueItem(args: {
     sessionType: "bootstrapper",
     sessionId,
     summary: `seed revision ${seedRevisionId} finalized`,
-    payload: { seedHash, changed: persistedSeed.changed, queuedSolver: !(hasRealReplay && !persistedSeed.changed) },
+    payload: {
+      seedHash,
+      changed: persistedSeed.changed,
+      queuedSolver: shouldQueueSolver,
+      interruptPolicy,
+      seedDeltaKind: seedDeltaKind || null,
+      baselineModelRevisionId: typeof promptPayload.baselineModelRevisionId === "string" ? promptPayload.baselineModelRevisionId : null,
+    },
   }]);
 
   await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);

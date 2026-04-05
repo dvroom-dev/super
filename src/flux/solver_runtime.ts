@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readJsonIfExists, writeJsonAtomic } from "../lib/fs.js";
+import { readJsonIfExists } from "../lib/fs.js";
 import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
 import { appendEvidence } from "./evidence.js";
@@ -11,8 +11,7 @@ import { runFluxProviderTurn } from "./provider_session.js";
 import { validateFluxSeedBundle } from "./seed_bundle.js";
 import { appendFluxMessage, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSeedBundle, FluxSessionRecord } from "./types.js";
-import { fluxModelTriggerPath, fluxSolverLaunchPath } from "./paths.js";
-import { loadFluxState, mutateFluxState, saveFluxState } from "./state.js";
+import { mutateFluxState } from "./state.js";
 
 type ActiveSolverControl = {
   controller: AbortController;
@@ -59,10 +58,6 @@ function buildInitialSolverPrompt(args: {
   return parts.filter(Boolean).join("\n\n");
 }
 
-async function loadSolverLaunchContext(workspaceRoot: string, config: FluxConfig): Promise<Record<string, unknown>> {
-  return await readJsonIfExists<Record<string, unknown>>(fluxSolverLaunchPath(workspaceRoot, config)) ?? {};
-}
-
 async function loadCurrentSeedBundle(workspaceRoot: string, config: FluxConfig): Promise<FluxSeedBundle | null> {
   const raw = await readJsonIfExists<unknown>(path.resolve(workspaceRoot, config.bootstrapper.seedBundlePath));
   if (!raw) return null;
@@ -73,19 +68,6 @@ async function loadCurrentSeedBundle(workspaceRoot: string, config: FluxConfig):
     || typeof seed.modelRevisionId === "string"
     || typeof seed.evidenceWatermark === "string";
   return hasMaterial ? seed : null;
-}
-
-async function saveModelerTriggerContext(
-  workspaceRoot: string,
-  config: FluxConfig,
-  reason: string,
-  payload: Record<string, unknown>,
-): Promise<void> {
-  await writeJsonAtomic(fluxModelTriggerPath(workspaceRoot, config), {
-    reason,
-    payload,
-    updatedAt: nowIso(),
-  });
 }
 
 async function observeAndPublishSolverEvidence(args: {
@@ -108,6 +90,8 @@ async function observeAndPublishSolverEvidence(args: {
     instance: args.provisioned,
   });
   const evidenceList = Array.isArray(observed.evidence) ? observed.evidence : [];
+  const evidenceBundleId = typeof observed.evidence_bundle_id === "string" ? observed.evidence_bundle_id : "";
+  const evidenceBundlePath = typeof observed.evidence_bundle_path === "string" ? observed.evidence_bundle_path : "";
   const evidenceRecords = evidenceList.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
   const observedStepCount = maxObservedStepCount(evidenceRecords);
   const hasRealActionEvidence = evidenceRecords.some((payload) => {
@@ -145,20 +129,21 @@ async function observeAndPublishSolverEvidence(args: {
       payload: { attemptId: args.attemptId, instanceId: args.instanceId, watermark, count: evidenceList.length, reason: args.reason },
     }]);
     if (hasRealActionEvidence) {
-      await saveModelerTriggerContext(args.workspaceRoot, args.config, args.reason === "solver_running" ? "solver_new_evidence" : "solver_stopped", {
-        attemptId: args.attemptId,
-        instanceId: args.instanceId,
-        evidenceWatermark: watermark,
-        evidenceCount: evidenceList.length,
-        latestEvidence: evidenceRecords[evidenceRecords.length - 1] ?? null,
-      });
       await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
         id: newId("q"),
         sessionType: "modeler",
         createdAt: nowIso(),
         reason: args.reason === "solver_running" ? "solver_new_evidence" : "solver_stopped",
         dedupeKey: `evidence:${watermark}`,
-        payload: {},
+        payload: {
+          attemptId: args.attemptId,
+          instanceId: args.instanceId,
+          evidenceWatermark: watermark,
+          evidenceCount: evidenceList.length,
+          latestEvidence: evidenceRecords[evidenceRecords.length - 1] ?? null,
+          evidenceBundleId: evidenceBundleId || undefined,
+          evidenceBundlePath: evidenceBundlePath || undefined,
+        },
       });
     }
   }
@@ -228,9 +213,7 @@ export async function runSolverQueueItem(args: {
   state: FluxRunState;
   signal?: AbortSignal;
 }): Promise<void> {
-  const launchContext = Object.keys(args.queueItem.payload).length > 0
-    ? args.queueItem.payload
-    : await loadSolverLaunchContext(args.workspaceRoot, args.config);
+  const launchContext = args.queueItem.payload;
   const preplayedInstance = launchContext.preplayedInstance;
   const rawAttemptId = typeof launchContext.attemptId === "string"
     ? String(launchContext.attemptId).trim()
@@ -421,12 +404,12 @@ export async function runSolverQueueItem(args: {
     const postTurnObservedStepCount = maxObservedStepCount(postTurnEvidenceRecords);
     latestObservedStepCount = Math.max(latestObservedStepCount, postTurnObservedStepCount);
     const madeProgressThisTurn = postTurnObservedStepCount > preTurnObservedStepCount;
-    if (!postTurnObservation.hasRealActionEvidence) {
-      solverStopReason = "no_action_evidence";
-      break;
-    }
     if (isLevelSolvedFromEvidence(postTurnEvidenceRecords)) {
       solverStopReason = "solved";
+      break;
+    }
+    if (!postTurnObservation.hasRealActionEvidence) {
+      solverStopReason = "no_action_evidence";
       break;
     }
     if (!madeProgressThisTurn) {

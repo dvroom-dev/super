@@ -240,6 +240,8 @@ retention:
           summary: "seed is ready",
           seed_bundle_updated: false,
           notes: "finalize best known seed",
+          solver_action: "queue_and_interrupt",
+          seed_delta_kind: "level_completion_advanced",
         }),
       },
     ]);
@@ -376,6 +378,8 @@ retention:
           summary: "seed is ready",
           seed_bundle_updated: false,
           notes: "finalize best known seed",
+          solver_action: "queue_and_interrupt",
+          seed_delta_kind: "level_completion_advanced",
         }),
       },
     ]);
@@ -496,6 +500,8 @@ process.stdin.on("end", () => {
           summary: "seed is ready",
           seed_bundle_updated: false,
           notes: "finalize best known seed",
+          solver_action: "queue_and_interrupt",
+          seed_delta_kind: "level_completion_advanced",
         }),
       },
     ]);

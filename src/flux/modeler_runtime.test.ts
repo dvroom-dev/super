@@ -6,7 +6,6 @@ import { loadFluxConfig } from "./config.js";
 import { readFluxEvents } from "./events.js";
 import { runModelerQueueItem } from "./modeler_runtime.js";
 import { loadFluxQueue, saveFluxQueue } from "./queue.js";
-import { fluxBootstrapTriggerPath } from "./paths.js";
 import { saveFluxState } from "./state.js";
 import type { FluxRunState } from "./types.js";
 
@@ -171,12 +170,11 @@ retention:
       },
     });
     const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
-    const bootstrapTrigger = JSON.parse(await fs.readFile(fluxBootstrapTriggerPath(workspaceRoot, config), "utf8"));
     const events = await readFluxEvents(workspaceRoot, config);
     const promptDir = path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "prompts");
     expect(bootstrapQueue.items).toHaveLength(1);
-    expect(bootstrapTrigger.payload.sourceEvidenceWatermark).toBe("wm1");
-    expect((bootstrapTrigger.payload.sourceEvidence as Record<string, unknown>)?.summary).toBe("current_level=2");
+    expect(bootstrapQueue.items[0]?.payload.sourceEvidenceWatermark).toBe("wm1");
+    expect((bootstrapQueue.items[0]?.payload.sourceEvidence as Record<string, unknown>)?.summary).toBe("current_level=2");
     expect(events.some((event) => event.kind === "modeler.acceptance_passed")).toBe(true);
     expect(await fs.readdir(promptDir)).toHaveLength(0);
   });
@@ -307,12 +305,11 @@ process.stdin.on("end", () => {
       },
     });
     const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
-    const bootstrapTrigger = JSON.parse(await fs.readFile(fluxBootstrapTriggerPath(workspaceRoot, config), "utf8"));
     const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
     const events = await readFluxEvents(workspaceRoot, config);
     expect(bootstrapQueue.items).toHaveLength(1);
     expect(bootstrapQueue.items[0]?.reason).toBe("model_progress_advanced");
-    expect((bootstrapTrigger.payload.modelProgress as Record<string, unknown>)?.contiguousMatchedSequences).toBe(1);
+    expect((bootstrapQueue.items[0]?.payload.modelProgress as Record<string, unknown>)?.contiguousMatchedSequences).toBe(1);
     expect(modelerQueue.items).toHaveLength(0);
     expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(true);
   });
@@ -408,12 +405,11 @@ process.stdin.on("end", () => {
     });
 
     bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
-    const bootstrapTrigger = JSON.parse(await fs.readFile(fluxBootstrapTriggerPath(workspaceRoot, config), "utf8"));
     const events = await readFluxEvents(workspaceRoot, config);
     expect(bootstrapQueue.items).toHaveLength(1);
     expect(bootstrapQueue.items[0]?.reason).toBe("model_progress_advanced");
-    expect((bootstrapTrigger.payload.modelProgress as Record<string, unknown>)?.firstFailingSequenceId).toBe("seq_0001");
-    expect((bootstrapTrigger.payload.modelProgress as Record<string, unknown>)?.firstFailingStep).toBe(14);
+    expect((bootstrapQueue.items[0]?.payload.modelProgress as Record<string, unknown>)?.firstFailingSequenceId).toBe("seq_0001");
+    expect((bootstrapQueue.items[0]?.payload.modelProgress as Record<string, unknown>)?.firstFailingStep).toBe(14);
     expect(events.some((event) =>
       event.kind === "modeler.progress_advanced"
       && (event.payload?.firstFailingStep as number | undefined) === 14

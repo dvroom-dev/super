@@ -2,6 +2,7 @@ export type FluxSessionType = "solver" | "modeler" | "bootstrapper";
 
 export type FluxSessionScope = "per_attempt" | "run";
 export type FluxResumePolicy = "never" | "always";
+export type FluxSolverInterruptPolicy = "no_action" | "queue_without_interrupt" | "queue_and_interrupt";
 
 export type FluxCommandSpec = {
   command: string[];
@@ -128,6 +129,18 @@ export type FluxQueueItem = {
   payload: Record<string, unknown>;
 };
 
+export type FluxModelCoverageSummary = {
+  level: number;
+  allMatch: boolean;
+  coveredSequenceIds: string[];
+  contiguousMatchedSequences: number;
+  firstFailingSequenceId: string | null;
+  firstFailingStep: number | null;
+  firstFailingReason: string | null;
+  frontierDiscovered: boolean;
+  compareKind: "accepted" | "frontier_discovered_no_sequences" | "rejected" | "incomplete_artifacts";
+};
+
 export type FluxProblemInstance = {
   instanceId: string;
   workingDirectory: string;
@@ -141,6 +154,8 @@ export type FluxSeedMetadata = {
   rehearsalStatus?: "not_run" | "passed" | "failed";
   lastModelRehearsalSeedHash?: string;
   lastRealReplaySeedHash?: string;
+  interruptPolicy?: FluxSolverInterruptPolicy;
+  deltaKind?: string;
 };
 
 export type FluxMessageRecord = {

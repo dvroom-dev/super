@@ -41,10 +41,7 @@ export async function enqueueFluxQueueItem(
   item: FluxQueueItem,
 ): Promise<FluxQueueSnapshot> {
   const snapshot = await loadFluxQueue(workspaceRoot, config, sessionType);
-  snapshot.items = [{
-    ...item,
-    payload: {},
-  }];
+  snapshot.items = [{ ...item }];
   await saveFluxQueue(workspaceRoot, config, snapshot);
   return snapshot;
 }
