@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { newId } from "../utils/ids.js";
 import type { FluxConfig, FluxRunState } from "./types.js";
@@ -146,6 +147,23 @@ async function reconcileActiveSessionTruth(
   return nextState;
 }
 
+async function findRunningSessionId(
+  workspaceRoot: string,
+  config: FluxConfig,
+  sessionType: "solver" | "modeler" | "bootstrapper",
+): Promise<string | null> {
+  const sessionsDir = path.join(workspaceRoot, config.storage.aiRoot, "sessions", sessionType);
+  try {
+    const entries = await fsp.readdir(sessionsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const session = await loadFluxSession(workspaceRoot, config, sessionType, entry.name);
+      if (session?.status === "running") return session.sessionId;
+    }
+  } catch {}
+  return null;
+}
+
 type FluxWorkspaceLock = {
   release: () => void;
 };
@@ -265,8 +283,12 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
       state = await loadFluxState(workspaceRoot, config) ?? state;
       state = await reconcileActiveSessionTruth(workspaceRoot, config, state, activeRuns);
       if (state.stopRequested) {
-        if (state.active.solver.status === "running" && state.active.solver.sessionId) {
-          requestActiveSolverInterrupt(state.active.solver.sessionId);
+        const runningSolverSessionId =
+          (state.active.solver.status === "running" && state.active.solver.sessionId)
+            ? state.active.solver.sessionId
+            : await findRunningSessionId(workspaceRoot, config, "solver");
+        if (runningSolverSessionId) {
+          requestActiveSolverInterrupt(runningSolverSessionId);
         }
         break;
       }

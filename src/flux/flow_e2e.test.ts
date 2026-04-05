@@ -3,9 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadFluxConfig } from "./config.js";
+import { readFluxEvents } from "./events.js";
 import { runModelerQueueItem } from "./modeler_runtime.js";
 import { runBootstrapperQueueItem } from "./bootstrapper_runtime.js";
-import { loadFluxQueue } from "./queue.js";
+import { loadFluxQueue, saveFluxQueue } from "./queue.js";
 import { loadFluxSession } from "./session_store.js";
 import { saveFluxState } from "./state.js";
 import { requestActiveSolverInterrupt, runSolverQueueItem } from "./solver_runtime.js";
@@ -354,5 +355,226 @@ retention:
       delete process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON;
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
     }
+  }, 15000);
+
+  test("treats deeper divergence in the same sequence as progress and avoids modeler self-loops", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
+      {
+        contains: "MODELER_PROMPT",
+        text: JSON.stringify({
+          decision: "updated_model",
+          summary: "same first failing sequence now fails later",
+          message_for_bootstrapper: "frontier moved deeper in the same ordered sequence",
+          artifacts_updated: ["model_lib.py"],
+          evidence_watermark: "wm_same_seq_1",
+        }),
+      },
+      {
+        contains: "BOOTSTRAP_PROMPT",
+        text: JSON.stringify({
+          decision: "finalize_seed",
+          summary: "seed is ready",
+          seed_bundle_updated: false,
+          notes: "finalize best known seed",
+        }),
+      },
+    ]);
+    process.env.MOCK_PROVIDER_DELAY_MS = "10";
+
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_same_sequence_progress.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const modelOutput = input.modelOutput || {};
+  const decision = String(modelOutput.decision || "");
+  const evidenceWatermark = String(modelOutput.evidence_watermark || "");
+  if (decision === "checked_current_model") {
+    const step = evidenceWatermark === "wm_same_seq_2" ? 14 : 8;
+    process.stdout.write(JSON.stringify({
+      accepted: false,
+      message: "current model still fails in the same sequence",
+      model_output: modelOutput,
+      compare_payload: {
+        level: 2,
+        all_match: false,
+        reports: [
+          { sequence_id: "seq_0001", matched: false, divergence_step: step, divergence_reason: "intermediate_frame_mismatch" }
+        ]
+      }
+    }));
+    return;
+  }
+  const step = evidenceWatermark === "wm_same_seq_2" ? 14 : 8;
+  process.stdout.write(JSON.stringify({
+    accepted: false,
+    message: "same sequence now fails later",
+    model_output: modelOutput,
+    compare_payload: {
+      level: 2,
+      all_match: false,
+      reports: [
+        { sequence_id: "seq_0001", matched: false, divergence_step: step, divergence_reason: "intermediate_frame_mismatch" }
+      ]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    const fluxText = (await fs.readFile(fluxPath, "utf8")).replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_model_same_1",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "solver_new_evidence",
+        payload: {
+          evidenceWatermark: "wm_same_seq_1",
+          latestEvidence: {
+            summary: "current_level=2",
+            state: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED", win_levels: 7 },
+          },
+        },
+      },
+    });
+
+    let bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    let modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+    let events = await readFluxEvents(workspaceRoot, config);
+    let modelerMessages = await fs.readFile(path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "messages.jsonl"), "utf8");
+    expect(bootstrapQueue.items).toHaveLength(1);
+    expect(modelerQueue.items).toHaveLength(0);
+    expect(modelerMessages.includes("acceptance_failed_resume")).toBe(false);
+    expect(events.some((event) =>
+      event.kind === "modeler.progress_advanced"
+      && event.payload?.firstFailingSequenceId === "seq_0001"
+      && event.payload?.firstFailingStep === 8
+    )).toBe(true);
+
+    await saveFluxQueue(workspaceRoot, config, { ...bootstrapQueue, items: [] });
+    process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
+      {
+        contains: "MODELER_PROMPT",
+        text: JSON.stringify({
+          decision: "updated_model",
+          summary: "same first failing sequence now fails even later",
+          message_for_bootstrapper: "frontier moved deeper again in the same ordered sequence",
+          artifacts_updated: ["model_lib.py"],
+          evidence_watermark: "wm_same_seq_2",
+        }),
+      },
+      {
+        contains: "BOOTSTRAP_PROMPT",
+        text: JSON.stringify({
+          decision: "finalize_seed",
+          summary: "seed is ready",
+          seed_bundle_updated: false,
+          notes: "finalize best known seed",
+        }),
+      },
+    ]);
+
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_model_same_2",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "solver_new_evidence",
+        payload: {
+          evidenceWatermark: "wm_same_seq_2",
+          latestEvidence: {
+            summary: "current_level=2",
+            state: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED", win_levels: 7 },
+          },
+        },
+      },
+    });
+
+    bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+    events = await readFluxEvents(workspaceRoot, config);
+    modelerMessages = await fs.readFile(path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "messages.jsonl"), "utf8");
+    expect(bootstrapQueue.items).toHaveLength(1);
+    expect(modelerQueue.items).toHaveLength(0);
+    expect(modelerMessages.includes("acceptance_failed_resume")).toBe(false);
+    expect(events.some((event) =>
+      event.kind === "modeler.progress_advanced"
+      && event.payload?.firstFailingSequenceId === "seq_0001"
+      && event.payload?.firstFailingStep === 14
+    )).toBe(true);
+
+    await runBootstrapperQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: bootstrapQueue.items[0]!,
+    });
+
+    const bootstrapRetryQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    expect(bootstrapRetryQueue.items).toHaveLength(1);
+
+    await runBootstrapperQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: bootstrapRetryQueue.items[0]!,
+    });
+
+    const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+    expect(solverQueue.items).toHaveLength(1);
+
+    const runPromise = runSolverQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: solverQueue.items[0]!,
+    });
+    const solverDir = path.join(workspaceRoot, ".ai-flux", "sessions", "solver");
+    const deadline = Date.now() + 2000;
+    let solverSessions: string[] = [];
+    while (Date.now() < deadline && solverSessions.length === 0) {
+      try {
+        solverSessions = (await fs.readdir(solverDir)).filter((name) => name.startsWith("solver_attempt_")).sort();
+      } catch {
+        solverSessions = [];
+      }
+      if (solverSessions.length === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(solverSessions).toHaveLength(1);
+    requestActiveSolverInterrupt(solverSessions[0]!);
+    await runPromise;
+
+    const solverMessages = await fs.readFile(path.join(workspaceRoot, ".ai-flux", "sessions", "solver", solverSessions[0]!, "messages.jsonl"), "utf8");
+    expect(solverMessages).toContain("Seed preplay already ran on this instance.");
+    expect(solverMessages).toContain("Current live state after preplay: level 2");
   }, 15000);
 });
