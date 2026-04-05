@@ -297,7 +297,7 @@ retention:
       seed_delta_kind: "mechanic_explanation_added",
     });
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
-    await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "current.json"), JSON.stringify({
+    await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "candidate.json"), JSON.stringify({
       version: 1,
       generatedAt: new Date().toISOString(),
       syntheticMessages: [{ role: "assistant", text: "Do A" }],
@@ -350,7 +350,7 @@ retention:
       seed_delta_kind: "mechanic_explanation_added",
     });
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
-    await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "current.json"), JSON.stringify({
+    await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "candidate.json"), JSON.stringify({
       version: 1,
       generatedAt: new Date().toISOString(),
       syntheticMessages: [{ role: "assistant", text: "Do A" }],
@@ -448,7 +448,7 @@ retention:
     expect(session?.stopReason).toBeUndefined();
   });
 
-  test("queues a continuation instead of hard-failing when the current seed is invalid", async () => {
+  test("queues a continuation instead of hard-failing when the candidate seed is invalid", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
       decision: "finalize_seed",
       summary: "keep going",
@@ -458,7 +458,15 @@ retention:
       seed_delta_kind: "no_useful_change",
     });
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
-    await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "current.json"), JSON.stringify({
+    const currentSeedPath = path.join(workspaceRoot, "flux", "seed", "current.json");
+    await fs.writeFile(currentSeedPath, JSON.stringify({
+      version: 1,
+      generatedAt: "2026-04-05T19:23:19.835Z",
+      syntheticMessages: [{ role: "assistant", text: "Do A" }],
+      replayPlan: [{ tool: "shell", args: { cmd: ["arc_action", "ACTION1"] } }],
+      assertions: [],
+    }, null, 2), "utf8");
+    await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "candidate.json"), JSON.stringify({
       version: 1,
       generatedAt: new Date().toISOString(),
       syntheticMessages: [{ role: "assistant", text: "Do A" }],
@@ -501,5 +509,7 @@ retention:
     expect(String(queue.items[0]?.payload.validationError || "")).toContain("must be one of arc_action, arc_repl, arc_level");
     expect(events.some((event) => event.kind === "bootstrapper.seed_invalid")).toBe(true);
     expect(session?.status).toBe("idle");
+    const currentSeed = JSON.parse(await fs.readFile(currentSeedPath, "utf8"));
+    expect(currentSeed.replayPlan[0]?.args?.cmd).toEqual(["arc_action", "ACTION1"]);
   });
 });

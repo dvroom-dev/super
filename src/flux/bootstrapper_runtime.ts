@@ -31,8 +31,31 @@ function bootstrapperSessionId(): string {
   return "bootstrapper_run";
 }
 
-async function loadSeedBundle(workspaceRoot: string, config: FluxConfig): Promise<FluxSeedBundle | null> {
-  const seedBundle = await readJsonIfExists<unknown>(path.resolve(workspaceRoot, config.bootstrapper.seedBundlePath));
+function seedBundleCurrentPath(workspaceRoot: string, config: FluxConfig): string {
+  return path.resolve(workspaceRoot, config.bootstrapper.seedBundlePath);
+}
+
+function seedBundleCandidatePath(workspaceRoot: string, config: FluxConfig): string {
+  const currentPath = seedBundleCurrentPath(workspaceRoot, config);
+  return path.join(path.dirname(currentPath), "candidate.json");
+}
+
+async function ensureSeedCandidateExists(workspaceRoot: string, config: FluxConfig): Promise<void> {
+  const candidatePath = seedBundleCandidatePath(workspaceRoot, config);
+  const currentPath = seedBundleCurrentPath(workspaceRoot, config);
+  if (await readJsonIfExists(candidatePath)) {
+    return;
+  }
+  const currentSeed = await readJsonIfExists<unknown>(currentPath);
+  if (!currentSeed) {
+    return;
+  }
+  await fs.mkdir(path.dirname(candidatePath), { recursive: true });
+  await writeJsonAtomic(candidatePath, currentSeed);
+}
+
+async function loadSeedBundleFromPath(seedPath: string): Promise<FluxSeedBundle | null> {
+  const seedBundle = await readJsonIfExists<unknown>(seedPath);
   return seedBundle ? validateFluxSeedBundle(seedBundle) : null;
 }
 
@@ -40,6 +63,8 @@ async function persistSeedRevision(workspaceRoot: string, config: FluxConfig, se
   const revisionId = newId("seed_rev");
   const currentDir = fluxSeedRoot(workspaceRoot, config);
   const revisionPath = path.join(currentDir, "revisions", `${revisionId}.json`);
+  const currentPath = seedBundleCurrentPath(workspaceRoot, config);
+  const candidatePath = seedBundleCandidatePath(workspaceRoot, config);
   const previousMeta = await loadSeedMeta(workspaceRoot, config);
   const seedHash = sha256Hex(JSON.stringify(seedBundle));
   const changed = String(previousMeta.seedHash ?? "") !== seedHash;
@@ -50,7 +75,8 @@ async function persistSeedRevision(workspaceRoot: string, config: FluxConfig, se
     updatedAt: nowIso(),
   };
   await fs.mkdir(path.dirname(revisionPath), { recursive: true });
-  await writeJsonAtomic(path.resolve(workspaceRoot, config.bootstrapper.seedBundlePath), seedBundle);
+  await writeJsonAtomic(currentPath, seedBundle);
+  await writeJsonAtomic(candidatePath, seedBundle);
   await writeJsonAtomic(revisionPath, seedBundle);
   await saveSeedMeta(workspaceRoot, config, nextMeta);
   return { revisionId, seedHash, changed, meta: nextMeta };
@@ -194,6 +220,7 @@ export async function runBootstrapperQueueItem(args: {
     };
     return next;
   });
+  await ensureSeedCandidateExists(args.workspaceRoot, args.config);
 
   const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.bootstrapper.promptFile);
   const promptPayload = args.queueItem.payload;
@@ -233,8 +260,9 @@ export async function runBootstrapperQueueItem(args: {
   const interruptPolicy = normalizeInterruptPolicy(decisionPayload.solver_action);
   const seedDeltaKind = String(decisionPayload.seed_delta_kind ?? "");
   let seedBundle: FluxSeedBundle | null = null;
+  const candidatePath = seedBundleCandidatePath(args.workspaceRoot, args.config);
   try {
-    seedBundle = await loadSeedBundle(args.workspaceRoot, args.config);
+    seedBundle = await loadSeedBundleFromPath(candidatePath);
   } catch (error) {
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
@@ -248,6 +276,7 @@ export async function runBootstrapperQueueItem(args: {
         decision,
         interruptPolicy,
         seedDeltaKind: seedDeltaKind || null,
+        candidatePath,
       },
     }]);
     await enqueueBootstrapperContinuation({
@@ -258,6 +287,7 @@ export async function runBootstrapperQueueItem(args: {
       payload: {
         ...promptPayload,
         validationError: String(error instanceof Error ? error.message : error),
+        candidatePath,
       },
     });
     await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
@@ -271,7 +301,7 @@ export async function runBootstrapperQueueItem(args: {
       workspaceRoot: args.workspaceRoot,
       sessionType: "bootstrapper",
       sessionId,
-      summary: `missing seed bundle at ${args.config.bootstrapper.seedBundlePath}`,
+      summary: `missing seed bundle candidate at ${candidatePath}`,
     }]);
     await enqueueBootstrapperContinuation({
       workspaceRoot: args.workspaceRoot,
@@ -280,7 +310,8 @@ export async function runBootstrapperQueueItem(args: {
       reason: "bootstrapper_missing_seed",
       payload: {
         ...promptPayload,
-        validationError: `missing seed bundle at ${args.config.bootstrapper.seedBundlePath}`,
+        validationError: `missing seed bundle candidate at ${candidatePath}`,
+        candidatePath,
       },
     });
     await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
