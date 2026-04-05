@@ -6,7 +6,7 @@ import { appendFluxEvents } from "./events.js";
 import { parseJsonObjectFromAssistantText, schemaForName } from "./json_session_format.js";
 import { runModelAcceptance } from "./model_acceptance.js";
 import { enqueueFluxQueueItem } from "./queue.js";
-import { loadFluxPromptTemplate, renderTemplate } from "./prompt_templates.js";
+import { loadFluxPromptTemplate } from "./prompt_templates.js";
 import { runFluxProblemCommand } from "./problem_shell.js";
 import { runFluxProviderTurn } from "./provider_session.js";
 import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_store.js";
@@ -30,29 +30,6 @@ function fallbackModelOutput(queuePayload: Record<string, unknown>, assistantTex
     artifacts_updated: [],
     evidence_watermark: String(queuePayload.evidenceWatermark ?? ""),
     raw_assistant_text: assistantText,
-  };
-}
-
-function compactAcceptancePayload(payload: Record<string, unknown>): Record<string, unknown> {
-  const comparePayload = payload.compare_payload && typeof payload.compare_payload === "object" && !Array.isArray(payload.compare_payload)
-    ? payload.compare_payload as Record<string, unknown>
-    : {};
-  const reports = Array.isArray(comparePayload.reports) ? comparePayload.reports : [];
-  const firstReport = reports[0] && typeof reports[0] === "object" && !Array.isArray(reports[0])
-    ? reports[0] as Record<string, unknown>
-    : {};
-  return {
-    accepted: Boolean(payload.accepted),
-    message: String(payload.message ?? ""),
-    model_output: payload.model_output,
-    compare_summary: {
-      all_match: Boolean(comparePayload.all_match),
-      compared_sequences: Number(comparePayload.compared_sequences ?? 0),
-      diverged_sequences: Number(comparePayload.diverged_sequences ?? 0),
-      divergence_reason: String(firstReport.divergence_reason ?? ""),
-      report_file: String(firstReport.report_file ?? ""),
-      sequence_id: String(firstReport.sequence_id ?? ""),
-    },
   };
 }
 
@@ -172,14 +149,6 @@ async function loadModelerTriggerContext(workspaceRoot: string, config: FluxConf
   return await fs.readFile(fluxModelTriggerPath(workspaceRoot, config), "utf8")
     .then((raw) => JSON.parse(raw) as Record<string, unknown>)
     .catch(() => ({}));
-}
-
-async function saveModelerTriggerContext(workspaceRoot: string, config: FluxConfig, reason: string, payload: Record<string, unknown>): Promise<void> {
-  await writeJsonAtomic(fluxModelTriggerPath(workspaceRoot, config), {
-    reason,
-    payload,
-    updatedAt: nowIso(),
-  });
 }
 
 async function saveBootstrapperTriggerContext(workspaceRoot: string, config: FluxConfig, reason: string, payload: Record<string, unknown>): Promise<void> {
@@ -566,31 +535,6 @@ export async function runModelerQueueItem(args: {
     });
     const blocked = isBlockedModelOutput(modelOutput);
     const infrastructureFailure = acceptance.infrastructureFailure;
-    if (!blocked && !infrastructureFailure) {
-      const template = await loadFluxPromptTemplate(args.workspaceRoot, args.config.modeler.acceptance.continueMessageTemplateFile);
-      const continueText = renderTemplate(template, {
-        acceptance_message: acceptance.message || JSON.stringify(acceptance.payload, null, 2),
-      });
-      await appendFluxMessage(args.workspaceRoot, args.config, "modeler", sessionId, {
-        messageId: newId("msg"),
-        ts: nowIso(),
-        turnIndex: Date.now(),
-        kind: "user",
-        text: continueText,
-      });
-      await saveModelerTriggerContext(args.workspaceRoot, args.config, "acceptance_failed_resume", {
-        acceptance: compactAcceptancePayload(acceptance.payload),
-        latestEvidence: promptPayload.latestEvidence ?? null,
-        evidenceWatermark: promptPayload.evidenceWatermark ?? null,
-      });
-      await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
-        id: newId("q"),
-        sessionType: "modeler",
-        createdAt: nowIso(),
-        reason: "acceptance_failed_resume",
-        payload: {},
-      });
-    }
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),

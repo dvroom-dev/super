@@ -313,7 +313,7 @@ process.stdin.on("end", () => {
     expect(bootstrapQueue.items).toHaveLength(1);
     expect(bootstrapQueue.items[0]?.reason).toBe("model_progress_advanced");
     expect((bootstrapTrigger.payload.modelProgress as Record<string, unknown>)?.contiguousMatchedSequences).toBe(1);
-    expect(modelerQueue.items).toHaveLength(1);
+    expect(modelerQueue.items).toHaveLength(0);
     expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(true);
   });
 
@@ -483,6 +483,74 @@ process.stdin.on("end", () => {
       event.kind === "modeler.acceptance_failed"
       && (event.payload?.infrastructureFailure as Record<string, unknown> | undefined)?.type === "sequence_surface_race"
     )).toBe(true);
+  });
+
+  test("does not self-requeue modeler after a normal acceptance failure", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "updated_model",
+      summary: "patch landed but compare still fails",
+      message_for_bootstrapper: "",
+      artifacts_updated: ["model_lib.py"],
+      evidence_watermark: "wm_no_loop",
+    });
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_not_yet.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  process.stdout.write(JSON.stringify({
+    accepted: false,
+    message: "still failing at step 9",
+    model_output: input.modelOutput,
+    compare_payload: {
+      level: 1,
+      all_match: false,
+      reports: [
+        { sequence_id: "seq_0001", matched: false, divergence_step: 9, divergence_reason: "intermediate_frame_mismatch" }
+      ]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText.replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_no_loop",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm_no_loop" },
+      },
+    });
+    const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(modelerQueue.items).toHaveLength(0);
+    expect(events.some((event) => event.kind === "modeler.acceptance_failed")).toBe(true);
   });
 
   test("does not rerun bootstrapper for identical accepted frontier state", async () => {
