@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { readJsonIfExists, writeJsonAtomic } from "../lib/fs.js";
 import { fluxModelRevisionDir, fluxModelRevisionSummaryPath, fluxModelRevisionWorkspaceDir, fluxModelRoot } from "./paths.js";
+import { classifyModelImprovement } from "./model_coverage.js";
 import type { FluxConfig, FluxModelCoverageSummary } from "./types.js";
 
 async function copyDirStable(source: string, destination: string): Promise<void> {
@@ -30,20 +31,37 @@ export async function persistModelRevisionWorkspace(args: {
   return destination;
 }
 
+function preferCoverageSummary(
+  existing: FluxModelCoverageSummary | null,
+  candidate: FluxModelCoverageSummary,
+): FluxModelCoverageSummary {
+  if (!existing) return candidate;
+  if (classifyModelImprovement(existing, candidate) !== "no_improvement") {
+    return candidate;
+  }
+  if (classifyModelImprovement(candidate, existing) !== "no_improvement") {
+    return existing;
+  }
+  return existing;
+}
+
 export async function saveModelCoverageSummary(args: {
   workspaceRoot: string;
   config: FluxConfig;
   revisionId: string;
   summary: FluxModelCoverageSummary;
-}): Promise<void> {
+}): Promise<FluxModelCoverageSummary> {
   await fs.mkdir(fluxModelRevisionDir(args.workspaceRoot, args.config, args.revisionId), { recursive: true });
-  await writeJsonAtomic(fluxModelRevisionSummaryPath(args.workspaceRoot, args.config, args.revisionId), args.summary);
+  const existing = await readJsonIfExists<FluxModelCoverageSummary>(fluxModelRevisionSummaryPath(args.workspaceRoot, args.config, args.revisionId));
+  const storedSummary = preferCoverageSummary(existing, args.summary);
+  await writeJsonAtomic(fluxModelRevisionSummaryPath(args.workspaceRoot, args.config, args.revisionId), storedSummary);
   await fs.mkdir(path.join(fluxModelRoot(args.workspaceRoot, args.config), "current"), { recursive: true });
   await writeJsonAtomic(path.join(fluxModelRoot(args.workspaceRoot, args.config), "current", "meta.json"), {
     revisionId: args.revisionId,
     updatedAt: new Date().toISOString(),
-    summary: args.summary,
+    summary: storedSummary,
   });
+  return storedSummary;
 }
 
 export async function loadModelCoverageSummary(

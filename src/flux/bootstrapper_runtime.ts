@@ -165,6 +165,14 @@ function normalizeInterruptPolicy(value: unknown): FluxSolverInterruptPolicy {
   return "queue_without_interrupt";
 }
 
+function coverageSummaryFromPromptPayload(value: unknown): FluxSeedMeta["lastBootstrapperCoverageSummary"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  return Array.isArray(record.coveredSequenceIds) ? record as FluxSeedMeta["lastBootstrapperCoverageSummary"] : undefined;
+}
+
 async function setBootstrapperIdle(
   workspaceRoot: string,
   config: FluxConfig,
@@ -510,6 +518,8 @@ export async function runBootstrapperQueueItem(args: {
   seedMeta = {
     ...seedMeta,
     lastBootstrapperModelRevisionId: typeof promptPayload.baselineModelRevisionId === "string" ? promptPayload.baselineModelRevisionId : seedMeta.lastBootstrapperModelRevisionId,
+    lastBootstrapperCoverageSummary: coverageSummaryFromPromptPayload(promptPayload.coverageSummary) ?? seedMeta.lastBootstrapperCoverageSummary,
+    lastQueuedBootstrapCoverageSummary: coverageSummaryFromPromptPayload(promptPayload.coverageSummary) ?? seedMeta.lastQueuedBootstrapCoverageSummary,
     lastAttestedSeedRevisionId: seedRevisionId,
     lastAttestedSeedHash: seedHash,
     lastQueuedSolverSeedHash: shouldQueueSolver ? seedHash : seedMeta.lastQueuedSolverSeedHash,

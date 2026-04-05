@@ -88,6 +88,17 @@ function isProgressAdvance(previous: ModelProgress | null, next: ModelProgress):
   return next.contiguousMatchedSequences > previous.contiguousMatchedSequences;
 }
 
+function coverageSummaryFromSeedMeta(value: unknown): ReturnType<typeof buildCoverageSummary> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.coveredSequenceIds)) {
+    return null;
+  }
+  return record as ReturnType<typeof buildCoverageSummary>;
+}
+
 async function publishBootstrapSignals(args: {
   workspaceRoot: string;
   config: FluxConfig;
@@ -102,7 +113,7 @@ async function publishBootstrapSignals(args: {
   const modelRevisionId = typeof args.modelRevisionId === "string" && args.modelRevisionId ? args.modelRevisionId : null;
   if (!modelRevisionId) return;
   const currentSummary = buildCoverageSummary({ comparePayload: args.comparePayload, accepted: true });
-  await saveModelCoverageSummary({
+  const persistedSummary = await saveModelCoverageSummary({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
     revisionId: modelRevisionId,
@@ -110,10 +121,11 @@ async function publishBootstrapSignals(args: {
   });
   const seedMeta = await loadSeedMeta(args.workspaceRoot, args.config);
   const baselineRevisionId = seedMeta.lastQueuedBootstrapModelRevisionId ?? seedMeta.lastBootstrapperModelRevisionId ?? null;
-  const baselineSummary = baselineRevisionId
-    ? await loadModelCoverageSummary(args.workspaceRoot, args.config, baselineRevisionId)
-    : null;
-  const improvementKind = classifyModelImprovement(baselineSummary, currentSummary);
+  const baselineSummary =
+    coverageSummaryFromSeedMeta(seedMeta.lastQueuedBootstrapCoverageSummary)
+    ?? coverageSummaryFromSeedMeta(seedMeta.lastBootstrapperCoverageSummary)
+    ?? (baselineRevisionId ? await loadModelCoverageSummary(args.workspaceRoot, args.config, baselineRevisionId) : null);
+  const improvementKind = classifyModelImprovement(baselineSummary, persistedSummary);
   if (isProgressAdvance(args.previousProgress, args.currentProgress)) {
     await saveBestProgress(args.workspaceRoot, args.config, args.currentProgress);
     await appendFluxEvents(args.workspaceRoot, args.config, [{
@@ -152,11 +164,13 @@ async function publishBootstrapSignals(args: {
       sourceEvidenceWatermark: String(args.promptPayload.evidenceWatermark ?? args.modelOutput.evidence_watermark ?? ""),
       modelProgress: args.currentProgress,
       comparePayload: args.comparePayload,
+      coverageSummary: persistedSummary,
     },
   });
   const nextSeedMeta = {
     ...seedMeta,
     lastQueuedBootstrapModelRevisionId: modelRevisionId,
+    lastQueuedBootstrapCoverageSummary: persistedSummary,
   };
   await saveSeedMeta(args.workspaceRoot, args.config, nextSeedMeta);
 }
@@ -178,6 +192,7 @@ async function publishProgressAdvance(args: {
   await saveBestProgress(args.workspaceRoot, args.config, args.currentProgress);
   const revisionId = args.modelRevisionId ?? newId("model_rev");
   const revisionDir = path.join(fluxModelRoot(args.workspaceRoot, args.config), "revisions", revisionId);
+  const summary = buildCoverageSummary({ comparePayload: args.comparePayload, accepted: false });
   await fs.mkdir(revisionDir, { recursive: true });
   await writeJsonAtomic(path.join(revisionDir, "model_update.json"), args.modelOutput);
   await persistModelRevisionWorkspace({
@@ -186,11 +201,11 @@ async function publishProgressAdvance(args: {
     revisionId,
     sourceWorkspaceDir: modelRevisionWorkspaceSource(args.workspaceRoot, args.config),
   });
-  await saveModelCoverageSummary({
+  const persistedSummary = await saveModelCoverageSummary({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
     revisionId,
-    summary: buildCoverageSummary({ comparePayload: args.comparePayload, accepted: false }),
+    summary,
   });
   await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
     id: newId("q"),
@@ -208,12 +223,14 @@ async function publishProgressAdvance(args: {
       sourceEvidenceWatermark: String(args.promptPayload.evidenceWatermark ?? args.modelOutput.evidence_watermark ?? ""),
       modelProgress: args.currentProgress,
       comparePayload: args.comparePayload,
+      coverageSummary: persistedSummary,
     },
   });
   const seedMeta = await loadSeedMeta(args.workspaceRoot, args.config);
   await saveSeedMeta(args.workspaceRoot, args.config, {
     ...seedMeta,
     lastQueuedBootstrapModelRevisionId: revisionId,
+    lastQueuedBootstrapCoverageSummary: persistedSummary,
   });
   await appendFluxEvents(args.workspaceRoot, args.config, [{
     eventId: newId("evt"),

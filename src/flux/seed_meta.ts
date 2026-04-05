@@ -1,7 +1,7 @@
 import path from "node:path";
 import { readJsonIfExists, writeJsonAtomic } from "../lib/fs.js";
 import { fluxSeedRoot } from "./paths.js";
-import type { FluxConfig, FluxSolverInterruptPolicy } from "./types.js";
+import type { FluxConfig, FluxModelCoverageSummary, FluxSolverInterruptPolicy } from "./types.js";
 
 export type FluxSeedMeta = {
   revisionId?: string;
@@ -17,6 +17,8 @@ export type FluxSeedMeta = {
   lastRealReplayResult?: Record<string, unknown>;
   lastBootstrapperModelRevisionId?: string;
   lastQueuedBootstrapModelRevisionId?: string;
+  lastBootstrapperCoverageSummary?: FluxModelCoverageSummary;
+  lastQueuedBootstrapCoverageSummary?: FluxModelCoverageSummary;
   lastAttestedSeedRevisionId?: string;
   lastAttestedSeedHash?: string;
   lastQueuedSolverSeedHash?: string;
