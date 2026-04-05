@@ -131,6 +131,7 @@ export type FluxQueueItem = {
 
 export type FluxModelCoverageSummary = {
   level: number;
+  frontierLevel?: number;
   allMatch: boolean;
   coveredSequenceIds: string[];
   contiguousMatchedSequences: number;

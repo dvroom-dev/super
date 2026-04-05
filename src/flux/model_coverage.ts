@@ -91,6 +91,7 @@ export function buildCoverageSummary(args: {
       : errorType ? "incomplete_artifacts" : "rejected";
   return {
     level: Number(args.comparePayload.level ?? progress.level ?? 1) || 1,
+    frontierLevel: Number(args.comparePayload.frontier_level ?? args.comparePayload.level ?? progress.level ?? 1) || 1,
     allMatch: Boolean(args.comparePayload.all_match),
     coveredSequenceIds,
     contiguousMatchedSequences: progress.contiguousMatchedSequences,
@@ -109,11 +110,13 @@ export function classifyModelImprovement(
   if (!baseline) {
     return candidate.compareKind === "accepted" || candidate.frontierDiscovered ? "new_coverage" : "no_improvement";
   }
+  const baselineFrontier = Number(baseline.frontierLevel ?? baseline.level ?? 1) || 1;
+  const candidateFrontier = Number(candidate.frontierLevel ?? candidate.level ?? 1) || 1;
   const baselineCovered = new Set(baseline.coveredSequenceIds);
   if (candidate.coveredSequenceIds.some((sequenceId) => !baselineCovered.has(sequenceId))) {
     return "new_coverage";
   }
-  if (candidate.level > baseline.level || candidate.contiguousMatchedSequences > baseline.contiguousMatchedSequences) {
+  if (candidateFrontier > baselineFrontier || candidate.contiguousMatchedSequences > baseline.contiguousMatchedSequences) {
     return "frontier_advanced";
   }
   return "no_improvement";

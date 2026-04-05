@@ -173,6 +173,34 @@ function coverageSummaryFromPromptPayload(value: unknown): FluxSeedMeta["lastBoo
   return Array.isArray(record.coveredSequenceIds) ? record as FluxSeedMeta["lastBootstrapperCoverageSummary"] : undefined;
 }
 
+function expectedFrontierLevelFromPromptPayload(payload: Record<string, unknown>): number | null {
+  const coverageSummary = coverageSummaryFromPromptPayload(payload.coverageSummary);
+  const explicit = Number(coverageSummary?.frontierLevel ?? payload.frontierLevel ?? payload.modelFrontierLevel ?? 0) || 0;
+  if (explicit > 0) return explicit;
+  const progress = payload.modelProgress && typeof payload.modelProgress === "object" && !Array.isArray(payload.modelProgress)
+    ? payload.modelProgress as Record<string, unknown>
+    : {};
+  const fallback = Number(progress.level ?? coverageSummary?.level ?? 0) || 0;
+  return fallback > 0 ? fallback : null;
+}
+
+function rehearsalReachedFrontier(rehearsalResult: Record<string, unknown>, expectedFrontierLevel: number | null): boolean {
+  const ok = Boolean(rehearsalResult.rehearsal_ok ?? rehearsalResult.ok ?? false);
+  if (!ok) return false;
+  if (!expectedFrontierLevel || expectedFrontierLevel <= 0) return true;
+  const statusAfter = rehearsalResult.status_after && typeof rehearsalResult.status_after === "object" && !Array.isArray(rehearsalResult.status_after)
+    ? rehearsalResult.status_after as Record<string, unknown>
+    : {};
+  const comparePayload = rehearsalResult.compare_payload && typeof rehearsalResult.compare_payload === "object" && !Array.isArray(rehearsalResult.compare_payload)
+    ? rehearsalResult.compare_payload as Record<string, unknown>
+    : {};
+  const reachedLevel = Math.max(
+    Number(statusAfter.current_level ?? 0) || 0,
+    Number(comparePayload.frontier_level ?? comparePayload.level ?? 0) || 0,
+  );
+  return reachedLevel >= expectedFrontierLevel;
+}
+
 async function setBootstrapperIdle(
   workspaceRoot: string,
   config: FluxConfig,
@@ -331,9 +359,10 @@ export async function runBootstrapperQueueItem(args: {
   let seedMeta = persistedSeed.meta;
 
   const requiresModelRehearsal = args.config.bootstrapper.requireModelRehearsalBeforeFinalize;
-  const hasModelRehearsal = currentSeedHasModelRehearsal(seedMeta, seedHash);
+  let hasModelRehearsal = currentSeedHasModelRehearsal(seedMeta, seedHash);
   const hasRealReplay = currentSeedHasRealReplay(seedMeta, seedHash);
   const seedChangedSinceModelRehearsal = !hasModelRehearsal;
+  const expectedFrontierLevel = expectedFrontierLevelFromPromptPayload(promptPayload);
 
   if (seedChangedSinceModelRehearsal) {
     await appendFluxEvents(args.workspaceRoot, args.config, [{
@@ -367,7 +396,54 @@ export async function runBootstrapperQueueItem(args: {
       summary: `model rehearsal completed for ${seedRevisionId}`,
       payload: { seedHash, seedRevisionId, rehearsalResult },
     }]);
-    if (decision === "finalize_seed" && requiresModelRehearsal) {
+    hasModelRehearsal = currentSeedHasModelRehearsal(seedMeta, seedHash);
+    const rehearsalSatisfiedFrontier = rehearsalReachedFrontier(rehearsalResult, expectedFrontierLevel);
+    if (!rehearsalSatisfiedFrontier) {
+      if (decision === "finalize_seed" && requiresModelRehearsal) {
+        await appendFluxEvents(args.workspaceRoot, args.config, [{
+          eventId: newId("evt"),
+          ts: nowIso(),
+          kind: "bootstrapper.finalize_rejected_pending_rehearsal",
+          workspaceRoot: args.workspaceRoot,
+          sessionType: "bootstrapper",
+          sessionId,
+          summary: `seed ${seedRevisionId} did not reach frontier level ${expectedFrontierLevel ?? "?"} during rehearsal`,
+          payload: { seedHash, seedRevisionId, expectedFrontierLevel, rehearsalResult },
+        }]);
+      }
+      await enqueueBootstrapperContinuation({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        sessionId,
+        reason: "bootstrapper_retry_after_model_rehearsal",
+        payload: {
+          ...promptPayload,
+          rehearsalResult,
+          seedRevisionId,
+          seedHash,
+          expectedFrontierLevel,
+        },
+        modelRehearsalResult: rehearsalResult,
+      });
+      await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
+      return;
+    }
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "bootstrapper.auto_accepted_after_rehearsal",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "bootstrapper",
+      sessionId,
+      summary: `seed ${seedRevisionId} reached frontier level ${expectedFrontierLevel ?? "?"} during rehearsal; auto-accepting`,
+      payload: { seedHash, seedRevisionId, expectedFrontierLevel, originalDecision: decision || "continue_refining" },
+    }]);
+  }
+
+  if (seedChangedSinceModelRehearsal && decision !== "finalize_seed") {
+    // A changed seed that already replays to the model frontier does not need a second bootstrapper turn.
+    // Continue through real replay/finalization using the original solver action and delta classification.
+  } else if (decision === "finalize_seed" && requiresModelRehearsal && !hasModelRehearsal) {
       await appendFluxEvents(args.workspaceRoot, args.config, [{
         eventId: newId("evt"),
         ts: nowIso(),
@@ -378,25 +454,9 @@ export async function runBootstrapperQueueItem(args: {
         summary: `seed ${seedRevisionId} changed since the last rehearsal; rerunning on model before finalize`,
         payload: { seedHash, seedRevisionId },
       }]);
-    }
-    await enqueueBootstrapperContinuation({
-      workspaceRoot: args.workspaceRoot,
-      config: args.config,
-      sessionId,
-      reason: "bootstrapper_retry_after_model_rehearsal",
-      payload: {
-        ...promptPayload,
-        rehearsalResult,
-        seedRevisionId,
-        seedHash,
-      },
-      modelRehearsalResult: rehearsalResult,
-    });
-    await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
-    return;
   }
 
-  if (decision !== "finalize_seed") {
+  if (!seedChangedSinceModelRehearsal && decision !== "finalize_seed") {
     const rehearsalResult = seedMeta.lastModelRehearsalResult ?? {};
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),

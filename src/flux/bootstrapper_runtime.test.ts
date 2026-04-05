@@ -47,7 +47,12 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({ evidence: []
     const rehearse = await writeScript("rehearse.js", `#!/usr/bin/env node
 process.stdin.resume();
 process.stdin.on("data", () => {});
-process.stdin.on("end", () => process.stdout.write(JSON.stringify({ rehearsal_ok: true, tool_results: [{ tool: "model", ok: true }], model_state: { current_level: 2 } })));`);
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  rehearsal_ok: true,
+  tool_results: [{ tool: "model", ok: true }],
+  status_after: { current_level: 2 },
+  compare_payload: { level: 2, frontier_level: 2 }
+})));`);
     const replay = await writeScript("replay.js", `#!/usr/bin/env node
 process.stdin.resume();
 let data = "";
@@ -141,7 +146,7 @@ retention:
 `, "utf8");
   });
 
-  test("runs model rehearsal before finalizing and queues solver on a later finalize pass", async () => {
+  test("auto-accepts a changed seed after rehearsal reaches the model frontier and queues solver immediately", async () => {
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     const state: FluxRunState = {
       version: 1,
@@ -182,37 +187,12 @@ retention:
     let solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     let bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     const events = await readFluxEvents(workspaceRoot, config);
-    expect(solverQueue.items).toHaveLength(0);
-    expect(bootstrapQueue.items).toHaveLength(1);
-    expect(events.some((event) => event.kind === "bootstrapper.model_rehearsal_passed")).toBe(true);
-    await saveFluxQueue(workspaceRoot, config, { ...bootstrapQueue, items: [] });
-
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
-      decision: "finalize_seed",
-      summary: "ready to finalize",
-      seed_bundle_updated: false,
-      notes: "ship it",
-      solver_action: "queue_and_interrupt",
-      seed_delta_kind: "level_completion_advanced",
-    });
-    await runBootstrapperQueueItem({
-      workspaceRoot,
-      config,
-      state,
-      queueItem: {
-        id: "q_boot_retry",
-        sessionType: "bootstrapper",
-        createdAt: new Date().toISOString(),
-        reason: "bootstrapper_retry_after_model_rehearsal",
-        payload: { rehearsalResult: { rehearsal_ok: true } },
-      },
-    });
-    solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
-    bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     expect(solverQueue.items).toHaveLength(1);
     expect(solverQueue.items[0]?.payload.seedBundle).toBeTruthy();
     expect(bootstrapQueue.items).toHaveLength(0);
+    expect(events.some((event) => event.kind === "bootstrapper.model_rehearsal_passed")).toBe(true);
     const finalEvents = await readFluxEvents(workspaceRoot, config);
+    expect(finalEvents.some((event) => event.kind === "bootstrapper.auto_accepted_after_rehearsal")).toBe(true);
     expect(finalEvents.some((event) => event.kind === "bootstrapper.real_replay_passed")).toBe(true);
     expect(finalEvents.some((event) => event.kind === "bootstrapper.attested_satisfactory")).toBe(true);
   });
@@ -257,23 +237,8 @@ retention:
       queueItem,
     });
     let solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
-    expect(solverQueue.items).toHaveLength(0);
-    const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
-    expect(bootstrapQueue.items).toHaveLength(1);
-    await runBootstrapperQueueItem({
-      workspaceRoot,
-      config,
-      state,
-      queueItem: {
-        id: "q_boot_same_finalize",
-        sessionType: "bootstrapper",
-        createdAt: new Date().toISOString(),
-        reason: "bootstrapper_retry_after_model_rehearsal",
-        payload: { rehearsalResult: { rehearsal_ok: true } },
-      },
-    });
-    solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     expect(solverQueue.items).toHaveLength(1);
+    solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     await saveFluxQueue(workspaceRoot, config, { ...solverQueue, items: [] });
     await runBootstrapperQueueItem({
       workspaceRoot,
