@@ -131,11 +131,24 @@ async function reconcileActiveSessionTruth(
   let changed = false;
   for (const sessionType of ["solver", "modeler", "bootstrapper"] as const) {
     const active = nextState.active[sessionType];
-    if (active.status === "idle" && !activeRuns.has(sessionType)) {
+    if (active.status === "idle") {
       const runningSessionId = await findRunningSessionId(workspaceRoot, config, sessionType);
       if (runningSessionId) {
         const runningSession = await loadFluxSession(workspaceRoot, config, sessionType, runningSessionId);
-        if (runningSession?.status === "running") {
+        if (runningSession?.status === "running" && activeRuns.has(sessionType)) {
+          nextState.active[sessionType] = {
+            sessionId: runningSessionId,
+            status: "running",
+            queueItemId: active.queueItemId,
+            pid: process.pid,
+            attemptId: sessionType === "solver" ? runningSession.activeAttemptId : undefined,
+            instanceId: active.instanceId,
+            updatedAt: nowIso(),
+          };
+          changed = true;
+          continue;
+        }
+        if (runningSession?.status === "running" && !activeRuns.has(sessionType)) {
           runningSession.status = sessionType === "solver" ? "stopped" : "idle";
           runningSession.stopReason = "orphaned_session_record";
           runningSession.updatedAt = nowIso();
@@ -145,7 +158,7 @@ async function reconcileActiveSessionTruth(
       }
       continue;
     }
-    if (active.status === "idle" || activeRuns.has(sessionType) || !active.sessionId) continue;
+    if (activeRuns.has(sessionType) || !active.sessionId) continue;
     const session = await loadFluxSession(workspaceRoot, config, sessionType, active.sessionId);
     if (!session || session.status === "running") continue;
     nextState.active[sessionType] = {

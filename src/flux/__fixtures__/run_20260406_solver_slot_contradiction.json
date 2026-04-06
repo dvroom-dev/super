@@ -1,0 +1,43 @@
+{
+  "runId": "flux-ui-2026-04-06T01-49-29-277Z",
+  "description": "The active solver slot pointed at an older stopped session while a newer solver turn was still in flight and another replacement seed had already been queued.",
+  "queuedReplacement": {
+    "reason": "bootstrapper_finalized_seed",
+    "interruptPolicy": "queue_and_interrupt",
+    "seedBundle": {
+      "version": 1,
+      "generatedAt": "2026-04-06T01:53:30Z",
+      "syntheticMessages": [
+        {
+          "role": "assistant",
+          "text": "Confirmed reusable mechanics so far: on level 1, ACTION1 can trigger a local lift mechanism. When a 5x5 block with top two rows of C and bottom three rows of 9 has a clear shaft of 3 cells above it, ACTION1 moves that whole block upward by 5 cells, restores the source area to 3, and consumes the linked lowest vertical B trigger pair into 3. Treat that B column as part of the lift trigger because it disappears when the lift fires."
+        },
+        {
+          "role": "assistant",
+          "text": "Known route for solved evidence on level 1: start with ACTION1. This is correct because the first validated sequence shows ACTION1 firing the lift immediately and the model now matches that transition from the initial state. Replay this step from a fresh run before exploring any other branches."
+        },
+        {
+          "role": "assistant",
+          "text": "Frontier for level 1: after the first ACTION1 lift, the main unresolved branch is whether the same platform responds to other actions or to repeated ACTION1, and whether the consumed B trigger is one-shot or part of a reusable control family. Prioritize a short branch that tests post-lift control mapping, because that determines whether later movement depends on action identity, trigger depletion, or multiple lift shafts."
+        }
+      ],
+      "replayPlan": [
+        {
+          "tool": "shell",
+          "args": {
+            "cmd": [
+              "arc_action",
+              "ACTION1"
+            ]
+          }
+        }
+      ],
+      "assertions": [
+        "Level 1 has one validated opening transition from the initial state: ACTION1.",
+        "The validated ACTION1 mechanic is local and non-replay-based: a specific 5x5 C/9 platform lifts upward through 3-cells by 5 tiles.",
+        "The linked lowest vertical B trigger pair is consumed when that lift fires, so B depletion is part of the observed state transition.",
+        "The next highest-value uncertainty is whether post-lift control depends on action identity, reusable controls, or multiple coexisting lift blocks/shafts."
+      ]
+    }
+  }
+}

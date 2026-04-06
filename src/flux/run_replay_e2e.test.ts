@@ -6,7 +6,8 @@ import fixture from "./__fixtures__/run_20260406_stale_surface.json";
 import { loadFluxConfig } from "./config.js";
 import { readFluxEvents } from "./events.js";
 import { loadFluxQueue } from "./queue.js";
-import { requestActiveSolverInterrupt, runSolverQueueItem } from "./solver_runtime.js";
+import { runSolverQueueItem } from "./solver_runtime.js";
+import { loadFluxSession } from "./session_store.js";
 import { saveFluxState } from "./state.js";
 import type { FluxRunState } from "./types.js";
 
@@ -194,19 +195,21 @@ retention:
       }
       expect(sessionId).toBeTruthy();
 
-      const eventDeadline = Date.now() + 2000;
+      const eventDeadline = Date.now() + 4000;
       let events = await readFluxEvents(workspaceRoot, config);
-      while (Date.now() < eventDeadline && !events.some((event) => event.kind === "solver.evidence_surface_incomplete")) {
+      while (Date.now() < eventDeadline && !events.some((event) => event.kind === "solver.infrastructure_failure")) {
         await new Promise((resolve) => setTimeout(resolve, 20));
         events = await readFluxEvents(workspaceRoot, config);
       }
       expect(events.some((event) => event.kind === "solver.evidence_surface_incomplete")).toBe(true);
+      expect(events.some((event) => event.kind === "solver.infrastructure_failure")).toBe(true);
 
       const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
       expect(modelerQueue.items).toHaveLength(0);
 
-      requestActiveSolverInterrupt(sessionId);
       await runPromise;
+      const session = await loadFluxSession(workspaceRoot, config, "solver", sessionId);
+      expect(session?.stopReason).toBe("evidence_surface_incomplete");
     } finally {
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
       delete process.env.MOCK_PROVIDER_DELAY_MS;

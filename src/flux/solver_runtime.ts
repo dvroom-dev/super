@@ -9,7 +9,7 @@ import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate } from "./prompt_templates.js";
 import { runFluxProviderTurn } from "./provider_session.js";
 import { validateFluxSeedBundle } from "./seed_bundle.js";
-import { appendFluxMessage, saveFluxSession } from "./session_store.js";
+import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSeedBundle, FluxSessionRecord } from "./types.js";
 import { mutateFluxState } from "./state.js";
 
@@ -81,7 +81,13 @@ async function observeAndPublishSolverEvidence(args: {
   replayBaselineSteps: number;
   reason: "solver_running" | "solver_stopped";
   lastWatermark: string;
-}): Promise<{ watermark: string; hasRealActionEvidence: boolean; evidenceCount: number; evidenceRecords: Record<string, unknown>[] }> {
+}): Promise<{
+  watermark: string;
+  hasRealActionEvidence: boolean;
+  evidenceCount: number;
+  evidenceRecords: Record<string, unknown>[];
+  incompleteSurface: Record<string, unknown> | null;
+}> {
   const observed = await runFluxProblemCommand(args.config.problem.observeEvidence, {
     workspaceRoot: args.workspaceRoot,
     attemptId: args.attemptId,
@@ -97,6 +103,7 @@ async function observeAndPublishSolverEvidence(args: {
     Boolean((payload as Record<string, unknown>).artifact_handoff_incomplete),
   ) ?? null;
   if (incompleteSurface) {
+    const artifactHandoffIncomplete = (incompleteSurface as Record<string, unknown>).artifact_handoff_incomplete;
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),
@@ -108,10 +115,18 @@ async function observeAndPublishSolverEvidence(args: {
       payload: {
         attemptId: args.attemptId,
         instanceId: args.instanceId,
-        artifactHandoffIncomplete: (incompleteSurface as Record<string, unknown>).artifact_handoff_incomplete,
+        artifactHandoffIncomplete,
       },
     }]);
-    return { watermark: args.lastWatermark, hasRealActionEvidence: false, evidenceCount: evidenceList.length, evidenceRecords };
+    return {
+      watermark: args.lastWatermark,
+      hasRealActionEvidence: false,
+      evidenceCount: evidenceList.length,
+      evidenceRecords,
+      incompleteSurface: artifactHandoffIncomplete && typeof artifactHandoffIncomplete === "object" && !Array.isArray(artifactHandoffIncomplete)
+        ? artifactHandoffIncomplete as Record<string, unknown>
+        : null,
+    };
   }
   const observedStepCount = maxObservedStepCount(evidenceRecords);
   const hasRealActionEvidence = evidenceRecords.some((payload) => {
@@ -167,7 +182,7 @@ async function observeAndPublishSolverEvidence(args: {
       });
     }
   }
-  return { watermark, hasRealActionEvidence, evidenceCount: evidenceList.length, evidenceRecords };
+  return { watermark, hasRealActionEvidence, evidenceCount: evidenceList.length, evidenceRecords, incompleteSurface: null };
 }
 
 function isLevelSolvedFromEvidence(evidenceRecords: Record<string, unknown>[]): boolean {
@@ -355,6 +370,9 @@ export async function runSolverQueueItem(args: {
   let latestWatermark = "";
   let latestEvidenceRecords: Record<string, unknown>[] = [];
   let latestObservedStepCount = replayBaselineSteps;
+  let incompleteSurfaceFingerprint = "";
+  let incompleteSurfaceRepeatCount = 0;
+  let latchedInfrastructureFailure: { reason: string; payload: Record<string, unknown> } | null = null;
   let pollStopped = false;
   const pollLoop = (async () => {
     while (!pollStopped && !controller.signal.aborted) {
@@ -377,6 +395,22 @@ export async function runSolverQueueItem(args: {
         latestEvidenceRecords = result.evidenceRecords;
         latestObservedStepCount = Math.max(latestObservedStepCount, maxObservedStepCount(result.evidenceRecords));
       }
+      if (result.incompleteSurface) {
+        const fingerprint = JSON.stringify(result.incompleteSurface);
+        incompleteSurfaceRepeatCount = fingerprint === incompleteSurfaceFingerprint ? incompleteSurfaceRepeatCount + 1 : 1;
+        incompleteSurfaceFingerprint = fingerprint;
+        if (incompleteSurfaceRepeatCount >= 3 && !latchedInfrastructureFailure) {
+          latchedInfrastructureFailure = {
+            reason: "evidence_surface_incomplete",
+            payload: result.incompleteSurface,
+          };
+          controller.abort();
+          break;
+        }
+        continue;
+      }
+      incompleteSurfaceFingerprint = "";
+      incompleteSurfaceRepeatCount = 0;
     }
   })();
   let currentPromptText = promptText;
@@ -513,11 +547,35 @@ export async function runSolverQueueItem(args: {
   });
   const watermark = finalObservation.watermark || latestWatermark;
   const hasRealActionEvidence = finalObservation.hasRealActionEvidence;
+  if (!latchedInfrastructureFailure && finalObservation.incompleteSurface) {
+    latchedInfrastructureFailure = {
+      reason: "evidence_surface_incomplete",
+      payload: finalObservation.incompleteSurface,
+    };
+  }
   session.status = "stopped";
   session.lastEvidenceWatermark = watermark || session.lastEvidenceWatermark;
-  session.stopReason = turn.interrupted ? "interrupted_for_replacement" : solverStopReason;
+  session.stopReason = latchedInfrastructureFailure?.reason
+    ?? (turn.interrupted ? "interrupted_for_replacement" : solverStopReason);
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
+  if (latchedInfrastructureFailure) {
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "solver.infrastructure_failure",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "solver",
+      sessionId,
+      summary: "solver stopped after repeated incomplete evidence surface observations",
+      payload: {
+        attemptId,
+        instanceId,
+        reason: latchedInfrastructureFailure.reason,
+        detail: latchedInfrastructureFailure.payload,
+      },
+    }]);
+  }
   await appendFluxEvents(args.workspaceRoot, args.config, [{
     eventId: newId("evt"),
     ts: nowIso(),
@@ -528,7 +586,7 @@ export async function runSolverQueueItem(args: {
     summary: turn.interrupted ? "solver session interrupted for replacement" : "solver session stopped",
     payload: { attemptId, instanceId, interrupted: turn.interrupted },
   }]);
-  if (!hasRealActionEvidence) {
+  if (!hasRealActionEvidence && !latchedInfrastructureFailure) {
     await enqueueFluxQueueItem(args.workspaceRoot, args.config, "solver", {
       id: newId("q"),
       sessionType: "solver",
@@ -558,7 +616,17 @@ export async function runSolverQueueItem(args: {
   }
   await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
     const latestState = current ?? startingState;
-    if (latestState.active.solver.sessionId === sessionId || !latestState.active.solver.sessionId) {
+    let shouldReplaceActiveSlot = latestState.active.solver.sessionId === sessionId || !latestState.active.solver.sessionId;
+    if (!shouldReplaceActiveSlot && latestState.active.solver.status === "idle" && latestState.active.solver.sessionId) {
+      const activeSession = await loadFluxSession(
+        args.workspaceRoot,
+        args.config,
+        "solver",
+        latestState.active.solver.sessionId,
+      );
+      shouldReplaceActiveSlot = !activeSession || activeSession.status !== "running";
+    }
+    if (shouldReplaceActiveSlot) {
       latestState.active.solver = {
         sessionId,
         status: "idle",
@@ -569,7 +637,7 @@ export async function runSolverQueueItem(args: {
         updatedAt: nowIso(),
       };
     }
-    if (session.stopReason === "solved") {
+    if (session.stopReason === "solved" || Boolean(latchedInfrastructureFailure)) {
       latestState.stopRequested = true;
     }
     return latestState;
