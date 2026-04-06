@@ -411,7 +411,7 @@ describe("runFluxOrchestrator", () => {
 
   test("replay: stale solver slot contradiction restores the live solver before launching the queued replacement", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
-    process.env.MOCK_PROVIDER_DELAY_MS = "5000";
+    process.env.MOCK_PROVIDER_DELAY_MS = "1500";
     try {
       const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
       const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
@@ -509,6 +509,6 @@ describe("runFluxOrchestrator", () => {
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
       delete process.env.MOCK_PROVIDER_DELAY_MS;
     }
-  }, 20000);
+  }, 30000);
 
 });

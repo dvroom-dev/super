@@ -6,8 +6,9 @@ import { loadFluxConfig } from "./config.js";
 import { readFluxEvents } from "./events.js";
 import { runModelerQueueItem } from "./modeler_runtime.js";
 import { loadFluxQueue, saveFluxQueue } from "./queue.js";
+import { loadFluxSession, saveFluxSession } from "./session_store.js";
 import { saveFluxState } from "./state.js";
-import type { FluxRunState } from "./types.js";
+import type { FluxRunState, FluxSessionRecord } from "./types.js";
 
 describe("modeler runtime", () => {
   let workspaceRoot = "";
@@ -312,6 +313,100 @@ process.stdin.on("end", () => {
     expect((bootstrapQueue.items[0]?.payload.modelProgress as Record<string, unknown>)?.contiguousMatchedSequences).toBe(1);
     expect(modelerQueue.items).toHaveLength(0);
     expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(true);
+  });
+
+  test("recovers a reused modeler session when the persisted provider thread is stale", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_ERROR_IF_THREAD_ID_SET = "codex app-server exited (signal SIGTERM)\nstate db missing rollout path for thread stale_modeler";
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "updated_model",
+      summary: "recovered after stale thread",
+      message_for_bootstrapper: "fresh thread recovery worked",
+      artifacts_updated: ["model_lib.py"],
+      evidence_watermark: "wm-stale-thread",
+    });
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const acceptancePath = path.join(workspaceRoot, "scripts", "accept_retry_thread.js");
+      await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const preflight = input.modelOutput?.decision === "checked_current_model";
+  process.stdout.write(JSON.stringify({
+    accepted: !preflight,
+    message: preflight ? "preflight mismatch" : (input.modelOutput?.summary || "accepted"),
+    compare_payload: preflight ? { all_match: false, level: 1, reports: [] } : { all_match: true, level: 1, reports: [] }
+  }));
+});`, "utf8");
+      await fs.chmod(acceptancePath, 0o755);
+      const fluxPath = path.join(workspaceRoot, "flux.yaml");
+      let fluxText = await fs.readFile(fluxPath, "utf8");
+      fluxText = fluxText.replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+      await fs.writeFile(fluxPath, fluxText, "utf8");
+      const refreshedConfig = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const state: FluxRunState = {
+        version: 1,
+        workspaceRoot,
+        configPath: path.join(workspaceRoot, "flux.yaml"),
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: "running",
+        stopRequested: false,
+        active: {
+          solver: { status: "idle", updatedAt: new Date().toISOString() },
+          modeler: { status: "idle", updatedAt: new Date().toISOString() },
+          bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+        },
+      };
+      await saveFluxState(workspaceRoot, refreshedConfig, state);
+      const seededSession: FluxSessionRecord = {
+        sessionId: "modeler_run",
+        sessionType: "modeler",
+        status: "idle",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        provider: "mock",
+        model: "mock-model",
+        resumePolicy: "always",
+        sessionScope: "run",
+        providerThreadId: "stale_modeler_thread",
+      };
+      await saveFluxSession(workspaceRoot, refreshedConfig, seededSession);
+
+      await runModelerQueueItem({
+        workspaceRoot,
+        config: refreshedConfig,
+        state,
+        queueItem: {
+          id: "q_stale_1",
+          sessionType: "modeler",
+          createdAt: new Date().toISOString(),
+          reason: "solver_new_evidence",
+          payload: {
+            evidenceWatermark: "wm-stale-thread",
+            latestEvidence: {
+              summary: "current_level=1 after more evidence",
+              state: { current_level: 1, levels_completed: 0, state: "NOT_FINISHED" },
+            },
+          },
+        },
+      });
+
+      const secondSession = await loadFluxSession(workspaceRoot, refreshedConfig, "modeler", "modeler_run");
+      const events = await readFluxEvents(workspaceRoot, refreshedConfig);
+      expect(secondSession?.status).toBe("idle");
+      expect(secondSession?.stopReason).toBeUndefined();
+      expect(secondSession?.providerThreadId).toMatch(/^mock_thread_/);
+      expect(secondSession?.providerThreadId).not.toBe("stale_modeler_thread");
+      expect(events.some((event) => event.kind === "modeler.acceptance_passed")).toBe(true);
+      expect(events.some((event) => event.kind === "session.failed" && event.sessionType === "modeler")).toBe(false);
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_ERROR_IF_THREAD_ID_SET;
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
   });
 
   test("publishes bootstrapper progress when the first failing step advances within the same sequence", async () => {

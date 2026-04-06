@@ -46,6 +46,13 @@ export class MockProvider implements AgentProvider {
 
   async *runStreamed(prompt: PromptContent, options?: { outputSchema?: any; signal?: AbortSignal }): AsyncGenerator<ProviderEvent, void, void> {
     yield { type: "status", message: "mock: starting turn" };
+    const threadScopedError = process.env.MOCK_PROVIDER_STREAMED_ERROR_IF_THREAD_ID_SET;
+    if (typeof threadScopedError === "string" && threadScopedError.trim().length > 0 && this.config.threadId) {
+      const err = new Error(threadScopedError) as Error & { name: string; threadId?: string; };
+      err.name = "ProviderExecutionError";
+      err.threadId = this.threadId;
+      throw err;
+    }
     const delayMs = Number(process.env.MOCK_PROVIDER_DELAY_MS ?? process.env.MOCK_PROVIDER_RUNONCE_DELAY_MS ?? 0);
     if (Number.isFinite(delayMs) && delayMs > 0) {
       await new Promise<void>((resolve, reject) => {

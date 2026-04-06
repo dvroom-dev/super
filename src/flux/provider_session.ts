@@ -13,6 +13,11 @@ export type FluxProviderTurnResult = {
   interrupted: boolean;
 };
 
+function isMissingRolloutPathFailure(error: unknown): boolean {
+  const message = String((error as any)?.message ?? error ?? "");
+  return /state db missing rollout path/i.test(message) || /missing rollout path for thread/i.test(message);
+}
+
 export async function runFluxProviderTurn(args: {
   workspaceRoot: string;
   config: FluxConfig;
@@ -26,32 +31,6 @@ export async function runFluxProviderTurn(args: {
   env?: Record<string, string>;
   signal?: AbortSignal;
 }): Promise<FluxProviderTurnResult> {
-  const filesystemPolicy: ProviderFilesystemPolicy = {
-    read: { allow: [args.workingDirectory] },
-    write: { allow: [args.workingDirectory] },
-    create: { allow: [args.workingDirectory] },
-    allowNewFiles: true,
-  };
-  const providerConfig: ProviderConfig = {
-    provider: args.session.provider as any,
-    model: args.session.model,
-    workingDirectory: args.workingDirectory,
-    threadId: args.session.providerThreadId,
-    modelReasoningEffort: args.reasoningEffort,
-    sandboxMode: args.config.runtimeDefaults.sandboxMode,
-    approvalPolicy: args.config.runtimeDefaults.approvalPolicy,
-    permissionProfile: "workspace_no_network",
-    providerFilesystemPolicy: filesystemPolicy,
-    providerOptions: {
-      allowedTools: ["Bash"],
-    },
-    env: {
-      ...args.config.runtimeDefaults.env,
-      ...(args.env ?? {}),
-    },
-    skipGitRepoCheck: true,
-  };
-  const provider = createProvider(providerConfig);
   const prompt: PromptContent = promptContentFromText(args.promptText);
   for (const imagePath of args.promptImages ?? []) {
     const part = imagePart(imagePath);
@@ -66,31 +45,72 @@ export async function runFluxProviderTurn(args: {
       workingDirectory: args.workingDirectory,
     });
   }
+  const filesystemPolicy: ProviderFilesystemPolicy = {
+    read: { allow: [args.workingDirectory] },
+    write: { allow: [args.workingDirectory] },
+    create: { allow: [args.workingDirectory] },
+    allowNewFiles: true,
+  };
   const providerEvents: ProviderEvent[] = [];
   let assistantText = "";
   let providerThreadId = args.session.providerThreadId;
   let interrupted = false;
-  try {
-    for await (const event of provider.runStreamed(prompt, { outputSchema: args.outputSchema, signal: args.signal })) {
-      providerEvents.push(event);
-      if (args.config.observability.captureRawProviderEvents) {
-        await appendProviderRawEvent(args.workspaceRoot, args.config, args.sessionType, args.session.sessionId, {
-          id: newId("raw"),
-          ts: new Date().toISOString(),
-          event,
-        });
+  const runOnce = async (threadId: string | undefined): Promise<void> => {
+    const providerConfig: ProviderConfig = {
+      provider: args.session.provider as any,
+      model: args.session.model,
+      workingDirectory: args.workingDirectory,
+      threadId,
+      modelReasoningEffort: args.reasoningEffort,
+      sandboxMode: args.config.runtimeDefaults.sandboxMode,
+      approvalPolicy: args.config.runtimeDefaults.approvalPolicy,
+      permissionProfile: "workspace_no_network",
+      providerFilesystemPolicy: filesystemPolicy,
+      providerOptions: {
+        allowedTools: ["Bash"],
+      },
+      env: {
+        ...args.config.runtimeDefaults.env,
+        ...(args.env ?? {}),
+      },
+      skipGitRepoCheck: true,
+    };
+    const provider = createProvider(providerConfig);
+    try {
+      for await (const event of provider.runStreamed(prompt, { outputSchema: args.outputSchema, signal: args.signal })) {
+        providerEvents.push(event);
+        if (args.config.observability.captureRawProviderEvents) {
+          await appendProviderRawEvent(args.workspaceRoot, args.config, args.sessionType, args.session.sessionId, {
+            id: newId("raw"),
+            ts: new Date().toISOString(),
+            event,
+          });
+        }
+        if (event.type === "assistant_delta") assistantText += event.delta;
+        if (event.type === "assistant_message") assistantText = event.text;
+        if (event.type === "done" && event.threadId) providerThreadId = event.threadId;
       }
-      if (event.type === "assistant_delta") assistantText += event.delta;
-      if (event.type === "assistant_message") assistantText = event.text;
-      if (event.type === "done" && event.threadId) providerThreadId = event.threadId;
+    } finally {
+      await provider.close?.();
     }
+  };
+  try {
+    await runOnce(args.session.providerThreadId);
   } catch (err: any) {
     const message = String(err?.message ?? err ?? "");
     const abortLike = err?.name === "AbortError" || /aborted by user/i.test(message) || /interrupt/i.test(message);
-    if (!abortLike) throw err;
-    interrupted = true;
-  } finally {
-    await provider.close?.();
+    if (abortLike) {
+      interrupted = true;
+    } else if (args.session.providerThreadId && isMissingRolloutPathFailure(err)) {
+      args.session.providerThreadId = undefined;
+      args.session.updatedAt = new Date().toISOString();
+      await saveFluxSession(args.workspaceRoot, args.config, args.session);
+      assistantText = "";
+      providerThreadId = undefined;
+      await runOnce(undefined);
+    } else {
+      throw err;
+    }
   }
   args.session.providerThreadId = providerThreadId;
   args.session.updatedAt = new Date().toISOString();
