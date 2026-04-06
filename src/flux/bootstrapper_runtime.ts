@@ -60,24 +60,29 @@ async function loadSeedBundleFromPath(seedPath: string): Promise<FluxSeedBundle 
 }
 
 async function persistSeedRevision(workspaceRoot: string, config: FluxConfig, seedBundle: FluxSeedBundle): Promise<SeedRevisionPersistResult> {
-  const revisionId = newId("seed_rev");
   const currentDir = fluxSeedRoot(workspaceRoot, config);
-  const revisionPath = path.join(currentDir, "revisions", `${revisionId}.json`);
   const currentPath = seedBundleCurrentPath(workspaceRoot, config);
   const candidatePath = seedBundleCandidatePath(workspaceRoot, config);
   const previousMeta = await loadSeedMeta(workspaceRoot, config);
   const seedHash = sha256Hex(JSON.stringify(seedBundle));
   const changed = String(previousMeta.seedHash ?? "") !== seedHash;
+  const previousRevisionId = typeof previousMeta.revisionId === "string" && previousMeta.revisionId.trim().length > 0
+    ? previousMeta.revisionId
+    : null;
+  const revisionId = changed || !previousRevisionId ? newId("seed_rev") : previousRevisionId;
+  const revisionPath = path.join(currentDir, "revisions", `${revisionId}.json`);
   const nextMeta: FluxSeedMeta = {
     ...previousMeta,
     revisionId,
     seedHash,
     updatedAt: nowIso(),
   };
-  await fs.mkdir(path.dirname(revisionPath), { recursive: true });
   await writeJsonAtomic(currentPath, seedBundle);
   await writeJsonAtomic(candidatePath, seedBundle);
-  await writeJsonAtomic(revisionPath, seedBundle);
+  if (changed || !previousRevisionId) {
+    await fs.mkdir(path.dirname(revisionPath), { recursive: true });
+    await writeJsonAtomic(revisionPath, seedBundle);
+  }
   await saveSeedMeta(workspaceRoot, config, nextMeta);
   return { revisionId, seedHash, changed, meta: nextMeta };
 }
@@ -155,6 +160,50 @@ async function enqueueBootstrapperContinuation(args: {
     reason: args.reason,
     payload: args.payload,
   });
+}
+
+async function recordSeedReuse(args: {
+  workspaceRoot: string;
+  config: FluxConfig;
+  sessionId: string;
+  seedMeta: FluxSeedMeta;
+  seedRevisionId: string;
+  seedHash: string;
+  promptPayload: Record<string, unknown>;
+  interruptPolicy: FluxSolverInterruptPolicy;
+  seedDeltaKind: string;
+}): Promise<FluxSeedMeta> {
+  const nextMeta: FluxSeedMeta = {
+    ...args.seedMeta,
+    lastBootstrapperModelRevisionId: typeof args.promptPayload.baselineModelRevisionId === "string"
+      ? args.promptPayload.baselineModelRevisionId
+      : args.seedMeta.lastBootstrapperModelRevisionId,
+    lastBootstrapperCoverageSummary: coverageSummaryFromPromptPayload(args.promptPayload.coverageSummary) ?? args.seedMeta.lastBootstrapperCoverageSummary,
+    lastQueuedBootstrapCoverageSummary: coverageSummaryFromPromptPayload(args.promptPayload.coverageSummary) ?? args.seedMeta.lastQueuedBootstrapCoverageSummary,
+    lastAttestedSeedRevisionId: args.seedRevisionId,
+    lastAttestedSeedHash: args.seedHash,
+    lastInterruptPolicy: args.interruptPolicy,
+    lastSeedDeltaKind: args.seedDeltaKind || args.seedMeta.lastSeedDeltaKind,
+  };
+  await saveSeedMeta(args.workspaceRoot, args.config, nextMeta);
+  await appendFluxEvents(args.workspaceRoot, args.config, [{
+    eventId: newId("evt"),
+    ts: nowIso(),
+    kind: "bootstrapper.reuse_accepted",
+    workspaceRoot: args.workspaceRoot,
+    sessionType: "bootstrapper",
+    sessionId: args.sessionId,
+    summary: `seed revision ${args.seedRevisionId} already attested; reusing accepted seed`,
+    payload: {
+      seedHash: args.seedHash,
+      seedRevisionId: args.seedRevisionId,
+      changed: false,
+      interruptPolicy: args.interruptPolicy,
+      seedDeltaKind: args.seedDeltaKind || null,
+      baselineModelRevisionId: typeof args.promptPayload.baselineModelRevisionId === "string" ? args.promptPayload.baselineModelRevisionId : null,
+    },
+  }]);
+  return nextMeta;
 }
 
 function normalizeInterruptPolicy(value: unknown): FluxSolverInterruptPolicy {
@@ -369,6 +418,28 @@ export async function runBootstrapperQueueItem(args: {
   const hasRealReplay = currentSeedHasRealReplay(seedMeta, seedHash);
   const seedChangedSinceModelRehearsal = !hasModelRehearsal;
   const expectedFrontierLevel = expectedFrontierLevelFromPromptPayload(promptPayload);
+
+  if (
+    decision === "finalize_seed"
+    && !persistedSeed.changed
+    && hasModelRehearsal
+    && hasRealReplay
+    && String(seedMeta.lastAttestedSeedHash ?? "") === seedHash
+  ) {
+    await recordSeedReuse({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      sessionId,
+      seedMeta,
+      seedRevisionId,
+      seedHash,
+      promptPayload,
+      interruptPolicy,
+      seedDeltaKind,
+    });
+    await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
+    return;
+  }
 
   if (seedChangedSinceModelRehearsal) {
     await appendFluxEvents(args.workspaceRoot, args.config, [{

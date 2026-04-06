@@ -5,7 +5,7 @@ import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
 import { parseJsonObjectFromAssistantText, schemaForName } from "./json_session_format.js";
 import { runModelAcceptance } from "./model_acceptance.js";
-import { buildCoverageSummary, classifyModelImprovement, computeModelProgress, type ModelProgress } from "./model_coverage.js";
+import { buildCoverageSummary, classifyModelImprovement, computeModelProgress, preferCoverageSummary, type ModelProgress } from "./model_coverage.js";
 import { loadModelCoverageSummary, modelRevisionWorkspaceSource, persistModelRevisionWorkspace, saveModelCoverageSummary } from "./model_revision_store.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate } from "./prompt_templates.js";
@@ -62,6 +62,24 @@ async function loadCurrentModelRevisionId(workspaceRoot: string, config: FluxCon
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const revisionId = parsed.revisionId;
     return typeof revisionId === "string" && revisionId.trim().length > 0 ? revisionId : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadCurrentModelCoverageSummary(
+  workspaceRoot: string,
+  config: FluxConfig,
+): Promise<ReturnType<typeof buildCoverageSummary> | null> {
+  try {
+    const raw = await fs.readFile(path.join(fluxModelRoot(workspaceRoot, config), "current", "meta.json"), "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const summary = parsed.summary;
+    if (!summary || typeof summary !== "object" || Array.isArray(summary)) {
+      return null;
+    }
+    const record = summary as Record<string, unknown>;
+    return Array.isArray(record.coveredSequenceIds) ? record as ReturnType<typeof buildCoverageSummary> : null;
   } catch {
     return null;
   }
@@ -269,11 +287,20 @@ async function persistAcceptedModel(
     revisionId,
     sourceWorkspaceDir: modelRevisionWorkspaceSource(workspaceRoot, config),
   });
+  const candidateSummary = buildCoverageSummary({ comparePayload, accepted: true });
+  const currentSummary = await loadCurrentModelCoverageSummary(workspaceRoot, config);
+  const seedMeta = await loadSeedMeta(workspaceRoot, config);
+  const durableSummary = preferCoverageSummary(
+    coverageSummaryFromSeedMeta(seedMeta.lastQueuedBootstrapCoverageSummary)
+      ?? coverageSummaryFromSeedMeta(seedMeta.lastBootstrapperCoverageSummary)
+      ?? currentSummary,
+    candidateSummary,
+  );
   await saveModelCoverageSummary({
     workspaceRoot,
     config,
     revisionId,
-    summary: buildCoverageSummary({ comparePayload, accepted: true }),
+    summary: durableSummary,
   });
   await writeJsonAtomic(path.join(currentDir, "meta.json"), { revisionId, updatedAt: nowIso() });
   return revisionId;

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { readJsonIfExists, writeJsonAtomic } from "../lib/fs.js";
 import { fluxModelRevisionDir, fluxModelRevisionSummaryPath, fluxModelRevisionWorkspaceDir, fluxModelRoot } from "./paths.js";
-import { classifyModelImprovement } from "./model_coverage.js";
+import { preferCoverageSummary } from "./model_coverage.js";
 import type { FluxConfig, FluxModelCoverageSummary } from "./types.js";
 
 async function copyDirStable(source: string, destination: string): Promise<void> {
@@ -29,20 +29,6 @@ export async function persistModelRevisionWorkspace(args: {
   }
   await copyDirStable(args.sourceWorkspaceDir, destination);
   return destination;
-}
-
-function preferCoverageSummary(
-  existing: FluxModelCoverageSummary | null,
-  candidate: FluxModelCoverageSummary,
-): FluxModelCoverageSummary {
-  if (!existing) return candidate;
-  if (classifyModelImprovement(existing, candidate) !== "no_improvement") {
-    return candidate;
-  }
-  if (classifyModelImprovement(candidate, existing) !== "no_improvement") {
-    return existing;
-  }
-  return existing;
 }
 
 export async function saveModelCoverageSummary(args: {

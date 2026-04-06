@@ -238,6 +238,8 @@ retention:
     });
     let solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     expect(solverQueue.items).toHaveLength(1);
+    const firstSeedMeta = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "seed", "current_meta.json"), "utf8"));
+    const firstRevisionId = String(firstSeedMeta.revisionId);
     solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     await saveFluxQueue(workspaceRoot, config, { ...solverQueue, items: [] });
     await runBootstrapperQueueItem({
@@ -248,8 +250,12 @@ retention:
     });
     solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     expect(solverQueue.items).toHaveLength(0);
+    const secondSeedMeta = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "seed", "current_meta.json"), "utf8"));
+    expect(String(secondSeedMeta.revisionId)).toBe(firstRevisionId);
+    const revisionFiles = await fs.readdir(path.join(workspaceRoot, "flux", "seed", "revisions"));
+    expect(revisionFiles.filter((name) => name.endsWith(".json"))).toHaveLength(1);
     const events = await readFluxEvents(workspaceRoot, config);
-    expect(events.some((event) => event.kind === "bootstrapper.attested_satisfactory" && event.payload?.changed === false && event.payload?.queuedSolver === false)).toBe(true);
+    expect(events.some((event) => event.kind === "bootstrapper.reuse_accepted" && event.payload?.changed === false)).toBe(true);
   });
 
   test("does not auto-accept a seed when rehearsal compare still fails on the prefix", async () => {

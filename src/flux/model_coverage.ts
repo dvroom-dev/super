@@ -159,3 +159,17 @@ export function classifyModelImprovement(
   }
   return "no_improvement";
 }
+
+export function preferCoverageSummary(
+  existing: FluxModelCoverageSummary | null,
+  candidate: FluxModelCoverageSummary,
+): FluxModelCoverageSummary {
+  if (!existing) return candidate;
+  if (classifyModelImprovement(existing, candidate) !== "no_improvement") {
+    return candidate;
+  }
+  if (classifyModelImprovement(candidate, existing) !== "no_improvement") {
+    return existing;
+  }
+  return existing;
+}
