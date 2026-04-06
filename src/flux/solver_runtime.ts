@@ -93,6 +93,26 @@ async function observeAndPublishSolverEvidence(args: {
   const evidenceBundleId = typeof observed.evidence_bundle_id === "string" ? observed.evidence_bundle_id : "";
   const evidenceBundlePath = typeof observed.evidence_bundle_path === "string" ? observed.evidence_bundle_path : "";
   const evidenceRecords = evidenceList.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+  const incompleteSurface = evidenceRecords.find((payload) =>
+    Boolean((payload as Record<string, unknown>).artifact_handoff_incomplete),
+  ) ?? null;
+  if (incompleteSurface) {
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "solver.evidence_surface_incomplete",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "solver",
+      sessionId: args.sessionId,
+      summary: "solver evidence surface is behind the live state; withholding modeler enqueue",
+      payload: {
+        attemptId: args.attemptId,
+        instanceId: args.instanceId,
+        artifactHandoffIncomplete: (incompleteSurface as Record<string, unknown>).artifact_handoff_incomplete,
+      },
+    }]);
+    return { watermark: args.lastWatermark, hasRealActionEvidence: false, evidenceCount: evidenceList.length, evidenceRecords };
+  }
   const observedStepCount = maxObservedStepCount(evidenceRecords);
   const hasRealActionEvidence = evidenceRecords.some((payload) => {
     const record = payload as Record<string, unknown>;

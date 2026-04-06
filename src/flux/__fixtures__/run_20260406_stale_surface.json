@@ -1,0 +1,59 @@
+{
+  "runId": "flux-ui-2026-04-06T00-04-07-879Z",
+  "seed": {
+    "version": 1,
+    "generatedAt": "2026-04-06T00:20:39Z",
+    "syntheticMessages": [
+      {
+        "role": "assistant",
+        "text": "Cumulative mechanics so far: on level 1, ACTION1 is confirmed not to be a budget-only no-op."
+      }
+    ],
+    "replayPlan": [
+      {
+        "tool": "shell",
+        "args": {
+          "cmd": ["arc_action", "ACTION1"]
+        }
+      }
+    ],
+    "assertions": [
+      "The only currently rehearsal-safe replay step from a fresh start is ACTION1 on level 1."
+    ]
+  },
+  "staleEvidence": {
+    "summary": "state=NOT_FINISHED level=2 completed=1 history_events=130 actions=130 last_action=ACTION2",
+    "state": {
+      "game_id": "ls20-9607627b",
+      "scorecard_id": null,
+      "current_level": 2,
+      "state": "NOT_FINISHED",
+      "levels_completed": 1,
+      "win_levels": 7,
+      "guid": "5cc58b7a-2179-48e4-b286-6dbf0cd28172",
+      "available_actions": [1, 2, 3, 4],
+      "last_action": "exec(<arc_repl_exec_0053>)",
+      "full_reset": false,
+      "action_input_id": 2,
+      "action_input_name": "ACTION2",
+      "action_input_data": {},
+      "action_input_reasoning": null,
+      "total_steps": 125,
+      "current_attempt_steps": 17,
+      "total_resets": 5,
+      "steps": [],
+      "last_action_name": "ACTION2"
+    },
+    "history_count": 130,
+    "action_count": 130,
+    "last_action_name": "ACTION2",
+    "visible_action_count": 56,
+    "visible_sequence_files": 2,
+    "latest_visible_action_dir": "level_current/sequences/seq_0002/actions/step_0018_action_000056_action2",
+    "artifact_handoff_incomplete": {
+      "reported_action_count": 130,
+      "visible_action_count": 56,
+      "latest_visible_action_dir": "level_current/sequences/seq_0002/actions/step_0018_action_000056_action2"
+    }
+  }
+}

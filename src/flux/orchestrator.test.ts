@@ -349,4 +349,62 @@ describe("runFluxOrchestrator", () => {
     await runPromise;
   });
 
+  test("reconciles orphan running solver session records when the active slot is idle", async () => {
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const ts = new Date().toISOString();
+    await fs.mkdir(path.join(workspaceRoot, ".ai-flux", "sessions", "solver", "solver_attempt_orphan"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-flux", "sessions", "solver", "solver_attempt_orphan", "session.json"),
+      JSON.stringify({
+        sessionId: "solver_attempt_orphan",
+        sessionType: "solver",
+        status: "running",
+        createdAt: ts,
+        updatedAt: ts,
+        provider: "mock",
+        model: "mock-model",
+        resumePolicy: "never",
+        sessionScope: "per_attempt",
+        activeAttemptId: "attempt_orphan",
+      }, null, 2),
+      "utf8",
+    );
+    await fs.mkdir(path.join(workspaceRoot, "flux"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "state.json"),
+      JSON.stringify({
+        version: 1,
+        workspaceRoot,
+        configPath: path.join(workspaceRoot, "flux.yaml"),
+        pid: process.pid,
+        startedAt: ts,
+        updatedAt: ts,
+        status: "running",
+        stopRequested: false,
+        active: {
+          solver: { status: "idle", updatedAt: ts },
+          modeler: { status: "idle", updatedAt: ts },
+          bootstrapper: { status: "idle", updatedAt: ts },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
+    const deadline = Date.now() + 2000;
+    let reconciled = false;
+    while (Date.now() < deadline && !reconciled) {
+      const session = JSON.parse(await fs.readFile(path.join(workspaceRoot, ".ai-flux", "sessions", "solver", "solver_attempt_orphan", "session.json"), "utf8"));
+      reconciled = session.status === "stopped" && session.stopReason === "orphaned_session_record";
+      if (!reconciled) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    expect(reconciled).toBe(true);
+    await requestFluxStop(workspaceRoot, config);
+    await runPromise;
+    const events = await readFluxEventsWithRetry(workspaceRoot, config);
+    expect(events.some((event) => event.kind === "orchestrator.reconciled_session_truth")).toBe(true);
+  });
+
 });

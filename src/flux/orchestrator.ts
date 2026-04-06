@@ -131,6 +131,20 @@ async function reconcileActiveSessionTruth(
   let changed = false;
   for (const sessionType of ["solver", "modeler", "bootstrapper"] as const) {
     const active = nextState.active[sessionType];
+    if (active.status === "idle" && !activeRuns.has(sessionType)) {
+      const runningSessionId = await findRunningSessionId(workspaceRoot, config, sessionType);
+      if (runningSessionId) {
+        const runningSession = await loadFluxSession(workspaceRoot, config, sessionType, runningSessionId);
+        if (runningSession?.status === "running") {
+          runningSession.status = sessionType === "solver" ? "stopped" : "idle";
+          runningSession.stopReason = "orphaned_session_record";
+          runningSession.updatedAt = nowIso();
+          await saveFluxSession(workspaceRoot, config, runningSession);
+          changed = true;
+        }
+      }
+      continue;
+    }
     if (active.status === "idle" || activeRuns.has(sessionType) || !active.sessionId) continue;
     const session = await loadFluxSession(workspaceRoot, config, sessionType, active.sessionId);
     if (!session || session.status === "running") continue;
@@ -144,6 +158,13 @@ async function reconcileActiveSessionTruth(
   if (!changed) return state;
   nextState.updatedAt = nowIso();
   await saveFluxState(workspaceRoot, config, nextState);
+  await appendFluxEvents(workspaceRoot, config, [{
+    eventId: newId("evt"),
+    ts: nowIso(),
+    kind: "orchestrator.reconciled_session_truth",
+    workspaceRoot,
+    summary: "reconciled stale session truth against active slots",
+  }]);
   return nextState;
 }
 
