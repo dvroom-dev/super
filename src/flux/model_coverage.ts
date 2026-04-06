@@ -14,6 +14,20 @@ function sequenceNumber(sequenceId: string): number | null {
 }
 
 export function computeModelProgress(comparePayload: Record<string, unknown>): ModelProgress {
+  const explicitFrontierLevel = Number(comparePayload.frontier_level ?? comparePayload.level ?? 0) || 0;
+  const explicitContiguous = Number(comparePayload.frontier_contiguous_matched_sequences ?? 0) || 0;
+  const explicitFirstFailingSequenceId = String(comparePayload.frontier_first_failing_sequence_id ?? "") || null;
+  const explicitFirstFailingStep = Number(comparePayload.frontier_first_failing_step ?? 0) || null;
+  const explicitFirstFailingReason = String(comparePayload.frontier_first_failing_reason ?? "") || null;
+  if (explicitFrontierLevel > 0 && ("frontier_contiguous_matched_sequences" in comparePayload || explicitFirstFailingSequenceId)) {
+    return {
+      level: explicitFrontierLevel,
+      contiguousMatchedSequences: explicitContiguous,
+      firstFailingSequenceId: explicitFirstFailingSequenceId,
+      firstFailingStep: explicitFirstFailingStep,
+      firstFailingReason: explicitFirstFailingReason,
+    };
+  }
   const reports = Array.isArray(comparePayload.reports) ? comparePayload.reports : [];
   const skipped = Array.isArray(comparePayload.skipped_sequences) ? comparePayload.skipped_sequences : [];
   const bySequence = new Map<number, { matched: boolean; reason: string | null; sequenceId: string; step: number | null }>();
@@ -74,11 +88,19 @@ export function buildCoverageSummary(args: {
 }): FluxModelCoverageSummary {
   const reports = Array.isArray(args.comparePayload.reports) ? args.comparePayload.reports : [];
   const progress = computeModelProgress(args.comparePayload);
-  const coveredSequenceIds = reports
-    .filter((report): report is Record<string, unknown> => Boolean(report) && typeof report === "object" && !Array.isArray(report))
-    .filter((report) => Boolean(report.matched))
-    .map((report) => String(report.sequence_id ?? ""))
-    .filter(Boolean);
+  const explicitCoveredIds = Array.isArray(args.comparePayload.covered_sequence_ids)
+    ? args.comparePayload.covered_sequence_ids.filter((value): value is string => typeof value === "string" && value.length > 0)
+    : [];
+  const coveredSequenceIds = explicitCoveredIds.length > 0
+    ? explicitCoveredIds
+    : reports
+        .filter((report): report is Record<string, unknown> => Boolean(report) && typeof report === "object" && !Array.isArray(report))
+        .filter((report) => Boolean(report.matched))
+        .map((report) => {
+          const level = Number(report.level ?? args.comparePayload.level ?? progress.level ?? 1) || 1;
+          return `level_${level}:${String(report.sequence_id ?? "")}`;
+        })
+        .filter((value) => !value.endsWith(":"));
   const error = args.comparePayload.error && typeof args.comparePayload.error === "object" && !Array.isArray(args.comparePayload.error)
     ? args.comparePayload.error as Record<string, unknown>
     : {};
@@ -107,13 +129,29 @@ export function classifyModelImprovement(
   baseline: FluxModelCoverageSummary | null,
   candidate: FluxModelCoverageSummary,
 ): "no_improvement" | "new_coverage" | "frontier_advanced" {
+  const normalizeCovered = (sequenceIds: string[]): Set<string> => {
+    const normalized = new Set<string>();
+    for (const sequenceId of sequenceIds) {
+      normalized.add(sequenceId);
+      const colon = sequenceId.indexOf(":");
+      if (colon > 0) {
+        normalized.add(sequenceId.slice(colon + 1));
+      }
+    }
+    return normalized;
+  };
+  const isCovered = (covered: Set<string>, sequenceId: string): boolean => {
+    if (covered.has(sequenceId)) return true;
+    const colon = sequenceId.indexOf(":");
+    return colon > 0 ? covered.has(sequenceId.slice(colon + 1)) : false;
+  };
   if (!baseline) {
     return candidate.compareKind === "accepted" || candidate.frontierDiscovered ? "new_coverage" : "no_improvement";
   }
   const baselineFrontier = Number(baseline.frontierLevel ?? baseline.level ?? 1) || 1;
   const candidateFrontier = Number(candidate.frontierLevel ?? candidate.level ?? 1) || 1;
-  const baselineCovered = new Set(baseline.coveredSequenceIds);
-  if (candidate.coveredSequenceIds.some((sequenceId) => !baselineCovered.has(sequenceId))) {
+  const baselineCovered = normalizeCovered(baseline.coveredSequenceIds);
+  if (candidate.coveredSequenceIds.some((sequenceId) => !isCovered(baselineCovered, sequenceId))) {
     return "new_coverage";
   }
   if (candidateFrontier > baselineFrontier || candidate.contiguousMatchedSequences > baseline.contiguousMatchedSequences) {
