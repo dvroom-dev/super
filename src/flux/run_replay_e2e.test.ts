@@ -5,7 +5,7 @@ import path from "node:path";
 import fixture from "./__fixtures__/run_20260406_stale_surface.json";
 import { loadFluxConfig } from "./config.js";
 import { readFluxEvents } from "./events.js";
-import { loadFluxQueue } from "./queue.js";
+import { loadFluxQueue, saveFluxQueue } from "./queue.js";
 import { runSolverQueueItem } from "./solver_runtime.js";
 import { loadFluxSession } from "./session_store.js";
 import { saveFluxState } from "./state.js";
@@ -210,6 +210,68 @@ retention:
       await runPromise;
       const session = await loadFluxSession(workspaceRoot, config, "solver", sessionId);
       expect(session?.stopReason).toBe("evidence_surface_incomplete");
+      const latestState = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "state.json"), "utf8")) as FluxRunState;
+      expect(latestState.stopRequested).toBe(false);
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+      delete process.env.MOCK_PROVIDER_DELAY_MS;
+    }
+  }, 15000);
+
+  test("stale surface failure does not strand an already queued replacement solver", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    process.env.MOCK_PROVIDER_DELAY_MS = "100";
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const state: FluxRunState = {
+        version: 1,
+        workspaceRoot,
+        configPath: path.join(workspaceRoot, "flux.yaml"),
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: "running",
+        stopRequested: false,
+        active: {
+          solver: { status: "idle", updatedAt: new Date().toISOString() },
+          modeler: { status: "idle", updatedAt: new Date().toISOString() },
+          bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+        },
+      };
+      await saveFluxState(workspaceRoot, config, state);
+      await saveFluxQueue(workspaceRoot, config, {
+        sessionType: "solver",
+        updatedAt: new Date().toISOString(),
+        items: [{
+          id: "q_replacement_fixture",
+          sessionType: "solver",
+          createdAt: new Date().toISOString(),
+          reason: "bootstrapper_finalized_seed",
+          payload: {
+            seedBundle: fixture.seed,
+            interruptPolicy: "queue_and_interrupt",
+          },
+        }],
+      });
+
+      await runSolverQueueItem({
+        workspaceRoot,
+        config,
+        state,
+        queueItem: {
+          id: "q_solver_fixture",
+          sessionType: "solver",
+          createdAt: new Date().toISOString(),
+          reason: "replay_fixture",
+          payload: {},
+        },
+      });
+
+      const latestState = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "state.json"), "utf8")) as FluxRunState;
+      const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+      expect(latestState.stopRequested).toBe(false);
+      expect(solverQueue.items).toHaveLength(1);
+      expect(solverQueue.items[0]?.id).toBe("q_replacement_fixture");
     } finally {
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
       delete process.env.MOCK_PROVIDER_DELAY_MS;

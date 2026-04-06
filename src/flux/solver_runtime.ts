@@ -553,10 +553,11 @@ export async function runSolverQueueItem(args: {
       payload: finalObservation.incompleteSurface,
     };
   }
+  const interruptedForReplacement = turn.interrupted && !latchedInfrastructureFailure;
   session.status = "stopped";
   session.lastEvidenceWatermark = watermark || session.lastEvidenceWatermark;
   session.stopReason = latchedInfrastructureFailure?.reason
-    ?? (turn.interrupted ? "interrupted_for_replacement" : solverStopReason);
+    ?? (interruptedForReplacement ? "interrupted_for_replacement" : solverStopReason);
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
   if (latchedInfrastructureFailure) {
@@ -583,8 +584,15 @@ export async function runSolverQueueItem(args: {
     workspaceRoot: args.workspaceRoot,
     sessionType: "solver",
     sessionId,
-    summary: turn.interrupted ? "solver session interrupted for replacement" : "solver session stopped",
-    payload: { attemptId, instanceId, interrupted: turn.interrupted },
+    summary: latchedInfrastructureFailure
+      ? "solver session stopped after infrastructure failure"
+      : (interruptedForReplacement ? "solver session interrupted for replacement" : "solver session stopped"),
+    payload: {
+      attemptId,
+      instanceId,
+      interrupted: interruptedForReplacement,
+      infrastructureFailure: latchedInfrastructureFailure?.reason ?? null,
+    },
   }]);
   if (!hasRealActionEvidence && !latchedInfrastructureFailure) {
     await enqueueFluxQueueItem(args.workspaceRoot, args.config, "solver", {
@@ -637,7 +645,7 @@ export async function runSolverQueueItem(args: {
         updatedAt: nowIso(),
       };
     }
-    if (session.stopReason === "solved" || Boolean(latchedInfrastructureFailure)) {
+    if (session.stopReason === "solved") {
       latestState.stopRequested = true;
     }
     return latestState;
