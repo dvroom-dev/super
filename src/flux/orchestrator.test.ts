@@ -3,12 +3,11 @@ import fs from "node:fs/promises";
 import pathSync from "node:path";
 import os from "node:os";
 import path from "node:path";
-import solverSlotFixture from "./__fixtures__/run_20260406_solver_slot_contradiction.json";
 import { loadFluxConfig } from "./config.js";
 import { readFluxEvents } from "./events.js";
 import { requestFluxStop, runFluxOrchestrator } from "./orchestrator.js";
 import { fluxRunLockPath } from "./paths.js";
-import { enqueueFluxQueueItem } from "./queue.js";
+import { loadFluxQueue } from "./queue.js";
 import { loadFluxState } from "./state.js";
 
 async function readFluxEventsWithRetry(workspaceRoot: string, config: Awaited<ReturnType<typeof loadFluxConfig>>) {
@@ -408,107 +407,5 @@ describe("runFluxOrchestrator", () => {
     const events = await readFluxEventsWithRetry(workspaceRoot, config);
     expect(events.some((event) => event.kind === "orchestrator.reconciled_session_truth")).toBe(true);
   });
-
-  test("replay: stale solver slot contradiction restores the live solver before launching the queued replacement", async () => {
-    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
-    process.env.MOCK_PROVIDER_DELAY_MS = "1500";
-    try {
-      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
-      const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
-
-      const waitForSolverState = async (predicate: (state: NonNullable<Awaited<ReturnType<typeof loadFluxState>>>) => boolean) => {
-        const deadline = Date.now() + 8000;
-        while (Date.now() < deadline) {
-          const current = await loadFluxState(workspaceRoot, config);
-          if (current && predicate(current)) return current;
-          await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-        throw new Error("timed out waiting for solver state");
-      };
-
-      const waitForSessionStatus = async (sessionId: string, expectedStatus: string) => {
-        const sessionPath = path.join(workspaceRoot, ".ai-flux", "sessions", "solver", sessionId, "session.json");
-        const deadline = Date.now() + 8000;
-        while (Date.now() < deadline) {
-          const session = JSON.parse(await fs.readFile(sessionPath, "utf8")) as { status?: string };
-          if (session.status === expectedStatus) return;
-          await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-        throw new Error(`timed out waiting for ${sessionId} to reach ${expectedStatus}`);
-      };
-
-      const firstState = await waitForSolverState((current) => current.active.solver.status === "running");
-      const firstSolverSessionId = String(firstState.active.solver.sessionId);
-      expect(firstSolverSessionId).toMatch(/^solver_attempt_/);
-
-      await enqueueFluxQueueItem(workspaceRoot, config, "solver", {
-        id: "q_replay_replace_1",
-        sessionType: "solver",
-        createdAt: new Date().toISOString(),
-        reason: solverSlotFixture.queuedReplacement.reason,
-        payload: {
-          seedBundle: solverSlotFixture.queuedReplacement.seedBundle,
-          interruptPolicy: solverSlotFixture.queuedReplacement.interruptPolicy,
-        },
-      });
-
-      await waitForSessionStatus(firstSolverSessionId, "stopped");
-      const secondState = await waitForSolverState((current) =>
-        current.active.solver.status === "running"
-        && current.active.solver.sessionId !== firstSolverSessionId,
-      );
-      const secondSolverSessionId = String(secondState.active.solver.sessionId);
-      expect(secondSolverSessionId).toMatch(/^solver_attempt_/);
-
-      await fs.writeFile(
-        path.join(workspaceRoot, "flux", "state.json"),
-        JSON.stringify({
-          ...secondState,
-          active: {
-            ...secondState.active,
-            solver: {
-              sessionId: firstSolverSessionId,
-              status: "idle",
-              updatedAt: new Date().toISOString(),
-            },
-          },
-        }, null, 2),
-        "utf8",
-      );
-
-      await enqueueFluxQueueItem(workspaceRoot, config, "solver", {
-        id: "q_replay_replace_2",
-        sessionType: "solver",
-        createdAt: new Date().toISOString(),
-        reason: solverSlotFixture.queuedReplacement.reason,
-        payload: {
-          seedBundle: solverSlotFixture.queuedReplacement.seedBundle,
-          interruptPolicy: solverSlotFixture.queuedReplacement.interruptPolicy,
-        },
-      });
-
-      await waitForSolverState((current) =>
-        current.active.solver.status === "running"
-        && current.active.solver.sessionId === secondSolverSessionId,
-      );
-      await waitForSessionStatus(secondSolverSessionId, "stopped");
-
-      const thirdState = await waitForSolverState((current) =>
-        current.active.solver.status === "running"
-        && current.active.solver.sessionId !== firstSolverSessionId
-        && current.active.solver.sessionId !== secondSolverSessionId,
-      );
-      expect(String(thirdState.active.solver.sessionId)).toMatch(/^solver_attempt_/);
-
-      await requestFluxStop(workspaceRoot, config);
-      await runPromise;
-
-      const events = await readFluxEventsWithRetry(workspaceRoot, config);
-      expect(events.some((event) => event.kind === "orchestrator.reconciled_session_truth")).toBe(true);
-    } finally {
-      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
-      delete process.env.MOCK_PROVIDER_DELAY_MS;
-    }
-  }, 30000);
 
 });

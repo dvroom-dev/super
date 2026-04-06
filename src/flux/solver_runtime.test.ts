@@ -649,6 +649,62 @@ process.stdin.on("end", () => {
     delete process.env.MOCK_PROVIDER_DELAY_MS;
   });
 
+  test("solver yields control after repeated no-progress nudges", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const observeScript = path.join(workspaceRoot, "scripts", "observe.js");
+    await fs.writeFile(observeScript, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  evidence: [{
+    summary: "stalled evidence",
+    action_count: 1,
+    changed_pixels: 1,
+    state: {
+      current_level: 1,
+      levels_completed: 0,
+      state: "NOT_FINISHED",
+      total_steps: 1,
+      current_attempt_steps: 1
+    }
+  }]
+})));`, "utf8");
+    await fs.chmod(observeScript, 0o755);
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: {
+        id: "q_stalled_after_nudges",
+        sessionType: "solver",
+        createdAt: new Date().toISOString(),
+        reason: "stalled_after_nudges",
+        payload: {},
+      },
+      state,
+    });
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(events.some((event) => event.kind === "solver.stalled_after_nudges")).toBe(true);
+    const persisted = await loadFluxState(workspaceRoot, config);
+    expect(persisted?.active.solver.status).toBe("idle");
+  });
+
   test("advancing to a new level does not mark the solver as solved", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
     process.env.MOCK_PROVIDER_DELAY_MS = "100";

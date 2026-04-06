@@ -354,6 +354,34 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
           }
         }
       }
+      if (
+        state.active.solver.status === "idle"
+        && state.active.modeler.status === "idle"
+        && state.active.bootstrapper.status === "idle"
+        && !activeRuns.has("solver")
+        && !activeRuns.has("modeler")
+        && !activeRuns.has("bootstrapper")
+      ) {
+        const [solverQueue, modelerQueue, bootstrapperQueue] = await Promise.all([
+          loadFluxQueue(workspaceRoot, config, "solver"),
+          loadFluxQueue(workspaceRoot, config, "modeler"),
+          loadFluxQueue(workspaceRoot, config, "bootstrapper"),
+        ]);
+        if (
+          solverQueue.items.length === 0
+          && modelerQueue.items.length === 0
+          && bootstrapperQueue.items.length === 0
+        ) {
+          await ensureInitialSolverQueued(workspaceRoot, config);
+          await appendFluxEvents(workspaceRoot, config, [{
+            eventId: newId("evt"),
+            ts: nowIso(),
+            kind: "orchestrator.idle_recovered",
+            workspaceRoot,
+            summary: "run became idle with no queued work; queued a solver recovery attempt",
+          }]);
+        }
+      }
       if (shouldStartSolver(state) && !activeRuns.has("solver")) {
         const nextSolver = await dequeueNextSolver(workspaceRoot, config);
         if (nextSolver) {

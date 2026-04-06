@@ -51,7 +51,7 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
   rehearsal_ok: true,
   tool_results: [{ tool: "model", ok: true }],
   status_after: { current_level: 2 },
-  compare_payload: { level: 2, frontier_level: 2 }
+  compare_payload: { level: 2, frontier_level: 2, all_match: true, compared_sequences: 1, eligible_sequences: 1 }
 })));`);
     const replay = await writeScript("replay.js", `#!/usr/bin/env node
 process.stdin.resume();
@@ -250,6 +250,72 @@ retention:
     expect(solverQueue.items).toHaveLength(0);
     const events = await readFluxEvents(workspaceRoot, config);
     expect(events.some((event) => event.kind === "bootstrapper.attested_satisfactory" && event.payload?.changed === false && event.payload?.queuedSolver === false)).toBe(true);
+  });
+
+  test("does not auto-accept a seed when rehearsal compare still fails on the prefix", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "continue_refining",
+      summary: "candidate needs more work",
+      seed_bundle_updated: true,
+      notes: "not ready",
+      solver_action: "queue_and_interrupt",
+      seed_delta_kind: "mechanic_explanation_added",
+    });
+    const rehearsePath = path.join(workspaceRoot, "scripts", "rehearse_fail_compare.js");
+    await fs.writeFile(rehearsePath, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  rehearsal_ok: true,
+  tool_results: [{ tool: "model", ok: true }],
+  status_after: { current_level: 1 },
+  compare_payload: { level: 1, frontier_level: 1, all_match: false, compared_sequences: 1, eligible_sequences: 1 }
+})));`, "utf8");
+    await fs.chmod(rehearsePath, 0o755);
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText.replace(/rehearse_seed_on_model:\n    command: \["[^"]*"\]/, `rehearse_seed_on_model:\n    command: ["${rehearsePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runBootstrapperQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_boot_fail_compare",
+        sessionType: "bootstrapper",
+        createdAt: new Date().toISOString(),
+        reason: "model_accepted",
+        payload: {
+          messageForBootstrapper: "use model",
+          coverageSummary: { level: 1, frontierLevel: 1, coveredSequenceIds: ["level_1:seq_0001"] },
+        },
+      },
+    });
+    const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+    const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(solverQueue.items).toHaveLength(0);
+    expect(bootstrapQueue.items).toHaveLength(1);
+    expect(bootstrapQueue.items[0]?.reason).toBe("bootstrapper_retry_after_model_rehearsal");
+    expect(events.some((event) => event.kind === "bootstrapper.auto_accepted_after_rehearsal")).toBe(false);
   });
 
   test("queues a continuation when bootstrap seed references generated artifacts in replayPlan", async () => {

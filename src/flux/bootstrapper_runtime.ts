@@ -187,13 +187,19 @@ function expectedFrontierLevelFromPromptPayload(payload: Record<string, unknown>
 function rehearsalReachedFrontier(rehearsalResult: Record<string, unknown>, expectedFrontierLevel: number | null): boolean {
   const ok = Boolean(rehearsalResult.rehearsal_ok ?? rehearsalResult.ok ?? false);
   if (!ok) return false;
-  if (!expectedFrontierLevel || expectedFrontierLevel <= 0) return true;
   const statusAfter = rehearsalResult.status_after && typeof rehearsalResult.status_after === "object" && !Array.isArray(rehearsalResult.status_after)
     ? rehearsalResult.status_after as Record<string, unknown>
     : {};
   const comparePayload = rehearsalResult.compare_payload && typeof rehearsalResult.compare_payload === "object" && !Array.isArray(rehearsalResult.compare_payload)
     ? rehearsalResult.compare_payload as Record<string, unknown>
     : {};
+  const compareAllMatch = Boolean(comparePayload.all_match);
+  const comparedSequences = Number(comparePayload.compared_sequences ?? 0) || 0;
+  const eligibleSequences = Number(comparePayload.eligible_sequences ?? 0) || 0;
+  if ((comparedSequences > 0 || eligibleSequences > 0) && !compareAllMatch) {
+    return false;
+  }
+  if (!expectedFrontierLevel || expectedFrontierLevel <= 0) return true;
   const reachedLevel = Math.max(
     Number(statusAfter.current_level ?? 0) || 0,
     Number(comparePayload.frontier_level ?? comparePayload.level ?? 0) || 0,

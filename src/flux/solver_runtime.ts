@@ -19,6 +19,7 @@ type ActiveSolverControl = {
 };
 
 const activeSolverControls = new Map<string, ActiveSolverControl>();
+const MAX_CONSECUTIVE_NO_PROGRESS_TURNS = 3;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -370,6 +371,7 @@ export async function runSolverQueueItem(args: {
   let latestWatermark = "";
   let latestEvidenceRecords: Record<string, unknown>[] = [];
   let latestObservedStepCount = replayBaselineSteps;
+  let consecutiveNoProgressTurns = 0;
   let incompleteSurfaceFingerprint = "";
   let incompleteSurfaceRepeatCount = 0;
   let latchedInfrastructureFailure: { reason: string; payload: Record<string, unknown> } | null = null;
@@ -467,6 +469,7 @@ export async function runSolverQueueItem(args: {
       break;
     }
     if (!madeProgressThisTurn) {
+      consecutiveNoProgressTurns += 1;
       currentPromptText = buildContinuationPrompt(postTurnEvidenceRecords, { noProgress: true });
       await appendFluxEvents(args.workspaceRoot, args.config, [{
         eventId: newId("evt"),
@@ -478,6 +481,25 @@ export async function runSolverQueueItem(args: {
         summary: "solver made no progress; continuing with stronger nudge",
         payload: { attemptId, instanceId, watermark: latestWatermark || null },
       }]);
+      if (consecutiveNoProgressTurns >= MAX_CONSECUTIVE_NO_PROGRESS_TURNS) {
+        solverStopReason = "stalled_after_nudges";
+        await appendFluxEvents(args.workspaceRoot, args.config, [{
+          eventId: newId("evt"),
+          ts: nowIso(),
+          kind: "solver.stalled_after_nudges",
+          workspaceRoot: args.workspaceRoot,
+          sessionType: "solver",
+          sessionId,
+          summary: "solver produced no new progress after repeated nudges; yielding control",
+          payload: {
+            attemptId,
+            instanceId,
+            watermark: latestWatermark || null,
+            consecutiveNoProgressTurns,
+          },
+        }]);
+        break;
+      }
       await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
         messageId: newId("msg"),
         ts: nowIso(),
@@ -499,6 +521,7 @@ export async function runSolverQueueItem(args: {
       });
       continue;
     }
+    consecutiveNoProgressTurns = 0;
     currentPromptText = buildContinuationPrompt(postTurnEvidenceRecords);
     await appendFluxMessage(args.workspaceRoot, args.config, "solver", sessionId, {
       messageId: newId("msg"),
