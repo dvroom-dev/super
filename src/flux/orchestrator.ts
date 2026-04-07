@@ -14,6 +14,9 @@ import { appendFluxRuntimeLog } from "./runtime_log.js";
 import { fluxRunLockPath } from "./paths.js";
 import { loadFluxSession, saveFluxSession } from "./session_store.js";
 
+const RECOVERY_BLOCKED_SOLVER_STOP_REASONS = new Set(["evidence_surface_incomplete"]);
+const MAX_CONSECUTIVE_SOLVER_INFRA_FAILURES_BEFORE_STOP = 2;
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -198,6 +201,49 @@ async function findRunningSessionId(
   return null;
 }
 
+async function loadSolverSessionsByRecency(workspaceRoot: string, config: FluxConfig) {
+  const sessionsDir = path.join(workspaceRoot, config.storage.aiRoot, "sessions", "solver");
+  try {
+    const entries = await fsp.readdir(sessionsDir, { withFileTypes: true });
+    const sessions = await Promise.all(entries
+      .filter((entry) => entry.isDirectory())
+      .map(async (entry) => await loadFluxSession(workspaceRoot, config, "solver", entry.name)));
+    return sessions
+      .filter((session): session is NonNullable<typeof session> => Boolean(session))
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+  } catch {
+    return [];
+  }
+}
+
+async function repeatedSolverFailureToEscalate(
+  workspaceRoot: string,
+  config: FluxConfig,
+): Promise<{ stopReason: string; count: number } | null> {
+  const sessions = await loadSolverSessionsByRecency(workspaceRoot, config);
+  let stopReason = "";
+  let count = 0;
+  for (const session of sessions) {
+    if (session.status !== "stopped") {
+      if (count === 0) continue;
+      break;
+    }
+    const currentReason = String(session.stopReason ?? "");
+    if (!RECOVERY_BLOCKED_SOLVER_STOP_REASONS.has(currentReason)) {
+      if (count === 0) continue;
+      break;
+    }
+    if (!stopReason) {
+      stopReason = currentReason;
+      count = 1;
+      continue;
+    }
+    if (currentReason !== stopReason) break;
+    count += 1;
+  }
+  return count >= MAX_CONSECUTIVE_SOLVER_INFRA_FAILURES_BEFORE_STOP ? { stopReason, count } : null;
+}
+
 type FluxWorkspaceLock = {
   release: () => void;
 };
@@ -372,6 +418,19 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
           && modelerQueue.items.length === 0
           && bootstrapperQueue.items.length === 0
         ) {
+          const repeatedFailure = await repeatedSolverFailureToEscalate(workspaceRoot, config);
+          if (repeatedFailure) {
+            await appendFluxEvents(workspaceRoot, config, [{
+              eventId: newId("evt"),
+              ts: nowIso(),
+              kind: "orchestrator.recovery_escalated",
+              workspaceRoot,
+              summary: `halting after ${repeatedFailure.count} consecutive solver failures: ${repeatedFailure.stopReason}`,
+              payload: repeatedFailure,
+            }]);
+            await stop(`halted repeated solver recovery loop after ${repeatedFailure.count} consecutive ${repeatedFailure.stopReason} failures`);
+            break;
+          }
           await ensureInitialSolverQueued(workspaceRoot, config);
           await appendFluxEvents(workspaceRoot, config, [{
             eventId: newId("evt"),

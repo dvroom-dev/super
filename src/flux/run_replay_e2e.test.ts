@@ -3,8 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import fixture from "./__fixtures__/run_20260406_stale_surface.json";
+import recoveryLoopFixture from "./__fixtures__/run_20260407_recovery_loop.json";
 import { loadFluxConfig } from "./config.js";
 import { readFluxEvents } from "./events.js";
+import { runFluxOrchestrator } from "./orchestrator.js";
 import { loadFluxQueue, saveFluxQueue } from "./queue.js";
 import { runSolverQueueItem } from "./solver_runtime.js";
 import { loadFluxSession } from "./session_store.js";
@@ -272,6 +274,56 @@ retention:
       expect(latestState.stopRequested).toBe(false);
       expect(solverQueue.items).toHaveLength(1);
       expect(solverQueue.items[0]?.id).toBe("q_replacement_fixture");
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+      delete process.env.MOCK_PROVIDER_DELAY_MS;
+    }
+  }, 15000);
+
+  test("repeated stale-surface failures stop the orchestrator instead of recovery-looping forever", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    process.env.MOCK_PROVIDER_DELAY_MS = "50";
+    try {
+      await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "current.json"), JSON.stringify(recoveryLoopFixture.seed, null, 2), "utf8");
+      const observePath = path.join(workspaceRoot, "scripts", "observe.js");
+      await fs.writeFile(observePath, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => {
+  const payload = ${JSON.stringify(recoveryLoopFixture.staleEvidence, null, 2)};
+  process.stdout.write(JSON.stringify({
+    evidence: [payload],
+    evidence_bundle_id: "evidence_recovery_loop_fixture",
+    evidence_bundle_path: "/tmp/evidence_recovery_loop_fixture"
+  }));
+});`, "utf8");
+      await fs.chmod(observePath, 0o755);
+
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
+      const deadline = Date.now() + 8000;
+      let events = await readFluxEvents(workspaceRoot, config);
+      while (
+        Date.now() < deadline
+        && !events.some((event) => event.kind === "orchestrator.recovery_escalated")
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        events = await readFluxEvents(workspaceRoot, config);
+      }
+      await runPromise;
+
+      const latestState = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "state.json"), "utf8")) as FluxRunState;
+      const solverSessionsDir = path.join(workspaceRoot, ".ai-flux", "sessions", "solver");
+      const solverSessions = (await fs.readdir(solverSessionsDir)).filter((name) => name.startsWith("solver_attempt_"));
+      const recoveryEvents = events.filter((event) => event.kind === "orchestrator.idle_recovered");
+      const solverFailures = events.filter((event) => event.kind === "solver.infrastructure_failure");
+
+      expect(events.some((event) => event.kind === "orchestrator.recovery_escalated")).toBe(true);
+      expect(recoveryEvents).toHaveLength(1);
+      expect(solverFailures).toHaveLength(2);
+      expect(solverSessions).toHaveLength(2);
+      expect(latestState.status).toBe("stopped");
+      expect(latestState.stopRequested).toBe(true);
     } finally {
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
       delete process.env.MOCK_PROVIDER_DELAY_MS;
