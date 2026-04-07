@@ -18,6 +18,44 @@ function isMissingRolloutPathFailure(error: unknown): boolean {
   return /state db missing rollout path/i.test(message) || /missing rollout path for thread/i.test(message);
 }
 
+function extractProviderFailureText(event: ProviderEvent): string {
+  if (event.type === "assistant_message") return String(event.text ?? "");
+  if (event.type === "status") return String(event.message ?? "");
+  if (event.type === "provider_item") {
+    const raw = event.raw;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const record = raw as Record<string, unknown>;
+      const result = String(record.result ?? "");
+      if (result) return result;
+    }
+  }
+  return "";
+}
+
+function isClaudeRateLimited(args: {
+  error: unknown;
+  provider: string;
+  providerEvents: ProviderEvent[];
+}): string | null {
+  if (args.provider !== "claude") return null;
+  const errorMessage = String((args.error as any)?.message ?? args.error ?? "");
+  const texts = [errorMessage, ...args.providerEvents.map(extractProviderFailureText)].filter(Boolean).join("\n");
+  const hasRateLimitEvent = args.providerEvents.some((event) =>
+    event.type === "provider_item"
+    && Boolean(event.raw)
+    && typeof event.raw === "object"
+    && !Array.isArray(event.raw)
+    && String((event.raw as Record<string, unknown>).type ?? "") === "rate_limit_event",
+  );
+  if (!hasRateLimitEvent && !/hit your limit|rate.?limit|overageStatus|org_level_disabled_until/i.test(texts)) {
+    return null;
+  }
+  const detail = texts.match(/You've hit your limit[^\n]*/i)?.[0]
+    ?? texts.match(/rate.?limit[^\n]*/i)?.[0]
+    ?? "Claude provider rate limited";
+  return detail.trim();
+}
+
 export async function runFluxProviderTurn(args: {
   workspaceRoot: string;
   config: FluxConfig;
@@ -109,6 +147,14 @@ export async function runFluxProviderTurn(args: {
       providerThreadId = undefined;
       await runOnce(undefined);
     } else {
+      const rateLimitedDetail = isClaudeRateLimited({
+        error: err,
+        provider: args.session.provider,
+        providerEvents,
+      });
+      if (rateLimitedDetail) {
+        throw new Error(`provider_rate_limited: ${rateLimitedDetail}`);
+      }
       throw err;
     }
   }

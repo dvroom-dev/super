@@ -16,6 +16,7 @@ import { loadFluxSession, saveFluxSession } from "./session_store.js";
 
 const RECOVERY_BLOCKED_SOLVER_STOP_REASONS = new Set(["evidence_surface_incomplete"]);
 const MAX_CONSECUTIVE_SOLVER_INFRA_FAILURES_BEFORE_STOP = 2;
+const NONRETRYABLE_SOLVER_FAILURE_PREFIXES = ["provider_rate_limited:"];
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -221,6 +222,13 @@ async function repeatedSolverFailureToEscalate(
   config: FluxConfig,
 ): Promise<{ stopReason: string; count: number } | null> {
   const sessions = await loadSolverSessionsByRecency(workspaceRoot, config);
+  const latestFailure = sessions.find((session) => session.status === "failed" && typeof session.stopReason === "string" && session.stopReason.trim().length > 0);
+  if (latestFailure) {
+    const failureReason = String(latestFailure.stopReason);
+    if (NONRETRYABLE_SOLVER_FAILURE_PREFIXES.some((prefix) => failureReason.startsWith(prefix))) {
+      return { stopReason: failureReason, count: 1 };
+    }
+  }
   let stopReason = "";
   let count = 0;
   for (const session of sessions) {
@@ -329,6 +337,33 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
     payload: { pid: process.pid },
   }]);
   appendFluxRuntimeLog(workspaceRoot, config, `orchestrator started pid=${process.pid}`);
+  const startupFailure = await repeatedSolverFailureToEscalate(workspaceRoot, config);
+  if (
+    startupFailure
+    && NONRETRYABLE_SOLVER_FAILURE_PREFIXES.some((prefix) => startupFailure.stopReason.startsWith(prefix))
+  ) {
+    await appendFluxEvents(workspaceRoot, config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "orchestrator.recovery_escalated",
+      workspaceRoot,
+      summary: `halting after non-retryable solver failure: ${startupFailure.stopReason}`,
+      payload: startupFailure,
+    }]);
+    state.stopRequested = true;
+    state.status = "stopped";
+    state.updatedAt = nowIso();
+    await saveFluxState(workspaceRoot, config, state);
+    await appendFluxEvents(workspaceRoot, config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "orchestrator.stopped",
+      workspaceRoot,
+      summary: `halted after non-retryable solver failure: ${startupFailure.stopReason}`,
+    }]);
+    appendFluxRuntimeLog(workspaceRoot, config, `halted after non-retryable solver failure: ${startupFailure.stopReason}`);
+    return;
+  }
   await ensureInitialSolverQueued(workspaceRoot, config);
 
   let stopping = false;

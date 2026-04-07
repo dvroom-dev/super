@@ -408,4 +408,64 @@ describe("runFluxOrchestrator", () => {
     expect(events.some((event) => event.kind === "orchestrator.reconciled_session_truth")).toBe(true);
   });
 
+  test("halts instead of idle-recovering when the latest solver failure is non-retryable", async () => {
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const ts = new Date().toISOString();
+    await fs.mkdir(path.join(workspaceRoot, ".ai-flux", "sessions", "solver", "solver_attempt_failed"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-flux", "sessions", "solver", "solver_attempt_failed", "session.json"),
+      JSON.stringify({
+        sessionId: "solver_attempt_failed",
+        sessionType: "solver",
+        status: "failed",
+        createdAt: ts,
+        updatedAt: ts,
+        provider: "claude",
+        model: "claude-opus-4-6",
+        resumePolicy: "never",
+        sessionScope: "per_attempt",
+        activeAttemptId: "attempt_failed",
+        stopReason: "provider_rate_limited: You've hit your limit · resets 1am (America/Los_Angeles)",
+      }, null, 2),
+      "utf8",
+    );
+    await fs.mkdir(path.join(workspaceRoot, "flux"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "state.json"),
+      JSON.stringify({
+        version: 1,
+        workspaceRoot,
+        configPath: path.join(workspaceRoot, "flux.yaml"),
+        pid: process.pid,
+        startedAt: ts,
+        updatedAt: ts,
+        status: "running",
+        stopRequested: false,
+        active: {
+          solver: { status: "idle", updatedAt: ts },
+          modeler: { status: "idle", updatedAt: ts },
+          bootstrapper: { status: "idle", updatedAt: ts },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
+    const deadline = Date.now() + 2000;
+    let stopped = false;
+    while (Date.now() < deadline && !stopped) {
+      const current = await loadFluxState(workspaceRoot, config);
+      stopped = current?.status === "stopped" && current.stopRequested === true;
+      if (!stopped) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(stopped).toBe(true);
+    await runPromise;
+
+    const events = await readFluxEventsWithRetry(workspaceRoot, config);
+    expect(events.some((event) => event.kind === "orchestrator.recovery_escalated")).toBe(true);
+    expect(events.some((event) => event.kind === "orchestrator.idle_recovered")).toBe(false);
+    const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+    expect(solverQueue.items).toHaveLength(0);
+  });
+
 });

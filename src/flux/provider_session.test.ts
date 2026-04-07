@@ -134,4 +134,44 @@ retention:
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
     }
   });
+
+  test("classifies Claude rate limits as non-retryable provider failures", async () => {
+    process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+      {
+        type: "provider_item",
+        item: { provider: "claude", kind: "other", type: "event", summary: "rate limit", includeInTranscript: false },
+        raw: { type: "rate_limit_event", rate_limit_info: { status: "rejected" } },
+      },
+      {
+        type: "assistant_message",
+        text: "You've hit your limit · resets 1am (America/Los_Angeles)",
+      },
+    ]);
+    process.env.MOCK_PROVIDER_RUNONCE_ERROR = "Claude Code process exited with code 1";
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const session: FluxSessionRecord = {
+        sessionId: "solver_attempt_test",
+        sessionType: "solver",
+        status: "running",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        provider: "claude",
+        model: "claude-opus-4-6",
+        resumePolicy: "never",
+        sessionScope: "per_attempt",
+      };
+      await expect(runFluxProviderTurn({
+        workspaceRoot,
+        config,
+        session,
+        sessionType: "solver",
+        promptText: "solve",
+        workingDirectory: workspaceRoot,
+      })).rejects.toThrow(/provider_rate_limited: You've hit your limit/i);
+    } finally {
+      delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
+      delete process.env.MOCK_PROVIDER_RUNONCE_ERROR;
+    }
+  });
 });
