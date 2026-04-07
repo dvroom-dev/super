@@ -583,4 +583,303 @@ process.stdin.on("end", () => {
     expect(solverMessages).toContain("Seed preplay already ran on this instance.");
     expect(solverMessages).toContain("Current live state after preplay: level 2");
   }, 15000);
+
+  test("chains solver to modeler to bootstrapper across multiple solved levels and queues a frontier seed", async () => {
+    const observePath = path.join(workspaceRoot, "scripts", "observe_multilevel.js");
+    await fs.writeFile(observePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const instance = input.instance || {};
+  const instanceId = String(instance.instance_id || "instance_1");
+  const preplayed = instanceId.startsWith("seed_rev_");
+  process.stdout.write(JSON.stringify({
+    evidence: [{
+      summary: preplayed ? "frontier solver resumed at level 3" : "solver reached level 3",
+      action_count: preplayed ? 65 : 45,
+      changed_pixels: 1,
+      state: {
+        current_level: 3,
+        levels_completed: 2,
+        win_levels: 7,
+        state: "NOT_FINISHED",
+        total_steps: preplayed ? 65 : 45,
+        current_attempt_steps: preplayed ? 12 : 45,
+        last_action_name: "ACTION4"
+      }
+    }],
+    evidence_bundle_id: preplayed ? "bundle_preplayed_l3" : "bundle_live_l3",
+    evidence_bundle_path: preplayed ? "/tmp/bundle_preplayed_l3" : "/tmp/bundle_live_l3"
+  }));
+});`, "utf8");
+    await fs.chmod(observePath, 0o755);
+
+    const rehearsePath = path.join(workspaceRoot, "scripts", "rehearse_multilevel.js");
+    await fs.writeFile(rehearsePath, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  rehearsal_ok: true,
+  status_before: { current_level: 1, levels_completed: 0, state: "NOT_FINISHED", win_levels: 7 },
+  status_after: { current_level: 3, levels_completed: 2, state: "NOT_FINISHED", win_levels: 7 },
+  compare_payload: {
+    ok: true,
+    action: "compare_sequences",
+    level: 3,
+    frontier_level: 3,
+    all_match: true,
+    compared_sequences: 3,
+    eligible_sequences: 3,
+    diverged_sequences: 0,
+    covered_sequence_ids: ["level_1:seq_0001", "level_2:seq_0001", "level_3:seq_0001"],
+    reports: [
+      { level: 1, sequence_id: "seq_0001", matched: true, frontier_level_after_sequence: 2, sequence_completed_level: true, report_file: "level_1/report.md" },
+      { level: 2, sequence_id: "seq_0001", matched: true, frontier_level_after_sequence: 3, sequence_completed_level: true, report_file: "level_2/report.md" },
+      { level: 3, sequence_id: "seq_0001", matched: true, frontier_level_after_sequence: 3, sequence_completed_level: false, report_file: "level_3/report.md" }
+    ]
+  },
+  tool_results: []
+})));`, "utf8");
+    await fs.chmod(rehearsePath, 0o755);
+
+    const replayPath = path.join(workspaceRoot, "scripts", "replay_multilevel.js");
+    await fs.writeFile(replayPath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  process.stdout.write(JSON.stringify({
+    replay_ok: true,
+    tool_results: [],
+    evidence: [{
+      summary: "seed replay reaches level 3",
+      state: {
+        current_level: 3,
+        levels_completed: 2,
+        win_levels: 7,
+        state: "NOT_FINISHED",
+        total_steps: 65,
+        current_attempt_steps: 0,
+        last_action_name: "ACTION4"
+      }
+    }],
+    instance: input.instance || {}
+  }));
+});`, "utf8");
+    await fs.chmod(replayPath, 0o755);
+
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_multilevel.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const modelOutput = input.modelOutput || {};
+  const decision = String(modelOutput.decision || "");
+  if (decision === "checked_current_model") {
+    process.stdout.write(JSON.stringify({
+      accepted: false,
+      message: "current model still behind frontier",
+      model_output: modelOutput,
+      compare_payload: {
+        level: 1,
+        all_match: false,
+        reports: [{ level: 1, sequence_id: "seq_0001", matched: false, divergence_step: 2, divergence_reason: "intermediate_frame_mismatch" }]
+      }
+    }));
+    return;
+  }
+  process.stdout.write(JSON.stringify({
+    accepted: true,
+    message: modelOutput.summary || "accepted",
+    model_output: modelOutput,
+    compare_payload: {
+      level: 3,
+      frontier_level: 3,
+      all_match: true,
+      compared_sequences: 3,
+      eligible_sequences: 3,
+      diverged_sequences: 0,
+      covered_sequence_ids: ["level_1:seq_0001", "level_2:seq_0001", "level_3:seq_0001"],
+      reports: [
+        { level: 1, sequence_id: "seq_0001", matched: true, frontier_level_after_sequence: 2, sequence_completed_level: true },
+        { level: 2, sequence_id: "seq_0001", matched: true, frontier_level_after_sequence: 3, sequence_completed_level: true },
+        { level: 3, sequence_id: "seq_0001", matched: true, frontier_level_after_sequence: 3, sequence_completed_level: false }
+      ]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText
+      .replace(/observe_evidence:\n    command: \["[^"]*"\]/, `observe_evidence:\n    command: ["${observePath}"]`)
+      .replace(/rehearse_seed_on_model:\n    command: \["[^"]*"\]/, `rehearse_seed_on_model:\n    command: ["${rehearsePath}"]`)
+      .replace(/replay_seed_on_real_game:\n    command: \["[^"]*"\]/, `replay_seed_on_real_game:\n    command: ["${replayPath}"]`)
+      .replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
+      {
+        contains: "MODELER_PROMPT",
+        text: JSON.stringify({
+          decision: "updated_model",
+          summary: "model now covers solved levels through frontier 3",
+          message_for_bootstrapper: "levels 1 and 2 are solved; frontier is level 3",
+          artifacts_updated: ["model_lib.py"],
+          evidence_watermark: "wm_multilevel",
+        }),
+      },
+      {
+        contains: "BOOTSTRAP_PROMPT",
+        text: JSON.stringify({
+          decision: "finalize_seed",
+          summary: "seed now explains solved levels and level 3 frontier",
+          seed_bundle_updated: true,
+          notes: "write multi-level seed",
+          solver_action: "queue_and_interrupt",
+          seed_delta_kind: "level_completion_advanced",
+        }),
+      },
+    ]);
+    process.env.MOCK_PROVIDER_DELAY_MS = "50";
+
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const state: FluxRunState = {
+        version: 1,
+        workspaceRoot,
+        configPath: path.join(workspaceRoot, "flux.yaml"),
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: "running",
+        stopRequested: false,
+        active: {
+          solver: { status: "idle", updatedAt: new Date().toISOString() },
+          modeler: { status: "idle", updatedAt: new Date().toISOString() },
+          bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+        },
+      };
+      await saveFluxState(workspaceRoot, config, state);
+
+      const initialSolverPromise = runSolverQueueItem({
+        workspaceRoot,
+        config,
+        state,
+        queueItem: {
+          id: "q_solver_multilevel",
+          sessionType: "solver",
+          createdAt: new Date().toISOString(),
+          reason: "initial_solver_attempt",
+          payload: {},
+        },
+      });
+
+      let modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+      const queueDeadline = Date.now() + 2000;
+      while (Date.now() < queueDeadline && modelerQueue.items.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+      }
+      expect(modelerQueue.items.length).toBeGreaterThan(0);
+
+      const solverSessionsDir = path.join(workspaceRoot, ".ai-flux", "sessions", "solver");
+      let solverSessions: string[] = [];
+      while (Date.now() < queueDeadline && solverSessions.length === 0) {
+        try {
+          solverSessions = (await fs.readdir(solverSessionsDir)).filter((name) => name.startsWith("solver_attempt_")).sort();
+        } catch {
+          solverSessions = [];
+        }
+        if (solverSessions.length === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(solverSessions).toHaveLength(1);
+      requestActiveSolverInterrupt(solverSessions[0]!);
+      await initialSolverPromise;
+
+      await runModelerQueueItem({
+        workspaceRoot,
+        config,
+        state,
+        queueItem: modelerQueue.items[modelerQueue.items.length - 1]!,
+      });
+
+      let bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+      expect(bootstrapQueue.items).toHaveLength(1);
+      expect((bootstrapQueue.items[0]?.payload.coverageSummary as Record<string, unknown>)?.frontierLevel).toBe(3);
+
+      await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "candidate.json"), JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        syntheticMessages: [
+          { role: "assistant", text: "Solved level 1 route is preserved from the run start." },
+          { role: "assistant", text: "Solved level 2 route is preserved and the frontier is now level 3." },
+          { role: "assistant", text: "Level 3 frontier branch should continue from the preplayed frontier state." },
+        ],
+        replayPlan: [
+          { tool: "shell", args: { cmd: ["arc_action", "ACTION1"] } },
+          { tool: "shell", args: { cmd: ["arc_action", "ACTION4"] } },
+        ],
+        assertions: ["levels 1 and 2 solved before the level 3 frontier"],
+      }, null, 2), "utf8");
+
+      await runBootstrapperQueueItem({
+        workspaceRoot,
+        config,
+        state,
+        queueItem: bootstrapQueue.items[0]!,
+      });
+
+      const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+      expect(solverQueue.items).toHaveLength(1);
+      const currentSeed = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "seed", "current.json"), "utf8"));
+      expect(currentSeed.syntheticMessages.some((msg: Record<string, unknown>) => String(msg.text ?? "").includes("Solved level 2 route"))).toBe(true);
+
+      const replacementSolverPromise = runSolverQueueItem({
+        workspaceRoot,
+        config,
+        state,
+        queueItem: solverQueue.items[0]!,
+      });
+
+      let replacementSessions: string[] = [];
+      const replacementDeadline = Date.now() + 2000;
+      while (Date.now() < replacementDeadline && replacementSessions.length < 2) {
+        try {
+          replacementSessions = (await fs.readdir(solverSessionsDir)).filter((name) => name.startsWith("solver_attempt_")).sort();
+        } catch {
+          replacementSessions = [];
+        }
+        if (replacementSessions.length < 2) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(replacementSessions.length).toBeGreaterThanOrEqual(2);
+      const replacementSessionId = replacementSessions[replacementSessions.length - 1]!;
+      const messagesPath = path.join(workspaceRoot, ".ai-flux", "sessions", "solver", replacementSessionId, "messages.jsonl");
+      let messages = "";
+      while (Date.now() < replacementDeadline) {
+        try {
+          messages = await fs.readFile(messagesPath, "utf8");
+        } catch {
+          messages = "";
+        }
+        if (messages.includes("Current live state after preplay: level 3")) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(messages).toContain("Seed preplay already ran on this instance.");
+      expect(messages).toContain("Current live state after preplay: level 3");
+      requestActiveSolverInterrupt(replacementSessionId);
+      await replacementSolverPromise;
+    } finally {
+      delete process.env.MOCK_PROVIDER_DELAY_MS;
+      delete process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON;
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  }, 20000);
 });
