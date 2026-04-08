@@ -472,7 +472,7 @@ process.stdin.on("end", () => {
     let modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
     let events = await readFluxEvents(workspaceRoot, config);
     let modelerMessages = await fs.readFile(path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "messages.jsonl"), "utf8");
-    expect(bootstrapQueue.items).toHaveLength(1);
+    expect(bootstrapQueue.items).toHaveLength(0);
     expect(modelerQueue.items).toHaveLength(0);
     expect(modelerMessages.includes("acceptance_failed_resume")).toBe(false);
     expect(events.some((event) =>
@@ -480,8 +480,6 @@ process.stdin.on("end", () => {
       && event.payload?.firstFailingSequenceId === "seq_0001"
       && event.payload?.firstFailingStep === 8
     )).toBe(true);
-
-    await saveFluxQueue(workspaceRoot, config, { ...bootstrapQueue, items: [] });
     process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
       {
         contains: "MODELER_PROMPT",
@@ -529,7 +527,7 @@ process.stdin.on("end", () => {
     modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
     events = await readFluxEvents(workspaceRoot, config);
     modelerMessages = await fs.readFile(path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "messages.jsonl"), "utf8");
-    expect(bootstrapQueue.items).toHaveLength(1);
+    expect(bootstrapQueue.items).toHaveLength(0);
     expect(modelerQueue.items).toHaveLength(0);
     expect(modelerMessages.includes("acceptance_failed_resume")).toBe(false);
     expect(events.some((event) =>
@@ -537,51 +535,6 @@ process.stdin.on("end", () => {
       && event.payload?.firstFailingSequenceId === "seq_0001"
       && event.payload?.firstFailingStep === 14
     )).toBe(true);
-
-    await runBootstrapperQueueItem({
-      workspaceRoot,
-      config,
-      state,
-      queueItem: bootstrapQueue.items[0]!,
-    });
-
-    const bootstrapRetryQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
-    expect(bootstrapRetryQueue.items).toHaveLength(1);
-
-    await runBootstrapperQueueItem({
-      workspaceRoot,
-      config,
-      state,
-      queueItem: bootstrapRetryQueue.items[0]!,
-    });
-
-    const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
-    expect(solverQueue.items).toHaveLength(1);
-
-    const runPromise = runSolverQueueItem({
-      workspaceRoot,
-      config,
-      state,
-      queueItem: solverQueue.items[0]!,
-    });
-    const solverDir = path.join(workspaceRoot, ".ai-flux", "sessions", "solver");
-    const deadline = Date.now() + 2000;
-    let solverSessions: string[] = [];
-    while (Date.now() < deadline && solverSessions.length === 0) {
-      try {
-        solverSessions = (await fs.readdir(solverDir)).filter((name) => name.startsWith("solver_attempt_")).sort();
-      } catch {
-        solverSessions = [];
-      }
-      if (solverSessions.length === 0) await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    expect(solverSessions).toHaveLength(1);
-    requestActiveSolverInterrupt(solverSessions[0]!);
-    await runPromise;
-
-    const solverMessages = await fs.readFile(path.join(workspaceRoot, ".ai-flux", "sessions", "solver", solverSessions[0]!, "messages.jsonl"), "utf8");
-    expect(solverMessages).toContain("Seed preplay already ran on this instance.");
-    expect(solverMessages).toContain("Current live state after preplay: level 2");
   }, 15000);
 
   test("chains solver to modeler to bootstrapper across multiple solved levels and queues a frontier seed", async () => {

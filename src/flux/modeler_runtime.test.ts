@@ -346,7 +346,7 @@ process.stdin.on("end", () => {
     expect(events.some((event) => event.kind === "modeler.acceptance_failed" && event.payload?.blocked === true)).toBe(true);
   });
 
-  test("publishes bootstrapper progress when contiguous matched prefix improves before full acceptance", async () => {
+  test("records progress without waking bootstrapper when contiguous matched prefix improves before full acceptance", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
       decision: "updated_model",
       summary: "matched one more sequence",
@@ -413,9 +413,7 @@ process.stdin.on("end", () => {
     const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
     const events = await readFluxEvents(workspaceRoot, config);
-    expect(bootstrapQueue.items).toHaveLength(1);
-    expect(bootstrapQueue.items[0]?.reason).toBe("model_progress_advanced");
-    expect((bootstrapQueue.items[0]?.payload.modelProgress as Record<string, unknown>)?.contiguousMatchedSequences).toBe(1);
+    expect(bootstrapQueue.items).toHaveLength(0);
     expect(modelerQueue.items).toHaveLength(0);
     expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(true);
   });
@@ -514,7 +512,7 @@ process.stdin.on("end", () => {
     }
   });
 
-  test("publishes bootstrapper progress when the first failing step advances within the same sequence", async () => {
+  test("records progress without waking bootstrapper when the first failing step advances within the same sequence", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
       decision: "updated_model",
       summary: "same sequence fails later",
@@ -580,8 +578,7 @@ process.stdin.on("end", () => {
       },
     });
     let bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
-    expect(bootstrapQueue.items).toHaveLength(1);
-    await saveFluxQueue(workspaceRoot, config, { ...bootstrapQueue, items: [] });
+    expect(bootstrapQueue.items).toHaveLength(0);
 
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
       decision: "updated_model",
@@ -606,10 +603,7 @@ process.stdin.on("end", () => {
 
     bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     const events = await readFluxEvents(workspaceRoot, config);
-    expect(bootstrapQueue.items).toHaveLength(1);
-    expect(bootstrapQueue.items[0]?.reason).toBe("model_progress_advanced");
-    expect((bootstrapQueue.items[0]?.payload.modelProgress as Record<string, unknown>)?.firstFailingSequenceId).toBe("seq_0001");
-    expect((bootstrapQueue.items[0]?.payload.modelProgress as Record<string, unknown>)?.firstFailingStep).toBe(14);
+    expect(bootstrapQueue.items).toHaveLength(0);
     expect(events.some((event) =>
       event.kind === "modeler.progress_advanced"
       && (event.payload?.firstFailingStep as number | undefined) === 14
@@ -1304,8 +1298,9 @@ process.stdin.on("end", () => {
     expect(currentMeta.revisionId).toBe("model_rev_accept");
     expect(currentMeta.summary).toEqual(acceptedSummary);
     const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
-    expect(bootstrapQueue.items).toHaveLength(1);
-    expect((bootstrapQueue.items[0]?.payload.coverageSummary as Record<string, unknown>)?.frontierLevel).toBe(3);
+    expect(bootstrapQueue.items).toHaveLength(0);
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(true);
   });
 
   test("prefers the already queued bootstrap model revision over an older successful baseline", async () => {

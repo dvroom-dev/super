@@ -242,31 +242,6 @@ async function publishProgressAdvance(args: {
     revisionId,
     summary,
   });
-  await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
-    id: newId("q"),
-    sessionType: "bootstrapper",
-    createdAt: nowIso(),
-    reason: "model_progress_advanced",
-    dedupeKey: `bootstrap-progress:${revisionId}`,
-    payload: {
-      baselineModelRevisionId: revisionId,
-      improvementKind: "frontier_advanced",
-      modelRevisionId: revisionId,
-      messageForBootstrapper: String(args.modelOutput.message_for_bootstrapper ?? ""),
-      modelOutput: args.modelOutput,
-      sourceEvidence: args.promptPayload.latestEvidence ?? null,
-      sourceEvidenceWatermark: String(args.promptPayload.evidenceWatermark ?? args.modelOutput.evidence_watermark ?? ""),
-      modelProgress: args.currentProgress,
-      comparePayload: args.comparePayload,
-      coverageSummary: persistedSummary,
-    },
-  });
-  const seedMeta = await loadSeedMeta(args.workspaceRoot, args.config);
-  await saveSeedMeta(args.workspaceRoot, args.config, {
-    ...seedMeta,
-    lastQueuedBootstrapModelRevisionId: revisionId,
-    lastQueuedBootstrapCoverageSummary: persistedSummary,
-  });
   await appendFluxEvents(args.workspaceRoot, args.config, [{
     eventId: newId("evt"),
     ts: nowIso(),
