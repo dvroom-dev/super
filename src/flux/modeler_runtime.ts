@@ -86,24 +86,41 @@ async function loadCurrentModelCoverageSummary(
 }
 
 function isProgressAdvance(previous: ModelProgress | null, next: ModelProgress): boolean {
+  const sequenceOrder = (sequenceId: string | null): number => {
+    const match = String(sequenceId ?? "").match(/seq_(\d+)/i);
+    return match ? Number(match[1]) || 0 : 0;
+  };
+  const hasOrderedAdvance = (baseline: ModelProgress | null, candidate: ModelProgress): boolean => {
+    if (candidate.contiguousMatchedSequences > (baseline?.contiguousMatchedSequences ?? 0)) {
+      return true;
+    }
+    const candidateSequenceOrder = sequenceOrder(candidate.firstFailingSequenceId);
+    const baselineSequenceOrder = sequenceOrder(baseline?.firstFailingSequenceId ?? null);
+    if (candidateSequenceOrder > Math.max(1, baselineSequenceOrder)) {
+      return true;
+    }
+    if ((candidate.firstFailingStep ?? 0) > 1) {
+      return true;
+    }
+    if (
+      baseline?.firstFailingSequenceId
+      && candidate.firstFailingSequenceId
+      && baseline.firstFailingSequenceId === candidate.firstFailingSequenceId
+      && baseline.firstFailingStep != null
+      && candidate.firstFailingStep != null
+      && candidate.firstFailingStep > baseline.firstFailingStep
+    ) {
+      return true;
+    }
+    return false;
+  };
   if (!previous) {
-    return next.contiguousMatchedSequences > 0 || next.firstFailingStep != null || next.firstFailingSequenceId != null;
+    return hasOrderedAdvance(null, next);
   }
   if (next.level !== previous.level) {
-    return next.level > previous.level
-      && (next.contiguousMatchedSequences > 0 || next.firstFailingStep != null || next.firstFailingSequenceId != null);
+    return next.level > previous.level && hasOrderedAdvance(previous, next);
   }
-  if (
-    previous.firstFailingSequenceId
-    && next.firstFailingSequenceId
-    && previous.firstFailingSequenceId === next.firstFailingSequenceId
-    && previous.firstFailingStep != null
-    && next.firstFailingStep != null
-    && next.firstFailingStep > previous.firstFailingStep
-  ) {
-    return true;
-  }
-  return next.contiguousMatchedSequences > previous.contiguousMatchedSequences;
+  return hasOrderedAdvance(previous, next);
 }
 
 function coverageSummaryFromSeedMeta(value: unknown): ReturnType<typeof buildCoverageSummary> | null {
