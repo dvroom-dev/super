@@ -180,6 +180,111 @@ retention:
     expect(await fs.readdir(promptDir)).toHaveLength(0);
   });
 
+  test("re-syncs the model workspace after the modeler turn before acceptance", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "updated_model",
+      summary: "model patched after reviewing evidence",
+      message_for_bootstrapper: "use refreshed evidence",
+      artifacts_updated: ["model_lib.py"],
+      evidence_watermark: "wm_resync",
+    });
+    const syncPath = path.join(workspaceRoot, "scripts", "sync_post_turn.js");
+    await fs.writeFile(syncPath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const payload = JSON.parse(data || "{}");
+  const workspaceRoot = payload.workspaceRoot;
+  const counterPath = require("node:path").join(workspaceRoot, "flux", "sync_count.txt");
+  const fs = require("node:fs");
+  let count = 0;
+  try { count = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch {}
+  count += 1;
+  fs.mkdirSync(require("node:path").dirname(counterPath), { recursive: true });
+  fs.writeFileSync(counterPath, String(count));
+  const seqPath = require("node:path").join(workspaceRoot, "level_1", "sequences", "seq_0001.json");
+  fs.mkdirSync(require("node:path").dirname(seqPath), { recursive: true });
+  const payloadOut = count >= 2
+    ? { level: 1, sequence_id: "seq_0001", sequence_number: 1, start_action_index: 1, end_action_index: 3, end_reason: "reset_level", action_count: 3, actions: [{ action_index: 1 }, { action_index: 2 }, { action_index: 3 }] }
+    : { level: 1, sequence_id: "seq_0001", sequence_number: 1, start_action_index: 45, end_action_index: 45, end_reason: "reset_level", action_count: 1, actions: [{ action_index: 45 }] };
+  fs.writeFileSync(seqPath, JSON.stringify(payloadOut, null, 2));
+  process.stdout.write(JSON.stringify({ synced: true, reason: payload.reason || "", count }));
+});`, "utf8");
+    await fs.chmod(syncPath, 0o755);
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_after_resync.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const seqPath = path.join(input.workspaceRoot, "level_1", "sequences", "seq_0001.json");
+  const payload = JSON.parse(fs.readFileSync(seqPath, "utf8"));
+  const accepted = Number(payload.start_action_index || 0) === 1;
+  process.stdout.write(JSON.stringify({
+    accepted,
+    message: accepted ? "accepted after post-turn sync" : "stale synced evidence",
+    model_output: input.modelOutput,
+    compare_payload: accepted
+      ? { level: 1, all_match: true, compared_sequences: 1, diverged_sequences: 0, reports: [{ level: 1, sequence_id: "seq_0001", matched: true }] }
+      : { level: 1, all_match: false, compared_sequences: 1, diverged_sequences: 1, reports: [{ level: 1, sequence_id: "seq_0001", matched: false, divergence_step: 1, divergence_reason: "before_state_mismatch" }] }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText
+      .replace(/sync_model_workspace:\n    command: \["[^"]*"\]/, `sync_model_workspace:\n    command: ["${syncPath}"]`)
+      .replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_resync",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "solver_new_evidence",
+        payload: {
+          evidenceWatermark: "wm_resync",
+          latestEvidence: {
+            summary: "current_level=2",
+            state: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED" },
+          },
+        },
+      },
+    });
+
+    const syncCount = Number(await fs.readFile(path.join(workspaceRoot, "flux", "sync_count.txt"), "utf8"));
+    expect(syncCount).toBe(2);
+    const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    expect(bootstrapQueue.items).toHaveLength(1);
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(events.some((event) => event.kind === "modeler.acceptance_passed")).toBe(true);
+  });
+
   test("does not hot-loop blocked modeler turns", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
       decision: "blocked",

@@ -839,6 +839,8 @@ process.stdin.on("end", () => {
 
       const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
       expect(solverQueue.items).toHaveLength(1);
+      expect(typeof (solverQueue.items[0]?.payload.preplayedInstance as Record<string, unknown> | undefined)?.instance_id).toBe("string");
+      expect((solverQueue.items[0]?.payload.preplayedReplayResult as Record<string, unknown> | undefined)?.replay_ok).toBe(true);
       const currentSeed = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "seed", "current.json"), "utf8"));
       expect(currentSeed.syntheticMessages.some((msg: Record<string, unknown>) => String(msg.text ?? "").includes("Solved level 2 route"))).toBe(true);
 
@@ -860,7 +862,11 @@ process.stdin.on("end", () => {
         if (replacementSessions.length < 2) await new Promise((resolve) => setTimeout(resolve, 20));
       }
       expect(replacementSessions.length).toBeGreaterThanOrEqual(2);
-      const replacementSessionId = replacementSessions[replacementSessions.length - 1]!;
+      const replacementSessionId = replacementSessions.find((sessionId) => !solverSessions.includes(sessionId));
+      expect(replacementSessionId).toBeTruthy();
+      if (!replacementSessionId) {
+        throw new Error("replacement solver session not found");
+      }
       const messagesPath = path.join(workspaceRoot, ".ai-flux", "sessions", "solver", replacementSessionId, "messages.jsonl");
       let messages = "";
       while (Date.now() < replacementDeadline) {

@@ -13,6 +13,15 @@ export type FluxProviderTurnResult = {
   interrupted: boolean;
 };
 
+const MAX_SESSION_TEXT_CHARS = 16_000;
+
+function capSessionText(value: string): string {
+  const text = String(value ?? "");
+  if (text.length <= MAX_SESSION_TEXT_CHARS) return text;
+  const suffix = "\n...[truncated]";
+  return text.slice(0, MAX_SESSION_TEXT_CHARS - suffix.length) + suffix;
+}
+
 function isMissingRolloutPathFailure(error: unknown): boolean {
   const message = String((error as any)?.message ?? error ?? "");
   return /state db missing rollout path/i.test(message) || /missing rollout path for thread/i.test(message);
@@ -160,7 +169,7 @@ export async function runFluxProviderTurn(args: {
   }
   args.session.providerThreadId = providerThreadId;
   args.session.updatedAt = new Date().toISOString();
-  args.session.latestAssistantText = assistantText;
+  args.session.latestAssistantText = capSessionText(assistantText);
   await saveFluxSession(args.workspaceRoot, args.config, args.session);
   return { assistantText, providerThreadId, providerEvents, interrupted };
 }

@@ -17,6 +17,14 @@ import { loadFluxSession, saveFluxSession } from "./session_store.js";
 const RECOVERY_BLOCKED_SOLVER_STOP_REASONS = new Set(["evidence_surface_incomplete"]);
 const MAX_CONSECUTIVE_SOLVER_INFRA_FAILURES_BEFORE_STOP = 2;
 const NONRETRYABLE_SOLVER_FAILURE_PREFIXES = ["provider_rate_limited:"];
+const MAX_SESSION_STOP_REASON_CHARS = 8_000;
+
+function capStopReason(value: string): string {
+  const text = String(value ?? "");
+  if (text.length <= MAX_SESSION_STOP_REASON_CHARS) return text;
+  const suffix = "\n...[truncated]";
+  return text.slice(0, MAX_SESSION_STOP_REASON_CHARS - suffix.length) + suffix;
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -47,6 +55,7 @@ async function recordSessionFailure(
   sessionType: "solver" | "modeler" | "bootstrapper",
   summary: string,
 ): Promise<void> {
+  const boundedSummary = capStopReason(summary);
   const latestState = await loadFluxState(workspaceRoot, config);
   const active = latestState?.active?.[sessionType];
   const sessionId = active?.sessionId;
@@ -54,7 +63,7 @@ async function recordSessionFailure(
     const session = await loadFluxSession(workspaceRoot, config, sessionType, sessionId);
     if (session) {
       session.status = "failed";
-      session.stopReason = summary;
+      session.stopReason = boundedSummary;
       session.updatedAt = nowIso();
       await saveFluxSession(workspaceRoot, config, session);
     }
@@ -75,7 +84,7 @@ async function recordSessionFailure(
     workspaceRoot,
     sessionType,
     sessionId,
-    summary,
+    summary: boundedSummary,
   }]);
 }
 

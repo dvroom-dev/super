@@ -140,6 +140,12 @@ export class MockProvider implements AgentProvider {
         // ignore malformed test-only injection
       }
     }
+    if (typeof process.env.MOCK_PROVIDER_STREAMED_TERMINAL_ERROR === "string") {
+      const err = new Error(String(process.env.MOCK_PROVIDER_STREAMED_TERMINAL_ERROR)) as Error & { name: string; threadId?: string; };
+      err.name = "ProviderExecutionError";
+      err.threadId = this.threadId;
+      throw err;
+    }
     if (process.env.MOCK_PROVIDER_RUNONCE_EMPTY === "1" || process.env.MOCK_PROVIDER_SKIP_ASSISTANT_MESSAGE === "1") {
       yield { type: "done", finalText: undefined, threadId: this.threadId };
       return;

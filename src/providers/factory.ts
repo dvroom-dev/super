@@ -4,6 +4,7 @@ import { CodexProvider } from "./codex_provider.js";
 import { MockProvider } from "./mock_provider.js";
 
 export function createProvider(config: ProviderConfig): AgentProvider {
+  if (process.env.MOCK_PROVIDER_FORCE === "1") return new MockProvider(config);
   if (config.provider === "mock") return new MockProvider(config);
   if (config.provider === "claude") return new ClaudeProvider(config);
   if (config.provider === "codex") return new CodexProvider(config);

@@ -9,8 +9,17 @@ import type { FluxSessionRecord } from "./types.js";
 
 describe("flux provider session", () => {
   let workspaceRoot = "";
+  const clearMockProviderEnv = () => {
+    delete process.env.MOCK_PROVIDER_FORCE;
+    delete process.env.MOCK_PROVIDER_STREAMED_ERROR_IF_THREAD_ID_SET;
+    delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
+    delete process.env.MOCK_PROVIDER_RUNONCE_ERROR;
+    delete process.env.MOCK_PROVIDER_STREAMED_TERMINAL_ERROR;
+  };
 
   beforeEach(async () => {
+    clearMockProviderEnv();
     workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "flux-provider-session-"));
     await fs.mkdir(path.join(workspaceRoot, "prompts"), { recursive: true });
     await fs.writeFile(path.join(workspaceRoot, "prompts", "solver.md"), "Solve.", "utf8");
@@ -136,6 +145,7 @@ retention:
   });
 
   test("classifies Claude rate limits as non-retryable provider failures", async () => {
+    process.env.MOCK_PROVIDER_FORCE = "1";
     process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
       {
         type: "provider_item",
@@ -147,7 +157,7 @@ retention:
         text: "You've hit your limit · resets 1am (America/Los_Angeles)",
       },
     ]);
-    process.env.MOCK_PROVIDER_RUNONCE_ERROR = "Claude Code process exited with code 1";
+    process.env.MOCK_PROVIDER_STREAMED_TERMINAL_ERROR = "Claude Code process exited with code 1";
     try {
       const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
       const session: FluxSessionRecord = {
@@ -170,8 +180,39 @@ retention:
         workingDirectory: workspaceRoot,
       })).rejects.toThrow(/provider_rate_limited: You've hit your limit/i);
     } finally {
-      delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
-      delete process.env.MOCK_PROVIDER_RUNONCE_ERROR;
+      clearMockProviderEnv();
+    }
+  });
+
+  test("caps persisted latestAssistantText to keep session saves bounded", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "x".repeat(20_000);
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const session: FluxSessionRecord = {
+        sessionId: "modeler_run",
+        sessionType: "modeler",
+        status: "running",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        provider: "mock",
+        model: "mock-model",
+        resumePolicy: "always",
+        sessionScope: "run",
+      };
+      const result = await runFluxProviderTurn({
+        workspaceRoot,
+        config,
+        session,
+        sessionType: "modeler",
+        promptText: "repair model",
+        workingDirectory: workspaceRoot,
+      });
+      expect(result.assistantText.length).toBe(20_000);
+      const saved = await loadFluxSession(workspaceRoot, config, "modeler", "modeler_run");
+      expect(saved?.latestAssistantText?.length ?? 0).toBeLessThanOrEqual(16_000);
+      expect(saved?.latestAssistantText?.endsWith("...[truncated]")).toBe(true);
+    } finally {
+      clearMockProviderEnv();
     }
   });
 });

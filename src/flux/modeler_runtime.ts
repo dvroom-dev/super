@@ -477,6 +477,13 @@ export async function runModelerQueueItem(args: {
   });
   const parsedModelOutput = parseJsonObjectFromAssistantText(turn.assistantText || "");
   const modelOutput = parsedModelOutput ?? fallbackModelOutput(promptPayload, turn.assistantText, turn.interrupted);
+  if (args.config.problem.syncModelWorkspace) {
+    await runFluxProblemCommand(args.config.problem.syncModelWorkspace, {
+      workspaceRoot: args.workspaceRoot,
+      queueItem: args.queueItem,
+      reason: "post_modeler_turn",
+    });
+  }
   const acceptance = await runModelAcceptance({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
