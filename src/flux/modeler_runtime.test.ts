@@ -197,12 +197,14 @@ process.stdin.on("end", () => {
   const payload = JSON.parse(data || "{}");
   const workspaceRoot = payload.workspaceRoot;
   const counterPath = require("node:path").join(workspaceRoot, "flux", "sync_count.txt");
+  const bundlePathRecord = require("node:path").join(workspaceRoot, "flux", "sync_bundle_path.txt");
   const fs = require("node:fs");
   let count = 0;
   try { count = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch {}
   count += 1;
   fs.mkdirSync(require("node:path").dirname(counterPath), { recursive: true });
   fs.writeFileSync(counterPath, String(count));
+  fs.writeFileSync(bundlePathRecord, String(payload.evidenceBundlePath || ""));
   const seqPath = require("node:path").join(workspaceRoot, "level_1", "sequences", "seq_0001.json");
   fs.mkdirSync(require("node:path").dirname(seqPath), { recursive: true });
   const payloadOut = count >= 2
@@ -269,6 +271,8 @@ process.stdin.on("end", () => {
         reason: "solver_new_evidence",
         payload: {
           evidenceWatermark: "wm_resync",
+          evidenceBundleId: "bundle_resync",
+          evidenceBundlePath: "/tmp/bundle_resync",
           latestEvidence: {
             summary: "current_level=2",
             state: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED" },
@@ -279,6 +283,8 @@ process.stdin.on("end", () => {
 
     const syncCount = Number(await fs.readFile(path.join(workspaceRoot, "flux", "sync_count.txt"), "utf8"));
     expect(syncCount).toBe(2);
+    const seenBundlePath = await fs.readFile(path.join(workspaceRoot, "flux", "sync_bundle_path.txt"), "utf8");
+    expect(seenBundlePath).toBe("/tmp/bundle_resync");
     const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     expect(bootstrapQueue.items).toHaveLength(1);
     const events = await readFluxEvents(workspaceRoot, config);

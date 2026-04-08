@@ -381,17 +381,19 @@ export async function runModelerQueueItem(args: {
     };
     return next;
   });
+  const promptPayload = args.queueItem.payload;
 
   if (args.config.problem.syncModelWorkspace) {
     await runFluxProblemCommand(args.config.problem.syncModelWorkspace, {
       workspaceRoot: args.workspaceRoot,
       queueItem: args.queueItem,
       reason: args.queueItem.reason,
+      evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : undefined,
+      evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : undefined,
     });
   }
 
   const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.modeler.promptFile);
-  const promptPayload = args.queueItem.payload;
   const preflightModelOutput = {
     decision: "checked_current_model",
     summary: "preflight compare of current model against latest evidence",
@@ -530,6 +532,8 @@ export async function runModelerQueueItem(args: {
       workspaceRoot: args.workspaceRoot,
       queueItem: args.queueItem,
       reason: "post_modeler_turn",
+      evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : undefined,
+      evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : undefined,
     });
   }
   const acceptance = await runModelAcceptance({
