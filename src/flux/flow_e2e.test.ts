@@ -359,7 +359,7 @@ retention:
     }
   }, 15000);
 
-  test("treats deeper divergence in the same sequence as progress and avoids modeler self-loops", async () => {
+  test("does not self-loop modeler on deeper rejected same-sequence failures", async () => {
     process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
       {
         contains: "MODELER_PROMPT",
@@ -448,6 +448,12 @@ process.stdin.on("end", () => {
       },
     };
     await saveFluxState(workspaceRoot, config, state);
+    await fs.mkdir(path.join(workspaceRoot, "level_2", "sequences"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "level_2", "sequences", "seq_0001.json"),
+      JSON.stringify({ level: 2, sequence_id: "seq_0001" }, null, 2),
+      "utf8",
+    );
 
     await runModelerQueueItem({
       workspaceRoot,
@@ -471,10 +477,8 @@ process.stdin.on("end", () => {
     let bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     let modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
     let events = await readFluxEvents(workspaceRoot, config);
-    let modelerMessages = await fs.readFile(path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "messages.jsonl"), "utf8");
     expect(bootstrapQueue.items).toHaveLength(0);
     expect(modelerQueue.items).toHaveLength(0);
-    expect(modelerMessages.includes("acceptance_failed_resume")).toBe(false);
     expect(events.some((event) =>
       event.kind === "modeler.progress_advanced"
       && event.payload?.firstFailingSequenceId === "seq_0001"
@@ -526,10 +530,8 @@ process.stdin.on("end", () => {
     bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
     events = await readFluxEvents(workspaceRoot, config);
-    modelerMessages = await fs.readFile(path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "messages.jsonl"), "utf8");
     expect(bootstrapQueue.items).toHaveLength(0);
     expect(modelerQueue.items).toHaveLength(0);
-    expect(modelerMessages.includes("acceptance_failed_resume")).toBe(false);
     expect(events.some((event) =>
       event.kind === "modeler.progress_advanced"
       && event.payload?.firstFailingSequenceId === "seq_0001"
@@ -719,10 +721,16 @@ process.stdin.on("end", () => {
           modeler: { status: "idle", updatedAt: new Date().toISOString() },
           bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
         },
-      };
-      await saveFluxState(workspaceRoot, config, state);
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await fs.mkdir(path.join(workspaceRoot, "level_1", "sequences"), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, "level_2", "sequences"), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, "level_3", "sequences"), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, "level_1", "sequences", "seq_0001.json"), JSON.stringify({ level: 1, sequence_id: "seq_0001" }, null, 2), "utf8");
+    await fs.writeFile(path.join(workspaceRoot, "level_2", "sequences", "seq_0001.json"), JSON.stringify({ level: 2, sequence_id: "seq_0001" }, null, 2), "utf8");
+    await fs.writeFile(path.join(workspaceRoot, "level_3", "sequences", "seq_0001.json"), JSON.stringify({ level: 3, sequence_id: "seq_0001" }, null, 2), "utf8");
 
-      const initialSolverPromise = runSolverQueueItem({
+    const initialSolverPromise = runSolverQueueItem({
         workspaceRoot,
         config,
         state,

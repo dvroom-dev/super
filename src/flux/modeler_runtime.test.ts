@@ -346,7 +346,7 @@ process.stdin.on("end", () => {
     expect(events.some((event) => event.kind === "modeler.acceptance_failed" && event.payload?.blocked === true)).toBe(true);
   });
 
-  test("records progress without waking bootstrapper when contiguous matched prefix improves before full acceptance", async () => {
+  test("does not wake bootstrapper for a rejected partial compare slice", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
       decision: "updated_model",
       summary: "matched one more sequence",
@@ -415,7 +415,7 @@ process.stdin.on("end", () => {
     const events = await readFluxEvents(workspaceRoot, config);
     expect(bootstrapQueue.items).toHaveLength(0);
     expect(modelerQueue.items).toHaveLength(0);
-    expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(true);
+    expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(false);
   });
 
   test("recovers a reused modeler session when the persisted provider thread is stale", async () => {
@@ -512,7 +512,7 @@ process.stdin.on("end", () => {
     }
   });
 
-  test("records progress without waking bootstrapper when the first failing step advances within the same sequence", async () => {
+  test("does not wake bootstrapper for deeper rejected same-sequence failures", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
       decision: "updated_model",
       summary: "same sequence fails later",
@@ -604,10 +604,7 @@ process.stdin.on("end", () => {
     bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     const events = await readFluxEvents(workspaceRoot, config);
     expect(bootstrapQueue.items).toHaveLength(0);
-    expect(events.some((event) =>
-      event.kind === "modeler.progress_advanced"
-      && (event.payload?.firstFailingStep as number | undefined) === 14
-    )).toBe(true);
+    expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(false);
   });
 
   test("does not requeue modeler on infrastructure acceptance failures", async () => {
@@ -672,6 +669,161 @@ process.stdin.on("end", () => {
     expect(events.some((event) =>
       event.kind === "modeler.acceptance_failed"
       && (event.payload?.infrastructureFailure as Record<string, unknown> | undefined)?.type === "sequence_surface_race"
+    )).toBe(true);
+  });
+
+  test("treats missing level dirs from compare as infrastructure failures", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "updated_model",
+      summary: "compare surface missing level dir",
+      message_for_bootstrapper: "",
+      artifacts_updated: ["model_lib.py"],
+      evidence_watermark: "wm_missing_level_dir",
+    });
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_missing_level_dir.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    accepted: false,
+    message: "compare_sequences failed at level 2",
+    compare_payload: {
+      ok: false,
+      action: "compare_sequences",
+      error: {
+        type: "missing_level_dir",
+        message: "missing level dir for level 2"
+      }
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText.replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_missing_level_dir",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm_missing_level_dir" },
+      },
+    });
+    const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(bootstrapQueue.items).toHaveLength(0);
+    expect(events.some((event) =>
+      event.kind === "modeler.acceptance_failed"
+      && (event.payload?.infrastructureFailure as Record<string, unknown> | undefined)?.type === "missing_level_dir"
+    )).toBe(true);
+  });
+
+  test("treats compare reports that reference missing synced sequences as infrastructure failures", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "updated_model",
+      summary: "report points at missing synced sequences",
+      message_for_bootstrapper: "",
+      artifacts_updated: ["model_lib.py"],
+      evidence_watermark: "wm_missing_sequence_surface",
+    });
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_missing_sequence_surface.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    accepted: false,
+    message: "compare referenced seq_0002 and seq_0003",
+    compare_payload: {
+      level: 1,
+      all_match: false,
+      reports: [
+        { level: 1, sequence_id: "seq_0002", matched: false, divergence_step: 6, divergence_reason: "frame_count_mismatch" },
+        { level: 1, sequence_id: "seq_0003", matched: false, divergence_step: 1, divergence_reason: "intermediate_frame_mismatch" }
+      ]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    const syncPath = path.join(workspaceRoot, "scripts", "sync_only_seq1.js");
+    await fs.writeFile(syncPath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const payload = JSON.parse(data || "{}");
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const seqPath = path.join(payload.workspaceRoot, "level_1", "sequences", "seq_0001.json");
+  fs.mkdirSync(path.dirname(seqPath), { recursive: true });
+  fs.writeFileSync(seqPath, JSON.stringify({ sequence_id: "seq_0001", level: 1 }, null, 2));
+  process.stdout.write(JSON.stringify({ synced: true }));
+});`, "utf8");
+    await fs.chmod(syncPath, 0o755);
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText
+      .replace(/sync_model_workspace:\n    command: \["[^"]*"\]/, `sync_model_workspace:\n    command: ["${syncPath}"]`)
+      .replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_missing_sequence_surface",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm_missing_sequence_surface" },
+      },
+    });
+    const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(bootstrapQueue.items).toHaveLength(0);
+    expect(events.some((event) =>
+      event.kind === "modeler.acceptance_failed"
+      && (event.payload?.infrastructureFailure as Record<string, unknown> | undefined)?.type === "missing_sequence_surface"
     )).toBe(true);
   });
 
@@ -1165,7 +1317,7 @@ process.stdin.on("end", () => {
     });
 
     const currentMeta = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "model", "current", "meta.json"), "utf8"));
-    expect(currentMeta.revisionId).not.toBe("model_rev_strong");
+    expect(currentMeta.revisionId).toBe("model_rev_strong");
     expect(currentMeta.summary.level).toBe(2);
     expect(currentMeta.summary.frontierLevel).toBe(2);
     expect(currentMeta.summary.coveredSequenceIds).toEqual(["level_1:seq_0001", "level_1:seq_0002"]);
@@ -1300,7 +1452,7 @@ process.stdin.on("end", () => {
     const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     expect(bootstrapQueue.items).toHaveLength(0);
     const events = await readFluxEvents(workspaceRoot, config);
-    expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(true);
+    expect(events.some((event) => event.kind === "modeler.progress_advanced")).toBe(false);
   });
 
   test("prefers the already queued bootstrap model revision over an older successful baseline", async () => {

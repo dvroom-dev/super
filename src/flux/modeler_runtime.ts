@@ -85,6 +85,50 @@ async function loadCurrentModelCoverageSummary(
   }
 }
 
+function comparePayloadRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+async function inferAcceptanceInfrastructureFailure(args: {
+  workspaceRoot: string;
+  config: FluxConfig;
+  acceptanceMessage: string;
+  comparePayload: Record<string, unknown>;
+  existing: Record<string, unknown> | null;
+}): Promise<Record<string, unknown> | null> {
+  if (args.existing) return args.existing;
+  const errorRecord = comparePayloadRecord(args.comparePayload.error);
+  const errorType = String(errorRecord.type ?? "").trim();
+  const errorMessage = String(errorRecord.message ?? args.acceptanceMessage ?? "").trim();
+  if (["missing_level_dir", "missing_sequences", "missing_sequence_dir"].includes(errorType)) {
+    return {
+      type: errorType,
+      message: errorMessage || "compare surface is missing required level artifacts",
+    };
+  }
+  const reports = Array.isArray(args.comparePayload.reports) ? args.comparePayload.reports : [];
+  const workspaceDir = modelRevisionWorkspaceSource(args.workspaceRoot, args.config);
+  for (const report of reports) {
+    if (!report || typeof report !== "object" || Array.isArray(report)) continue;
+    const record = report as Record<string, unknown>;
+    const sequenceId = String(record.sequence_id ?? "").trim();
+    const level = Number(record.level ?? args.comparePayload.level ?? 0) || 0;
+    if (!sequenceId || level <= 0) continue;
+    const sequencePath = path.join(workspaceDir, `level_${level}`, "sequences", `${sequenceId}.json`);
+    try {
+      await fs.access(sequencePath);
+    } catch {
+      return {
+        type: "missing_sequence_surface",
+        message: `compare referenced level_${level}/${sequenceId}, but ${sequencePath} is not present in the synced model workspace`,
+        level,
+        sequenceId,
+      };
+    }
+  }
+  return null;
+}
+
 function isProgressAdvance(previous: ModelProgress | null, next: ModelProgress): boolean {
   const sequenceOrder = (sequenceId: string | null): number => {
     const match = String(sequenceId ?? "").match(/seq_(\d+)/i);
@@ -368,6 +412,13 @@ export async function runModelerQueueItem(args: {
     && !Array.isArray(preflightAcceptance.payload.compare_payload)
     ? preflightAcceptance.payload.compare_payload as Record<string, unknown>
     : {};
+  const preflightInfrastructureFailure = await inferAcceptanceInfrastructureFailure({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    acceptanceMessage: preflightAcceptance.message,
+    comparePayload: preflightComparePayload,
+    existing: preflightAcceptance.infrastructureFailure,
+  });
   const previousProgress = await loadBestProgress(args.workspaceRoot, args.config);
   const preflightProgress = computeModelProgress(preflightComparePayload);
   if (preflightAcceptance.accepted) {
@@ -409,7 +460,7 @@ export async function runModelerQueueItem(args: {
     });
     return;
   }
-  if (preflightAcceptance.infrastructureFailure) {
+  if (preflightInfrastructureFailure) {
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),
@@ -420,7 +471,7 @@ export async function runModelerQueueItem(args: {
       summary: preflightAcceptance.message || "model preflight compare failed",
       payload: {
         blocked: false,
-        infrastructureFailure: preflightAcceptance.infrastructureFailure,
+        infrastructureFailure: preflightInfrastructureFailure,
       },
     }]);
     session.status = "idle";
@@ -491,6 +542,13 @@ export async function runModelerQueueItem(args: {
   const comparePayload = acceptance.payload.compare_payload && typeof acceptance.payload.compare_payload === "object" && !Array.isArray(acceptance.payload.compare_payload)
     ? acceptance.payload.compare_payload as Record<string, unknown>
     : {};
+  const inferredInfrastructureFailure = await inferAcceptanceInfrastructureFailure({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    acceptanceMessage: acceptance.message,
+    comparePayload,
+    existing: acceptance.infrastructureFailure,
+  });
   const currentProgress = computeModelProgress(comparePayload);
   if (!acceptance.accepted) {
     await publishProgressAdvance({
@@ -504,7 +562,7 @@ export async function runModelerQueueItem(args: {
       sessionId,
     });
     const blocked = isBlockedModelOutput(modelOutput);
-    const infrastructureFailure = acceptance.infrastructureFailure;
+    const infrastructureFailure = inferredInfrastructureFailure;
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),
