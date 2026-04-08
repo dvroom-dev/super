@@ -6,7 +6,7 @@ import { appendFluxEvents } from "./events.js";
 import { parseJsonObjectFromAssistantText, schemaForName } from "./json_session_format.js";
 import { runModelAcceptance } from "./model_acceptance.js";
 import { buildCoverageSummary, classifyModelImprovement, computeModelProgress, preferCoverageSummary, type ModelProgress } from "./model_coverage.js";
-import { loadModelCoverageSummary, modelRevisionWorkspaceSource, persistModelRevisionWorkspace, saveModelCoverageSummary } from "./model_revision_store.js";
+import { loadModelCoverageSummary, modelRevisionWorkspaceSource, persistModelRevisionWorkspace, saveCurrentModelHead, saveModelCoverageSummary } from "./model_revision_store.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate } from "./prompt_templates.js";
 import { runFluxProblemCommand } from "./problem_shell.js";
@@ -302,7 +302,12 @@ async function persistAcceptedModel(
     revisionId,
     summary: durableSummary,
   });
-  await writeJsonAtomic(path.join(currentDir, "meta.json"), { revisionId, updatedAt: nowIso() });
+  await saveCurrentModelHead({
+    workspaceRoot,
+    config,
+    revisionId,
+    summary: durableSummary,
+  });
   return revisionId;
 }
 

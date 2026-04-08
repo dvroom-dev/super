@@ -41,13 +41,21 @@ export async function saveModelCoverageSummary(args: {
   const existing = await readJsonIfExists<FluxModelCoverageSummary>(fluxModelRevisionSummaryPath(args.workspaceRoot, args.config, args.revisionId));
   const storedSummary = preferCoverageSummary(existing, args.summary);
   await writeJsonAtomic(fluxModelRevisionSummaryPath(args.workspaceRoot, args.config, args.revisionId), storedSummary);
+  return storedSummary;
+}
+
+export async function saveCurrentModelHead(args: {
+  workspaceRoot: string;
+  config: FluxConfig;
+  revisionId: string;
+  summary: FluxModelCoverageSummary;
+}): Promise<void> {
   await fs.mkdir(path.join(fluxModelRoot(args.workspaceRoot, args.config), "current"), { recursive: true });
   await writeJsonAtomic(path.join(fluxModelRoot(args.workspaceRoot, args.config), "current", "meta.json"), {
     revisionId: args.revisionId,
     updatedAt: new Date().toISOString(),
-    summary: storedSummary,
+    summary: args.summary,
   });
-  return storedSummary;
 }
 
 export async function loadModelCoverageSummary(

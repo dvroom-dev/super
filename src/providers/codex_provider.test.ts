@@ -160,6 +160,29 @@ describe("CodexProvider", () => {
     expect(result.threadId).toBe("thread_supported");
   });
 
+  it("falls back to the bundled codex catalog when ~/.codex/models_cache.json is malformed", async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-home-"));
+    await fs.mkdir(path.join(tempHome, ".codex"), { recursive: true });
+    await fs.writeFile(path.join(tempHome, ".codex", "models_cache.json"), "{\"models\":[", "utf8");
+    const previousHome = process.env.HOME;
+    process.env.HOME = tempHome;
+    try {
+      const provider = new CodexProvider({
+        ...baseConfig,
+        model: "gpt-5.4",
+      }, {
+        appServerFactory: () => new FakeAppServerClient(),
+      });
+      expect(provider).toBeInstanceOf(CodexProvider);
+    } finally {
+      if (previousHome == null) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+    }
+  });
+
   it("maps app-server streamed events to provider events", async () => {
     const fakeClient = new FakeAppServerClient();
     fakeClient.setHandler("thread/start", () => ({

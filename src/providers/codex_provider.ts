@@ -49,6 +49,15 @@ const DEFAULT_CODEX_DISALLOWED_TOOLS = [
   "resources/read",
   "resources/list",
 ];
+const FALLBACK_CODEX_MODEL_SLUGS = new Set([
+  "gpt-5-codex",
+  "gpt-5.1-codex",
+  "gpt-5.1-codex-max",
+  "gpt-5.1-codex-mini",
+  "gpt-5.2-codex",
+  "gpt-5.3-codex",
+  "gpt-5.4",
+]);
 const RELEVANT_TURN_NOTIFICATION_METHODS = new Set([
   "turn/started",
   "turn/completed",
@@ -87,11 +96,14 @@ function defaultSupportedCodexModelSlugs(): Set<string> {
     parsed = JSON.parse(fs.readFileSync(modelsCachePath, "utf8"));
   } catch (error: any) {
     const detail = error instanceof Error ? error.message : String(error);
+    if (/Unexpected EOF|Unexpected end of JSON input|ENOENT|EACCES|EPERM/i.test(detail)) {
+      return new Set(FALLBACK_CODEX_MODEL_SLUGS);
+    }
     throw new Error(`codex model validation failed: could not read ${modelsCachePath}: ${detail}`);
   }
   const modelEntries = Array.isArray(asRecord(parsed)?.models) ? (asRecord(parsed)?.models as unknown[]) : null;
   if (!modelEntries) {
-    throw new Error(`codex model validation failed: ${modelsCachePath} is missing a models[] catalog`);
+    return new Set(FALLBACK_CODEX_MODEL_SLUGS);
   }
   const slugs = new Set<string>();
   for (const entry of modelEntries) {
@@ -99,7 +111,7 @@ function defaultSupportedCodexModelSlugs(): Set<string> {
     if (slug) slugs.add(slug);
   }
   if (slugs.size === 0) {
-    throw new Error(`codex model validation failed: ${modelsCachePath} contained no model slugs`);
+    return new Set(FALLBACK_CODEX_MODEL_SLUGS);
   }
   return slugs;
 }

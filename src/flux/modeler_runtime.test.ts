@@ -1178,6 +1178,136 @@ process.stdin.on("end", () => {
     expect(currentMeta.summary.contiguousMatchedSequences).toBe(2);
   });
 
+  test("does not let a rejected frontier-progress revision overwrite the current accepted model head", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = [
+      "```json",
+      JSON.stringify({
+        decision: "updated_model",
+        summary: "frontier progress exists but acceptance still fails",
+        message_for_bootstrapper: "frontier progressed",
+        artifacts_updated: ["model_lib.py"],
+        evidence_watermark: "wm_rejected_progress",
+      }, null, 2),
+      "```",
+    ].join("\n");
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_rejected_progress.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const decision = String((input.modelOutput || {}).decision || "");
+  if (decision === "checked_current_model") {
+    process.stdout.write(JSON.stringify({
+      accepted: false,
+      message: "current accepted model still fails earliest ordered blocker",
+      model_output: input.modelOutput,
+      compare_payload: {
+        level: 1,
+        frontier_level: 1,
+        all_match: false,
+        reports: [
+          { level: 1, sequence_id: "seq_0001", matched: false, divergence_step: 13, divergence_reason: "intermediate_frame_mismatch" }
+        ]
+      }
+    }));
+    return;
+  }
+  process.stdout.write(JSON.stringify({
+    accepted: false,
+    message: "new frontier progress is still rejected",
+    model_output: input.modelOutput,
+    compare_payload: {
+      level: 3,
+      frontier_level: 3,
+      all_match: false,
+      covered_sequence_ids: ["level_3:seq_0001"],
+      reports: [
+        { level: 3, sequence_id: "seq_0001", matched: true }
+      ]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText.replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    const acceptedSummary = {
+      level: 1,
+      frontierLevel: 1,
+      allMatch: true,
+      coveredSequenceIds: ["level_1:seq_0001"],
+      contiguousMatchedSequences: 1,
+      firstFailingSequenceId: null,
+      firstFailingStep: null,
+      firstFailingReason: null,
+      frontierDiscovered: false,
+      compareKind: "accepted",
+    };
+    await fs.mkdir(path.join(workspaceRoot, "flux", "seed"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "seed", "current_meta.json"),
+      JSON.stringify({
+        lastQueuedBootstrapModelRevisionId: "model_rev_accept",
+        lastQueuedBootstrapCoverageSummary: acceptedSummary,
+        lastBootstrapperModelRevisionId: "model_rev_accept",
+        lastBootstrapperCoverageSummary: acceptedSummary,
+      }, null, 2),
+      "utf8",
+    );
+    await fs.mkdir(path.join(workspaceRoot, "flux", "model", "revisions", "model_rev_accept"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "model", "revisions", "model_rev_accept", "summary.json"),
+      JSON.stringify(acceptedSummary, null, 2),
+      "utf8",
+    );
+    await fs.mkdir(path.join(workspaceRoot, "flux", "model", "current"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "model", "current", "meta.json"),
+      JSON.stringify({ revisionId: "model_rev_accept", summary: acceptedSummary }, null, 2),
+      "utf8",
+    );
+
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_rejected_progress",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm_rejected_progress" },
+      },
+    });
+
+    const currentMeta = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "model", "current", "meta.json"), "utf8"));
+    expect(currentMeta.revisionId).toBe("model_rev_accept");
+    expect(currentMeta.summary).toEqual(acceptedSummary);
+    const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    expect(bootstrapQueue.items).toHaveLength(1);
+    expect((bootstrapQueue.items[0]?.payload.coverageSummary as Record<string, unknown>)?.frontierLevel).toBe(3);
+  });
+
   test("prefers the already queued bootstrap model revision over an older successful baseline", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = [
       "```json",
