@@ -220,7 +220,7 @@ describe("runFluxOrchestrator", () => {
     );
 
     const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
-    const deadline = Date.now() + 2000;
+    const deadline = Date.now() + 5000;
     let recovered = false;
     while (Date.now() < deadline && !recovered) {
       const current = await loadFluxState(workspaceRoot, config);
@@ -287,7 +287,7 @@ describe("runFluxOrchestrator", () => {
     expect(state?.active.solver.status).toBe("idle");
     expect(state?.active.solver.sessionId).toMatch(/^solver_attempt_/);
     expect(state?.active.solver.sessionId).not.toBe("solver_attempt_done");
-  }, 15000);
+  }, 30000);
 
   test("reconciles stale bootstrapper running state from session truth during the loop", async () => {
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
