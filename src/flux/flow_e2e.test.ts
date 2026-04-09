@@ -849,4 +849,252 @@ process.stdin.on("end", () => {
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
     }
   }, 20000);
+
+  test("frontier discovery acceptance uses the queued evidence snapshot and drives a replacement solver", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
+      {
+        contains: "MODELER_PROMPT",
+        text: JSON.stringify({
+          decision: "updated_model",
+          summary: "frontier discovered from snapshot",
+          message_for_bootstrapper: "level 2 is visible after the accepted level 1 route",
+          artifacts_updated: ["model_lib.py"],
+          evidence_watermark: "wm_frontier_bundle",
+        }),
+      },
+      {
+        contains: "BOOTSTRAP_PROMPT",
+        text: JSON.stringify({
+          decision: "finalize_seed",
+          summary: "frontier seed is ready",
+          seed_bundle_updated: false,
+          notes: "finalize best known frontier seed",
+          solver_action: "queue_and_interrupt",
+          seed_delta_kind: "frontier_branch_improved",
+        }),
+      },
+    ]);
+    process.env.MOCK_PROVIDER_DELAY_MS = "10";
+
+    const syncPath = path.join(workspaceRoot, "scripts", "sync_snapshot.js");
+    await fs.writeFile(syncPath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", async () => {
+  const input = JSON.parse(data || "{}");
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const sourceRoot = path.join(String(input.evidenceBundlePath || ""), "workspace", "game_ls20");
+  const targetRoot = input.workspaceRoot;
+  await fs.writeFile(path.join(input.workspaceRoot, "flux", "sync_bundle_path.txt"), String(input.evidenceBundlePath || ""), "utf8");
+  for (const levelName of ["level_1", "level_2"]) {
+    const source = path.join(sourceRoot, levelName);
+    const target = path.join(targetRoot, levelName);
+    await fs.rm(target, { recursive: true, force: true });
+    await fs.cp(source, target, { recursive: true });
+  }
+  process.stdout.write(JSON.stringify({ synced: true, bundle: input.evidenceBundlePath || "" }));
+});`, "utf8");
+    await fs.chmod(syncPath, 0o755);
+
+    const rehearsePath = path.join(workspaceRoot, "scripts", "rehearse_frontier.js");
+    await fs.writeFile(rehearsePath, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  rehearsal_ok: true,
+  status_before: { current_level: 1, levels_completed: 0, state: "NOT_FINISHED", win_levels: 7 },
+  status_after: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED", win_levels: 7 },
+  compare_payload: {
+    ok: true,
+    action: "compare_sequences",
+    level: 2,
+    all_match: true,
+    compared_sequences: 1,
+    eligible_sequences: 1,
+    diverged_sequences: 0,
+    reports: [{ sequence_id: "seq_0001", matched: true, report_file: "level_2/report.md" }]
+  },
+  tool_results: []
+})));`, "utf8");
+    await fs.chmod(rehearsePath, 0o755);
+
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_frontier_discovery.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const modelOutput = input.modelOutput || {};
+  const decision = String(modelOutput.decision || "");
+  if (decision === "checked_current_model") {
+    process.stdout.write(JSON.stringify({
+      accepted: false,
+      message: "need provider turn",
+      model_output: modelOutput,
+      compare_payload: {
+        level: 1,
+        all_match: false,
+        reports: [{ level: 1, sequence_id: "seq_0001", matched: false, divergence_step: 1, divergence_reason: "needs_update" }]
+      }
+    }));
+    return;
+  }
+  process.stdout.write(JSON.stringify({
+    accepted: true,
+    message: modelOutput.summary || "frontier accepted",
+    model_output: modelOutput,
+    compare_payload: {
+      level: 1,
+      frontier_level: 2,
+      frontier_discovery: true,
+      all_match: true,
+      requested_sequences: 2,
+      eligible_sequences: 1,
+      compared_sequences: 1,
+      diverged_sequences: 0,
+      skipped_sequences: [
+        { level: 2, sequence_id: "seq_0001", sequence_file: "seq_0001.json", end_reason: "open", reason: "wrong_level" }
+      ],
+      reports: [{ level: 1, sequence_id: "seq_0001", matched: true }]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    const fluxText = (await fs.readFile(fluxPath, "utf8"))
+      .replace(/observe_evidence:\n    command: \["[^"]*observe\.js"\]/, `observe_evidence:\n    command: ["${path.join(workspaceRoot, "scripts", "observe.js")}"]`)
+      .replace(/rehearse_seed_on_model:\n    command: \["[^"]*rehearse\.js"\]/, `sync_model_workspace:\n    command: ["${syncPath}"]\n  rehearse_seed_on_model:\n    command: ["${rehearsePath}"]`)
+      .replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await fs.writeFile(path.join(workspaceRoot, "flux", "seed", "current.json"), JSON.stringify({
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      syntheticMessages: [{ role: "assistant", text: "Seed knowledge" }],
+      replayPlan: [{ tool: "shell", args: { cmd: ["arc_action", "ACTION1"] } }],
+      assertions: ["frontier-discovery"],
+    }, null, 2), "utf8");
+
+    const bundlePath = path.join(workspaceRoot, "flux", "evidence_bundles", "bundle_live");
+    await fs.mkdir(path.join(bundlePath, "workspace", "game_ls20", "level_1", "sequences"), { recursive: true });
+    await fs.mkdir(path.join(bundlePath, "workspace", "game_ls20", "level_2", "sequences"), { recursive: true });
+    await fs.writeFile(
+      path.join(bundlePath, "workspace", "game_ls20", "level_1", "sequences", "seq_0001.json"),
+      JSON.stringify({ level: 1, sequence_id: "seq_0001" }, null, 2),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(bundlePath, "workspace", "game_ls20", "level_2", "sequences", "seq_0001.json"),
+      JSON.stringify({ level: 2, sequence_id: "seq_0001" }, null, 2),
+      "utf8",
+    );
+
+    try {
+      await runModelerQueueItem({
+        workspaceRoot,
+        config,
+        state,
+        queueItem: {
+          id: "q_model_frontier_bundle",
+          sessionType: "modeler",
+          createdAt: new Date().toISOString(),
+          reason: "solver_new_evidence",
+          payload: {
+            evidenceWatermark: "wm_frontier_bundle",
+            evidenceBundlePath: bundlePath,
+            latestEvidence: {
+              summary: "current_level=2",
+              state: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED", win_levels: 7 },
+            },
+          },
+        },
+      });
+
+      expect(await fs.readFile(path.join(workspaceRoot, "flux", "sync_bundle_path.txt"), "utf8")).toBe(bundlePath);
+
+      const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+      expect(bootstrapQueue.items).toHaveLength(1);
+
+      await runBootstrapperQueueItem({
+        workspaceRoot,
+        config,
+        state,
+        queueItem: bootstrapQueue.items[0]!,
+      });
+
+      const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+      expect(solverQueue.items).toHaveLength(1);
+
+      const runPromise = runSolverQueueItem({
+        workspaceRoot,
+        config,
+        state,
+        queueItem: solverQueue.items[0]!,
+      });
+
+      const solverDir = path.join(workspaceRoot, ".ai-flux", "sessions", "solver");
+      let solverSessions: string[] = [];
+      const sessionDeadline = Date.now() + 2000;
+      while (Date.now() < sessionDeadline && solverSessions.length === 0) {
+        try {
+          solverSessions = (await fs.readdir(solverDir))
+            .filter((name) => name.startsWith("solver_attempt_"))
+            .sort();
+        } catch {
+          solverSessions = [];
+        }
+        if (solverSessions.length === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      }
+      expect(solverSessions).toHaveLength(1);
+      const sessionId = solverSessions[0]!;
+      const messagesPath = path.join(solverDir, sessionId, "messages.jsonl");
+      let messages = "";
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        try {
+          messages = await fs.readFile(messagesPath, "utf8");
+        } catch {
+          messages = "";
+        }
+        if (messages.includes("Seed preplay already ran on this instance.")) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(messages).toContain("Seed preplay already ran on this instance.");
+      expect(messages).toContain("Current live state after preplay: level 2");
+      requestActiveSolverInterrupt(sessionId);
+      await runPromise;
+
+      const events = await readFluxEvents(workspaceRoot, config);
+      expect(events.some((event) => event.kind === "modeler.acceptance_passed")).toBe(true);
+      expect(events.some((event) => event.kind === "bootstrapper.attested_satisfactory")).toBe(true);
+    } finally {
+      delete process.env.MOCK_PROVIDER_DELAY_MS;
+      delete process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON;
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  }, 15000);
 });
