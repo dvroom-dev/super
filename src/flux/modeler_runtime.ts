@@ -567,6 +567,11 @@ export async function runModelerQueueItem(args: {
     });
     const blocked = isBlockedModelOutput(modelOutput);
     const infrastructureFailure = inferredInfrastructureFailure;
+    const modelSummary = String(modelOutput.summary ?? "").trim();
+    const acceptanceMessage = String(acceptance.message ?? "").trim();
+    const failureSummary = blocked
+      ? (acceptanceMessage || modelSummary || "model acceptance blocked")
+      : (acceptanceMessage ? `model update rejected: ${acceptanceMessage}` : "model update rejected by acceptance compare");
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),
@@ -574,10 +579,12 @@ export async function runModelerQueueItem(args: {
       workspaceRoot: args.workspaceRoot,
       sessionType: "modeler",
       sessionId,
-      summary: acceptance.message || (blocked ? "model acceptance blocked" : "model acceptance failed"),
+      summary: failureSummary,
       payload: {
         blocked,
         infrastructureFailure,
+        acceptanceMessage,
+        modelSummary,
       },
     }]);
   } else {

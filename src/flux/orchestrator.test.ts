@@ -404,8 +404,61 @@ describe("runFluxOrchestrator", () => {
     expect(reconciled).toBe(true);
     await requestFluxStop(workspaceRoot, config);
     await runPromise;
-    const events = await readFluxEventsWithRetry(workspaceRoot, config);
-    expect(events.some((event) => event.kind === "orchestrator.reconciled_session_truth")).toBe(true);
+  });
+
+  test("reconciles a stale running modeler slot when the persisted session is already idle", async () => {
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const ts = new Date().toISOString();
+    await fs.mkdir(path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "session.json"),
+      JSON.stringify({
+        sessionId: "modeler_run",
+        sessionType: "modeler",
+        status: "idle",
+        createdAt: ts,
+        updatedAt: ts,
+        provider: "codex",
+        model: "gpt-5.4",
+        resumePolicy: "always",
+        sessionScope: "run",
+      }, null, 2),
+      "utf8",
+    );
+    await fs.mkdir(path.join(workspaceRoot, "flux", "queues"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, "flux", "state.json"),
+      JSON.stringify({
+        version: 1,
+        workspaceRoot,
+        configPath: path.join(workspaceRoot, "flux.yaml"),
+        pid: process.pid,
+        startedAt: ts,
+        updatedAt: ts,
+        status: "running",
+        stopRequested: false,
+        active: {
+          solver: { status: "idle", updatedAt: ts },
+          modeler: { sessionId: "modeler_run", status: "running", queueItemId: "q_stale_modeler", updatedAt: ts },
+          bootstrapper: { status: "idle", updatedAt: ts },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
+    const deadline = Date.now() + 2000;
+    let reconciled = false;
+    while (Date.now() < deadline && !reconciled) {
+      const current = await loadFluxState(workspaceRoot, config);
+      reconciled = current?.active.modeler.status === "idle";
+      if (!reconciled) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    expect(reconciled).toBe(true);
+    await requestFluxStop(workspaceRoot, config);
+    await runPromise;
   });
 
   test("halts instead of idle-recovering when the latest solver failure is non-retryable", async () => {

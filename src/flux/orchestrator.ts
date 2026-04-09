@@ -171,9 +171,12 @@ async function reconcileActiveSessionTruth(
       }
       continue;
     }
-    if (activeRuns.has(sessionType) || !active.sessionId) continue;
+    if (!active.sessionId) continue;
     const session = await loadFluxSession(workspaceRoot, config, sessionType, active.sessionId);
     if (!session || session.status === "running") continue;
+    if (activeRuns.has(sessionType)) {
+      activeRuns.delete(sessionType);
+    }
     nextState.active[sessionType] = {
       sessionId: active.sessionId,
       status: "idle",
