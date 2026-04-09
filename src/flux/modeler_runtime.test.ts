@@ -966,6 +966,84 @@ process.stdin.on("end", () => {
     expect(bootstrapQueue.items).toHaveLength(0);
   });
 
+  test("queues bootstrapper when acceptance passes via frontier discovery with no eligible frontier sequences", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "updated_model",
+      summary: "frontier level discovered",
+      message_for_bootstrapper: "level 2 is visible but still open",
+      artifacts_updated: ["model_lib.py"],
+      evidence_watermark: "wm_frontier_discovery",
+    });
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_frontier_discovery.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const preflight = input.modelOutput?.decision === "checked_current_model";
+  process.stdout.write(JSON.stringify({
+    accepted: true,
+    message: preflight ? "current model reaches frontier" : "frontier level discovered",
+    model_output: input.modelOutput,
+    compare_payload: {
+      level: 1,
+      frontier_level: 2,
+      frontier_discovery: true,
+      all_match: true,
+      requested_sequences: 2,
+      eligible_sequences: 1,
+      compared_sequences: 1,
+      diverged_sequences: 0,
+      skipped_sequences: [
+        { level: 2, sequence_id: "seq_0001", reason: "wrong_level", end_reason: "open" }
+      ],
+      reports: [
+        { level: 1, sequence_id: "seq_0001", matched: true, frontier_level_after_sequence: 1, sequence_completed_level: false }
+      ]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText.replace(/command: \["[^"]*accept\.js"\]/, `command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_frontier_discovery",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "new_evidence",
+        payload: { evidenceWatermark: "wm_frontier_discovery" },
+      },
+    });
+    const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+    expect(bootstrapQueue.items).toHaveLength(1);
+    expect((bootstrapQueue.items[0]?.payload.coverageSummary as Record<string, unknown>)?.frontierLevel).toBe(2);
+    expect((bootstrapQueue.items[0]?.payload.coverageSummary as Record<string, unknown>)?.frontierDiscovered).toBe(true);
+  });
+
   test("requeues bootstrapper when the same accepted model revision covers more frontier than the last bootstrapped seed", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = [
       "```json",
