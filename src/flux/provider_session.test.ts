@@ -144,6 +144,45 @@ retention:
     }
   });
 
+  test("retries once on thread-scoped bad request when a stale provider thread is present", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_ERROR_IF_THREAD_ID_SET = '{"detail":"Bad Request"}';
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({ ok: true, retried: true });
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const session: FluxSessionRecord = {
+        sessionId: "bootstrapper_run",
+        sessionType: "bootstrapper",
+        status: "running",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        provider: "mock",
+        model: "mock-model",
+        resumePolicy: "always",
+        sessionScope: "run",
+        providerThreadId: "stale_thread_id",
+      };
+      await saveFluxSession(workspaceRoot, config, session);
+
+      const result = await runFluxProviderTurn({
+        workspaceRoot,
+        config,
+        session,
+        sessionType: "bootstrapper",
+        promptText: "bootstrap",
+        workingDirectory: workspaceRoot,
+      });
+
+      expect(result.assistantText).toContain("\"retried\":true");
+      expect(result.providerThreadId).toMatch(/^mock_thread_/);
+      expect(result.providerThreadId).not.toBe("stale_thread_id");
+      const saved = await loadFluxSession(workspaceRoot, config, "bootstrapper", "bootstrapper_run");
+      expect(saved?.providerThreadId).toBe(result.providerThreadId);
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_ERROR_IF_THREAD_ID_SET;
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  });
+
   test("classifies Claude rate limits as non-retryable provider failures", async () => {
     process.env.MOCK_PROVIDER_FORCE = "1";
     process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
@@ -211,6 +250,100 @@ retention:
       const saved = await loadFluxSession(workspaceRoot, config, "modeler", "modeler_run");
       expect(saved?.latestAssistantText?.length ?? 0).toBeLessThanOrEqual(16_000);
       expect(saved?.latestAssistantText?.endsWith("...[truncated]")).toBe(true);
+    } finally {
+      clearMockProviderEnv();
+    }
+  });
+
+  test("flags prohibited solver search commands in provider tool use events", async () => {
+    process.env.MOCK_PROVIDER_FORCE = "1";
+    process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+      {
+        type: "provider_item",
+        item: { provider: "mock", kind: "tool_call", type: "assistant.tool_use", summary: "tool_call Bash", includeInTranscript: true },
+        raw: {
+          message: {
+            content: [{
+              type: "tool_use",
+              name: "Bash",
+              input: {
+                command: "python bfs_probe.py && echo done",
+              },
+            }],
+          },
+        },
+      },
+    ]);
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "searching";
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const session: FluxSessionRecord = {
+        sessionId: "solver_attempt_test",
+        sessionType: "solver",
+        status: "running",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        provider: "mock",
+        model: "mock-model",
+        resumePolicy: "never",
+        sessionScope: "per_attempt",
+      };
+      const result = await runFluxProviderTurn({
+        workspaceRoot,
+        config,
+        session,
+        sessionType: "solver",
+        promptText: "solve",
+        workingDirectory: workspaceRoot,
+      });
+      expect(result.policyViolation).toContain("prohibited solver search");
+    } finally {
+      clearMockProviderEnv();
+    }
+  });
+
+  test("flags invalid env.step tuple unpacking in solver tool use events", async () => {
+    process.env.MOCK_PROVIDER_FORCE = "1";
+    process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+      {
+        type: "provider_item",
+        item: { provider: "mock", kind: "tool_call", type: "assistant.tool_use", summary: "tool_call Bash", includeInTranscript: true },
+        raw: {
+          message: {
+            content: [{
+              type: "tool_use",
+              name: "Bash",
+              input: {
+                command: "python - <<'PY'\nobs, reward, done, info = env.step(GameAction.ACTION1)\nPY",
+              },
+            }],
+          },
+        },
+      },
+    ]);
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "probing";
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const session: FluxSessionRecord = {
+        sessionId: "solver_attempt_test",
+        sessionType: "solver",
+        status: "running",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        provider: "mock",
+        model: "mock-model",
+        resumePolicy: "never",
+        sessionScope: "per_attempt",
+      };
+      const result = await runFluxProviderTurn({
+        workspaceRoot,
+        config,
+        session,
+        sessionType: "solver",
+        promptText: "solve",
+        workingDirectory: workspaceRoot,
+      });
+      expect(result.policyViolation).toContain("invalid env.step usage");
     } finally {
       clearMockProviderEnv();
     }

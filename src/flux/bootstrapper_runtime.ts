@@ -4,7 +4,11 @@ import { readJsonIfExists, writeJsonAtomic } from "../lib/fs.js";
 import { sha256Hex } from "../utils/hash.js";
 import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
+import { markFluxInvocationStatus, persistFluxInvocationInput, saveFluxInvocationResult } from "./invocations.js";
 import { parseJsonObjectFromAssistantText, schemaForName } from "./json_session_format.js";
+import { classifyModelImprovement } from "./model_coverage.js";
+import { modelRevisionWorkspaceSource } from "./model_revision_store.js";
+import { appendProjectionEventsAndRebuild } from "./projections.js";
 import { runFluxProblemCommand } from "./problem_shell.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate, renderTemplate } from "./prompt_templates.js";
@@ -14,7 +18,13 @@ import { validateFluxSeedBundle } from "./seed_bundle.js";
 import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxProblemInstance, FluxQueueItem, FluxRunState, FluxSeedBundle, FluxSessionRecord, FluxSolverInterruptPolicy } from "./types.js";
 import { fluxSeedRoot } from "./paths.js";
-import { mutateFluxState } from "./state.js";
+
+type ActiveBootstrapperControl = {
+  controller: AbortController;
+  interruptRequested: boolean;
+};
+
+const activeBootstrapperControls = new Map<string, ActiveBootstrapperControl>();
 
 type SeedRevisionPersistResult = {
   revisionId: string;
@@ -31,6 +41,20 @@ function bootstrapperSessionId(): string {
   return "bootstrapper_run";
 }
 
+async function listModelerTheoryFiles(workspaceRoot: string, config: FluxConfig): Promise<string[]> {
+  const modelWorkspace = modelRevisionWorkspaceSource(workspaceRoot, config);
+  const theoryDir = path.join(modelWorkspace, "modeler_handoff");
+  try {
+    const entries = await fs.readdir(theoryDir);
+    return entries
+      .filter((entry) => /^untrusted_theories_level_\d+\.md$/i.test(entry))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+      .map((entry) => path.relative(workspaceRoot, path.join(theoryDir, entry)));
+  } catch {
+    return [];
+  }
+}
+
 function seedBundleCurrentPath(workspaceRoot: string, config: FluxConfig): string {
   return path.resolve(workspaceRoot, config.bootstrapper.seedBundlePath);
 }
@@ -43,9 +67,10 @@ function seedBundleCandidatePath(workspaceRoot: string, config: FluxConfig): str
 async function ensureSeedCandidateExists(workspaceRoot: string, config: FluxConfig): Promise<void> {
   const candidatePath = seedBundleCandidatePath(workspaceRoot, config);
   const currentPath = seedBundleCurrentPath(workspaceRoot, config);
-  if (await readJsonIfExists(candidatePath)) {
+  try {
+    await fs.access(candidatePath);
     return;
-  }
+  } catch {}
   const currentSeed = await readJsonIfExists<unknown>(currentPath);
   if (!currentSeed) {
     return;
@@ -87,10 +112,6 @@ async function persistSeedRevision(workspaceRoot: string, config: FluxConfig, se
   return { revisionId, seedHash, changed, meta: nextMeta };
 }
 
-function currentSeedHasModelRehearsal(meta: FluxSeedMeta, seedHash: string): boolean {
-  return Boolean(meta.lastModelRehearsalSucceeded) && String(meta.lastModelRehearsalSeedHash ?? "") === seedHash;
-}
-
 function currentSeedHasRealReplay(meta: FluxSeedMeta, seedHash: string): boolean {
   return Boolean(meta.lastRealReplaySucceeded) && String(meta.lastRealReplaySeedHash ?? "") === seedHash;
 }
@@ -101,11 +122,13 @@ async function recordModelRehearsal(
   currentMeta: FluxSeedMeta,
   seedHash: string,
   rehearsalResult: Record<string, unknown>,
+  expectedFrontierLevel: number | null,
 ): Promise<FluxSeedMeta> {
+  const rehearsalSucceeded = rehearsalReachedFrontier(rehearsalResult, expectedFrontierLevel);
   const nextMeta: FluxSeedMeta = {
     ...currentMeta,
     lastModelRehearsalSeedHash: seedHash,
-    lastModelRehearsalSucceeded: Boolean(rehearsalResult.rehearsal_ok ?? rehearsalResult.ok ?? false),
+    lastModelRehearsalSucceeded: rehearsalSucceeded,
     lastModelRehearsalAt: nowIso(),
     lastModelRehearsalResult: rehearsalResult,
   };
@@ -222,9 +245,19 @@ function coverageSummaryFromPromptPayload(value: unknown): FluxSeedMeta["lastBoo
   return Array.isArray(record.coveredSequenceIds) ? record as FluxSeedMeta["lastBootstrapperCoverageSummary"] : undefined;
 }
 
-function expectedFrontierLevelFromPromptPayload(payload: Record<string, unknown>): number | null {
+export function expectedFrontierLevelFromPromptPayload(payload: Record<string, unknown>): number | null {
   const coverageSummary = coverageSummaryFromPromptPayload(payload.coverageSummary);
-  const explicit = Number(coverageSummary?.frontierLevel ?? payload.frontierLevel ?? payload.modelFrontierLevel ?? 0) || 0;
+  const coverageLevel = Number(coverageSummary?.level ?? 0) || 0;
+  const coverageFrontier = Number(coverageSummary?.frontierLevel ?? 0) || 0;
+  const coverageCompareKind = String(coverageSummary?.compareKind ?? "");
+  const explicitFromCoverage = coverageFrontier > 0
+    ? (
+        coverageCompareKind === "accepted"
+          ? Math.min(coverageFrontier, (coverageLevel || 1) + 1)
+          : coverageFrontier
+      )
+    : 0;
+  const explicit = Number(explicitFromCoverage || payload.frontierLevel || payload.modelFrontierLevel || 0) || 0;
   if (explicit > 0) return explicit;
   const progress = payload.modelProgress && typeof payload.modelProgress === "object" && !Array.isArray(payload.modelProgress)
     ? payload.modelProgress as Record<string, unknown>
@@ -242,6 +275,11 @@ function rehearsalReachedFrontier(rehearsalResult: Record<string, unknown>, expe
   const comparePayload = rehearsalResult.compare_payload && typeof rehearsalResult.compare_payload === "object" && !Array.isArray(rehearsalResult.compare_payload)
     ? rehearsalResult.compare_payload as Record<string, unknown>
     : {};
+  const compareOk = !("ok" in comparePayload) || Boolean(comparePayload.ok);
+  const compareHasError = Boolean(comparePayload.error && typeof comparePayload.error === "object" && !Array.isArray(comparePayload.error));
+  if (!compareOk || compareHasError) {
+    return false;
+  }
   const compareAllMatch = Boolean(comparePayload.all_match);
   const comparedSequences = Number(comparePayload.compared_sequences ?? 0) || 0;
   const eligibleSequences = Number(comparePayload.eligible_sequences ?? 0) || 0;
@@ -256,6 +294,14 @@ function rehearsalReachedFrontier(rehearsalResult: Record<string, unknown>, expe
   return reachedLevel >= expectedFrontierLevel;
 }
 
+export function currentSeedHasModelRehearsal(meta: FluxSeedMeta, seedHash: string, expectedFrontierLevel: number | null): boolean {
+  if (String(meta.lastModelRehearsalSeedHash ?? "") !== seedHash) return false;
+  const rehearsalResult = meta.lastModelRehearsalResult && typeof meta.lastModelRehearsalResult === "object" && !Array.isArray(meta.lastModelRehearsalResult)
+    ? meta.lastModelRehearsalResult as Record<string, unknown>
+    : {};
+  return rehearsalReachedFrontier(rehearsalResult, expectedFrontierLevel);
+}
+
 async function setBootstrapperIdle(
   workspaceRoot: string,
   config: FluxConfig,
@@ -266,15 +312,30 @@ async function setBootstrapperIdle(
   session.stopReason = undefined;
   session.updatedAt = nowIso();
   await saveFluxSession(workspaceRoot, config, session);
-  await mutateFluxState(workspaceRoot, config, async (current) => {
-    const latestState = current ?? state;
-    latestState.active.bootstrapper = {
+  await appendProjectionEventsAndRebuild({
+    workspaceRoot,
+    config,
+    configPath: state.configPath,
+    events: [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "projection.slot_updated",
+      workspaceRoot,
+      sessionType: "bootstrapper",
       sessionId: session.sessionId,
-      status: "idle",
-      updatedAt: nowIso(),
-    };
-    return latestState;
+      invocationId: session.activeInvocationId,
+      summary: `active bootstrapper invocation ${session.activeInvocationId ?? "unknown"} cleared`,
+      payload: { active: { sessionId: session.sessionId, invocationId: session.activeInvocationId, status: "idle", updatedAt: nowIso() } },
+    }],
   });
+}
+
+export function requestActiveBootstrapperInterrupt(sessionId: string): boolean {
+  const control = activeBootstrapperControls.get(sessionId);
+  if (!control || control.interruptRequested) return false;
+  control.interruptRequested = true;
+  control.controller.abort();
+  return true;
 }
 
 export async function runBootstrapperQueueItem(args: {
@@ -284,6 +345,15 @@ export async function runBootstrapperQueueItem(args: {
   state: FluxRunState;
 }): Promise<void> {
   const sessionId = bootstrapperSessionId();
+  const invocationId = args.queueItem.id;
+  await persistFluxInvocationInput(args.workspaceRoot, args.config, {
+    invocationId,
+    invocationType: "bootstrapper_invocation",
+    sessionType: "bootstrapper",
+    createdAt: args.queueItem.createdAt,
+    reason: args.queueItem.reason,
+    payload: { ...args.queueItem.payload },
+  });
   const existing = await loadFluxSession(args.workspaceRoot, args.config, "bootstrapper", sessionId);
   const session: FluxSessionRecord = existing ?? {
     sessionId,
@@ -298,49 +368,117 @@ export async function runBootstrapperQueueItem(args: {
   };
   session.status = "running";
   session.stopReason = undefined;
+  session.activeInvocationId = invocationId;
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
-  const latestState = await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
-    const next = current ?? args.state;
-    next.active.bootstrapper = {
+  await markFluxInvocationStatus({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    invocationId,
+    sessionType: "bootstrapper",
+    status: "running",
+    sessionId,
+  });
+  await appendProjectionEventsAndRebuild({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    configPath: args.state.configPath,
+    events: [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "projection.slot_updated",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "bootstrapper",
       sessionId,
-      status: "running",
-      queueItemId: args.queueItem.id,
-      pid: process.pid,
-      updatedAt: nowIso(),
-    };
-    return next;
+      invocationId,
+      summary: `active bootstrapper invocation ${invocationId} started`,
+      payload: {
+        active: {
+          sessionId,
+          invocationId,
+          status: "running",
+          queueItemId: args.queueItem.id,
+          pid: process.pid,
+          updatedAt: nowIso(),
+        },
+      },
+    }],
   });
   await ensureSeedCandidateExists(args.workspaceRoot, args.config);
 
   const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.bootstrapper.promptFile);
   const promptPayload = args.queueItem.payload;
-  const promptText = [
+  const theoryFiles = await listModelerTheoryFiles(args.workspaceRoot, args.config);
+  const promptSections = [
     promptTemplate.trim(),
+    theoryFiles.length > 0
+      ? [
+          "Modeler handoff files to read before finalizing mechanics:",
+          ...theoryFiles.map((filePath) => `- ${filePath}`),
+        ].join("\n")
+      : "No modeler handoff files are currently present in the accepted model workspace.",
     `Bootstrap trigger: ${args.queueItem.reason}`,
     JSON.stringify(promptPayload, null, 2),
-  ].join("\n\n");
+  ];
+  const promptText = promptSections.filter(Boolean).join("\n\n");
   await appendFluxMessage(args.workspaceRoot, args.config, "bootstrapper", sessionId, {
     messageId: newId("msg"),
     ts: nowIso(),
     turnIndex: Date.now(),
+    invocationId,
     kind: "user",
     text: promptText,
   });
-  const turn = await runFluxProviderTurn({
-    workspaceRoot: args.workspaceRoot,
-    config: args.config,
-    session,
-    sessionType: "bootstrapper",
-    promptText,
-    reasoningEffort: args.config.bootstrapper.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
-    outputSchema: schemaForName(args.config.bootstrapper.outputSchema),
-    workingDirectory: path.resolve(args.workspaceRoot, args.config.bootstrapper.workingDirectory ?? "."),
-  });
+  const controller = new AbortController();
+  activeBootstrapperControls.set(sessionId, { controller, interruptRequested: false });
+  let turn;
+  try {
+    turn = await runFluxProviderTurn({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      session,
+      sessionType: "bootstrapper",
+      invocationId,
+      promptText,
+      reasoningEffort: args.config.bootstrapper.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
+      outputSchema: schemaForName(args.config.bootstrapper.outputSchema),
+      workingDirectory: path.resolve(args.workspaceRoot, args.config.bootstrapper.workingDirectory ?? "."),
+      signal: controller.signal,
+    });
+  } finally {
+    activeBootstrapperControls.delete(sessionId);
+  }
+  if (turn.interrupted) {
+    session.status = "idle";
+    session.stopReason = "interrupted";
+    session.updatedAt = nowIso();
+    await saveFluxSession(args.workspaceRoot, args.config, session);
+    await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+      invocationId,
+      invocationType: "bootstrapper_invocation",
+      sessionType: "bootstrapper",
+      status: "failed",
+      recordedAt: nowIso(),
+      summary: "bootstrapper interrupted",
+      payload: { sessionId, interrupted: true },
+    });
+    await markFluxInvocationStatus({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      invocationId,
+      sessionType: "bootstrapper",
+      status: "failed",
+      sessionId,
+      error: "bootstrapper interrupted",
+    });
+    await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
+    return;
+  }
   await appendFluxMessage(args.workspaceRoot, args.config, "bootstrapper", sessionId, {
     messageId: newId("msg"),
     ts: nowIso(),
     turnIndex: Date.now(),
+    invocationId,
     kind: "assistant",
     text: turn.assistantText,
     providerThreadId: turn.providerThreadId,
@@ -360,6 +498,7 @@ export async function runBootstrapperQueueItem(args: {
       ts: nowIso(),
       kind: "bootstrapper.seed_invalid",
       workspaceRoot: args.workspaceRoot,
+      invocationId,
       sessionType: "bootstrapper",
       sessionId,
       summary: String(error instanceof Error ? error.message : error),
@@ -381,6 +520,24 @@ export async function runBootstrapperQueueItem(args: {
         candidatePath,
       },
     });
+    await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+      invocationId,
+      invocationType: "bootstrapper_invocation",
+      sessionType: "bootstrapper",
+      status: "failed",
+      recordedAt: nowIso(),
+      summary: String(error instanceof Error ? error.message : error),
+      payload: { candidatePath, decision, interruptPolicy, seedDeltaKind },
+    });
+    await markFluxInvocationStatus({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      invocationId,
+      sessionType: "bootstrapper",
+      status: "failed",
+      sessionId,
+      error: String(error instanceof Error ? error.message : error),
+    });
     await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
     return;
   }
@@ -390,6 +547,7 @@ export async function runBootstrapperQueueItem(args: {
       ts: nowIso(),
       kind: "bootstrapper.seed_missing",
       workspaceRoot: args.workspaceRoot,
+      invocationId,
       sessionType: "bootstrapper",
       sessionId,
       summary: `missing seed bundle candidate at ${candidatePath}`,
@@ -405,6 +563,24 @@ export async function runBootstrapperQueueItem(args: {
         candidatePath,
       },
     });
+    await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+      invocationId,
+      invocationType: "bootstrapper_invocation",
+      sessionType: "bootstrapper",
+      status: "failed",
+      recordedAt: nowIso(),
+      summary: `missing seed bundle candidate at ${candidatePath}`,
+      payload: { candidatePath },
+    });
+    await markFluxInvocationStatus({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      invocationId,
+      sessionType: "bootstrapper",
+      status: "failed",
+      sessionId,
+      error: `missing seed bundle candidate at ${candidatePath}`,
+    });
     await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
     return;
   }
@@ -414,10 +590,15 @@ export async function runBootstrapperQueueItem(args: {
   let seedMeta = persistedSeed.meta;
 
   const requiresModelRehearsal = args.config.bootstrapper.requireModelRehearsalBeforeFinalize;
-  let hasModelRehearsal = currentSeedHasModelRehearsal(seedMeta, seedHash);
+  const expectedFrontierLevel = expectedFrontierLevelFromPromptPayload(promptPayload);
+  let hasModelRehearsal = currentSeedHasModelRehearsal(seedMeta, seedHash, expectedFrontierLevel);
   const hasRealReplay = currentSeedHasRealReplay(seedMeta, seedHash);
   const seedChangedSinceModelRehearsal = !hasModelRehearsal;
-  const expectedFrontierLevel = expectedFrontierLevelFromPromptPayload(promptPayload);
+  const currentCoverageSummary = coverageSummaryFromPromptPayload(promptPayload.coverageSummary);
+  const previousCoverageSummary = seedMeta.lastBootstrapperCoverageSummary ?? seedMeta.lastQueuedBootstrapCoverageSummary;
+  const coverageImproved = currentCoverageSummary
+    ? classifyModelImprovement(previousCoverageSummary ?? null, currentCoverageSummary) !== "no_improvement"
+    : false;
 
   if (
     decision === "finalize_seed"
@@ -425,6 +606,7 @@ export async function runBootstrapperQueueItem(args: {
     && hasModelRehearsal
     && hasRealReplay
     && String(seedMeta.lastAttestedSeedHash ?? "") === seedHash
+    && !coverageImproved
   ) {
     await recordSeedReuse({
       workspaceRoot: args.workspaceRoot,
@@ -437,6 +619,23 @@ export async function runBootstrapperQueueItem(args: {
       interruptPolicy,
       seedDeltaKind,
     });
+    await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+      invocationId,
+      invocationType: "bootstrapper_invocation",
+      sessionType: "bootstrapper",
+      status: "completed",
+      recordedAt: nowIso(),
+      summary: `seed revision ${seedRevisionId} reused`,
+      payload: { seedRevisionId, seedHash, reused: true },
+    });
+    await markFluxInvocationStatus({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      invocationId,
+      sessionType: "bootstrapper",
+      status: "completed",
+      sessionId,
+    });
     await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
     return;
   }
@@ -447,6 +646,7 @@ export async function runBootstrapperQueueItem(args: {
       ts: nowIso(),
       kind: "bootstrapper.model_rehearsal_started",
       workspaceRoot: args.workspaceRoot,
+      invocationId,
       sessionType: "bootstrapper",
       sessionId,
       summary: `running model rehearsal for ${seedRevisionId}`,
@@ -460,21 +660,22 @@ export async function runBootstrapperQueueItem(args: {
       seedRevisionId,
       modelRevisionId: promptPayload.baselineModelRevisionId,
     });
-    seedMeta = await recordModelRehearsal(args.workspaceRoot, args.config, seedMeta, seedHash, rehearsalResult);
+    seedMeta = await recordModelRehearsal(args.workspaceRoot, args.config, seedMeta, seedHash, rehearsalResult, expectedFrontierLevel);
+    const rehearsalSatisfiedFrontier = rehearsalReachedFrontier(rehearsalResult, expectedFrontierLevel);
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),
-      kind: Boolean(rehearsalResult.rehearsal_ok ?? rehearsalResult.ok ?? false)
+      kind: rehearsalSatisfiedFrontier
         ? "bootstrapper.model_rehearsal_passed"
         : "bootstrapper.model_rehearsal_failed",
       workspaceRoot: args.workspaceRoot,
+      invocationId,
       sessionType: "bootstrapper",
       sessionId,
       summary: `model rehearsal completed for ${seedRevisionId}`,
       payload: { seedHash, seedRevisionId, rehearsalResult },
     }]);
-    hasModelRehearsal = currentSeedHasModelRehearsal(seedMeta, seedHash);
-    const rehearsalSatisfiedFrontier = rehearsalReachedFrontier(rehearsalResult, expectedFrontierLevel);
+    hasModelRehearsal = currentSeedHasModelRehearsal(seedMeta, seedHash, expectedFrontierLevel);
     if (!rehearsalSatisfiedFrontier) {
       if (decision === "finalize_seed" && requiresModelRehearsal) {
         await appendFluxEvents(args.workspaceRoot, args.config, [{
@@ -482,6 +683,7 @@ export async function runBootstrapperQueueItem(args: {
           ts: nowIso(),
           kind: "bootstrapper.finalize_rejected_pending_rehearsal",
           workspaceRoot: args.workspaceRoot,
+          invocationId,
           sessionType: "bootstrapper",
           sessionId,
           summary: `seed ${seedRevisionId} did not reach frontier level ${expectedFrontierLevel ?? "?"} during rehearsal`,
@@ -502,6 +704,23 @@ export async function runBootstrapperQueueItem(args: {
         },
         modelRehearsalResult: rehearsalResult,
       });
+      await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+        invocationId,
+        invocationType: "bootstrapper_invocation",
+        sessionType: "bootstrapper",
+        status: "completed",
+        recordedAt: nowIso(),
+        summary: "bootstrapper awaiting better rehearsal frontier reach",
+        payload: { seedRevisionId, seedHash, rehearsalResult, expectedFrontierLevel },
+      });
+      await markFluxInvocationStatus({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        invocationId,
+        sessionType: "bootstrapper",
+        status: "completed",
+        sessionId,
+      });
       await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
       return;
     }
@@ -510,6 +729,7 @@ export async function runBootstrapperQueueItem(args: {
       ts: nowIso(),
       kind: "bootstrapper.auto_accepted_after_rehearsal",
       workspaceRoot: args.workspaceRoot,
+      invocationId,
       sessionType: "bootstrapper",
       sessionId,
       summary: `seed ${seedRevisionId} reached frontier level ${expectedFrontierLevel ?? "?"} during rehearsal; auto-accepting`,
@@ -526,6 +746,7 @@ export async function runBootstrapperQueueItem(args: {
         ts: nowIso(),
         kind: "bootstrapper.finalize_rejected_pending_rehearsal",
         workspaceRoot: args.workspaceRoot,
+        invocationId,
         sessionType: "bootstrapper",
         sessionId,
         summary: `seed ${seedRevisionId} changed since the last rehearsal; rerunning on model before finalize`,
@@ -540,6 +761,7 @@ export async function runBootstrapperQueueItem(args: {
       ts: nowIso(),
       kind: "bootstrapper.attested_retry",
       workspaceRoot: args.workspaceRoot,
+      invocationId,
       sessionType: "bootstrapper",
       sessionId,
       summary: `bootstrapper requested another pass for ${seedRevisionId}`,
@@ -565,12 +787,30 @@ export async function runBootstrapperQueueItem(args: {
         ts: nowIso(),
         kind: "bootstrapper.waiting_for_new_inputs",
         workspaceRoot: args.workspaceRoot,
+        invocationId,
         sessionType: "bootstrapper",
         sessionId,
         summary: `bootstrapper made no seed changes for ${seedRevisionId}; waiting for new model/evidence inputs`,
         payload: { seedHash, seedRevisionId },
       }]);
     }
+    await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+      invocationId,
+      invocationType: "bootstrapper_invocation",
+      sessionType: "bootstrapper",
+      status: "completed",
+      recordedAt: nowIso(),
+      summary: `bootstrapper deferred further seed work for ${seedRevisionId}`,
+      payload: { seedRevisionId, seedHash, changed: persistedSeed.changed },
+    });
+    await markFluxInvocationStatus({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      invocationId,
+      sessionType: "bootstrapper",
+      status: "completed",
+      sessionId,
+    });
     await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
     return;
   }
@@ -584,6 +824,7 @@ export async function runBootstrapperQueueItem(args: {
     ts: nowIso(),
     kind: "bootstrapper.real_replay_started",
     workspaceRoot: args.workspaceRoot,
+    invocationId,
     sessionType: "bootstrapper",
     sessionId,
     summary: `running real replay for ${seedRevisionId}`,
@@ -610,6 +851,7 @@ export async function runBootstrapperQueueItem(args: {
       ts: nowIso(),
       kind: "bootstrapper.real_replay_failed",
       workspaceRoot: args.workspaceRoot,
+      invocationId,
       sessionType: "bootstrapper",
       sessionId,
       summary: `real replay failed for ${seedRevisionId}`,
@@ -628,11 +870,29 @@ export async function runBootstrapperQueueItem(args: {
       },
       realReplayResult,
     });
+    await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+      invocationId,
+      invocationType: "bootstrapper_invocation",
+      sessionType: "bootstrapper",
+      status: "failed",
+      recordedAt: nowIso(),
+      summary: `real replay failed for ${seedRevisionId}`,
+      payload: { seedRevisionId, seedHash, realReplayResult },
+    });
+    await markFluxInvocationStatus({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      invocationId,
+      sessionType: "bootstrapper",
+      status: "failed",
+      sessionId,
+      error: `real replay failed for ${seedRevisionId}`,
+    });
     await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
     return;
   }
 
-  const shouldQueueSolver = interruptPolicy !== "no_action" && !(hasRealReplay && !persistedSeed.changed);
+  const shouldQueueSolver = interruptPolicy !== "no_action" && (!hasRealReplay || persistedSeed.changed || coverageImproved);
   if (shouldQueueSolver) {
     await enqueueFluxQueueItem(args.workspaceRoot, args.config, "solver", {
       id: newId("q"),
@@ -669,6 +929,7 @@ export async function runBootstrapperQueueItem(args: {
     ts: nowIso(),
     kind: "bootstrapper.real_replay_passed",
     workspaceRoot: args.workspaceRoot,
+    invocationId,
     sessionType: "bootstrapper",
     sessionId,
     summary: `real replay passed for ${seedRevisionId}`,
@@ -678,6 +939,7 @@ export async function runBootstrapperQueueItem(args: {
     ts: nowIso(),
     kind: "bootstrapper.attested_satisfactory",
     workspaceRoot: args.workspaceRoot,
+    invocationId,
     sessionType: "bootstrapper",
     sessionId,
     summary: `seed revision ${seedRevisionId} finalized`,
@@ -691,5 +953,28 @@ export async function runBootstrapperQueueItem(args: {
     },
   }]);
 
+  await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+    invocationId,
+    invocationType: "bootstrapper_invocation",
+    sessionType: "bootstrapper",
+    status: "completed",
+    recordedAt: nowIso(),
+    summary: `seed revision ${seedRevisionId} finalized`,
+    payload: {
+      seedRevisionId,
+      seedHash,
+      shouldQueueSolver,
+      interruptPolicy,
+      seedDeltaKind,
+    },
+  });
+  await markFluxInvocationStatus({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    invocationId,
+    sessionType: "bootstrapper",
+    status: "completed",
+    sessionId,
+  });
   await setBootstrapperIdle(args.workspaceRoot, args.config, args.state, session);
 }

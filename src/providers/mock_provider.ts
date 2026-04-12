@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import type { AgentProvider, ProviderEvent, ProviderConfig } from "./types.js";
 import { newId } from "../utils/ids.js";
 import { promptContentToText, type PromptContent } from "../utils/prompt_content.js";
@@ -30,6 +31,48 @@ function matchPromptOverride(promptText: string): string | undefined {
     return undefined;
   }
   return undefined;
+}
+
+function matchPromptConfig(promptText: string): { text?: string; bashCommands?: string[] } | undefined {
+  const raw = process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON;
+  if (typeof raw !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== "object") continue;
+      const contains = typeof (entry as any).contains === "string" ? String((entry as any).contains) : "";
+      if (!contains || !promptText.includes(contains)) continue;
+      const text = typeof (entry as any).text === "string" ? String((entry as any).text) : undefined;
+      const bashCommands = Array.isArray((entry as any).bashCommands)
+        ? (entry as any).bashCommands.map((value: unknown) => String(value ?? "")).filter(Boolean)
+        : undefined;
+      return { text, bashCommands };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+async function runBashCommand(args: {
+  command: string;
+  cwd: string;
+  env: Record<string, string | undefined>;
+}): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn("/bin/sh", ["-lc", args.command], {
+      cwd: args.cwd,
+      env: Object.fromEntries(Object.entries(args.env).filter(([, value]) => value != null)) as Record<string, string>,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk.toString()));
+    child.stderr.on("data", (chunk) => (stderr += chunk.toString()));
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ stdout, stderr, exitCode: Number(code ?? 0) }));
+  });
 }
 
 export class MockProvider implements AgentProvider {
@@ -110,7 +153,8 @@ export class MockProvider implements AgentProvider {
       throw err;
     }
     const sequenceIdx = Math.max(this.runStreamedCalls - 1, 0);
-    const promptOverride = matchPromptOverride(promptText);
+    const promptConfig = matchPromptConfig(promptText);
+    const promptOverride = promptConfig?.text ?? matchPromptOverride(promptText);
     const full =
       promptOverride
       ?? (Array.isArray(streamedTextSequence) && streamedTextSequence.length > 0
@@ -123,6 +167,59 @@ export class MockProvider implements AgentProvider {
     if (process.env.MOCK_PROVIDER_SKIP_DELTAS !== "1") {
       for (const chunk of ["Mock response", " for model=", this.config.model, ". ", "You said: "]) {
         yield { type: "assistant_delta", delta: chunk };
+      }
+    }
+    for (const command of promptConfig?.bashCommands ?? []) {
+      const toolUseId = newId("toolu");
+      yield {
+        type: "provider_item",
+        item: { provider: "mock", kind: "tool_call", type: "assistant.tool_use", summary: "tool_call Bash", includeInTranscript: true },
+        raw: {
+          type: "assistant",
+          message: {
+            model: this.config.model,
+            id: newId("msg"),
+            content: [{
+              type: "tool_use",
+              id: toolUseId,
+              name: "Bash",
+              input: { command },
+            }],
+          },
+        },
+      };
+      const result = await runBashCommand({
+        command,
+        cwd: this.config.workingDirectory,
+        env: this.config.env ?? {},
+      });
+      yield {
+        type: "provider_item",
+        item: {
+          provider: "mock",
+          kind: "tool_result",
+          type: "tool_result",
+          name: "tool_result",
+          status: result.exitCode === 0 ? "completed" : "failed",
+          summary: `tool_result ${toolUseId} ${result.stdout.split(/\r?\n/, 1)[0] ?? ""}`.trim(),
+          includeInTranscript: true,
+          text: [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n"),
+        },
+        raw: {
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          content: [{ type: "text", text: [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n") }],
+          is_error: result.exitCode !== 0,
+        },
+      };
+      if (result.exitCode !== 0) {
+        const err = new Error(`mock Bash command failed: ${command}\n${result.stderr || result.stdout}`) as Error & {
+          name: string;
+          threadId?: string;
+        };
+        err.name = "ProviderExecutionError";
+        err.threadId = this.threadId;
+        throw err;
       }
     }
     if (typeof process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON === "string") {

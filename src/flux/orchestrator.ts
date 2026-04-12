@@ -4,14 +4,17 @@ import path from "node:path";
 import { newId } from "../utils/ids.js";
 import type { FluxConfig, FluxRunState } from "./types.js";
 import { appendFluxEvents } from "./events.js";
-import { loadFluxState, saveFluxState } from "./state.js";
+import { appendProjectionEventsAndRebuild } from "./projections.js";
+import { loadFluxState } from "./state.js";
 import { runModelerQueueItem } from "./modeler_runtime.js";
+import { requestActiveBootstrapperInterrupt, runBootstrapperQueueItem } from "./bootstrapper_runtime.js";
 import { dequeueNextSolver, ensureInitialSolverQueued, shouldStartSolver } from "./scheduler.js";
+import { requestActiveModelerInterrupt } from "./modeler_runtime.js";
 import { requestActiveSolverInterrupt, runSolverQueueItem } from "./solver_runtime.js";
 import { loadFluxQueue, saveFluxQueue } from "./queue.js";
-import { runBootstrapperQueueItem } from "./bootstrapper_runtime.js";
 import { appendFluxRuntimeLog } from "./runtime_log.js";
 import { fluxRunLockPath } from "./paths.js";
+import { markFluxInvocationStatus, saveFluxInvocationResult } from "./invocations.js";
 import { loadFluxSession, saveFluxSession } from "./session_store.js";
 
 const RECOVERY_BLOCKED_SOLVER_STOP_REASONS = new Set(["evidence_surface_incomplete"]);
@@ -59,6 +62,7 @@ async function recordSessionFailure(
   const latestState = await loadFluxState(workspaceRoot, config);
   const active = latestState?.active?.[sessionType];
   const sessionId = active?.sessionId;
+  const invocationId = active?.invocationId;
   if (sessionId) {
     const session = await loadFluxSession(workspaceRoot, config, sessionType, sessionId);
     if (session) {
@@ -69,23 +73,53 @@ async function recordSessionFailure(
     }
   }
   if (latestState) {
-    latestState.active[sessionType] = {
-      sessionId,
-      status: "idle",
-      updatedAt: nowIso(),
-    };
-    latestState.updatedAt = nowIso();
-    await saveFluxState(workspaceRoot, config, latestState);
+    await appendProjectionEventsAndRebuild({
+      workspaceRoot,
+      config,
+      configPath: latestState.configPath,
+      events: [{
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "projection.slot_updated",
+        workspaceRoot,
+        sessionType,
+        sessionId,
+        invocationId,
+        summary: `${sessionType} slot cleared after failure`,
+        payload: { active: { sessionId, invocationId, status: "idle", updatedAt: nowIso() } },
+      }],
+    });
   }
   await appendFluxEvents(workspaceRoot, config, [{
     eventId: newId("evt"),
     ts: nowIso(),
     kind: "session.failed",
     workspaceRoot,
+    invocationId,
     sessionType,
     sessionId,
     summary: boundedSummary,
   }]);
+  if (invocationId) {
+    await saveFluxInvocationResult(workspaceRoot, config, {
+      invocationId,
+      invocationType: sessionType === "solver" ? "solver_invocation" : (sessionType === "modeler" ? "modeler_invocation" : "bootstrapper_invocation"),
+      sessionType,
+      status: "failed",
+      recordedAt: nowIso(),
+      summary: boundedSummary,
+      payload: { sessionId, error: boundedSummary },
+    });
+    await markFluxInvocationStatus({
+      workspaceRoot,
+      config,
+      invocationId,
+      sessionType,
+      status: "failed",
+      sessionId,
+      error: boundedSummary,
+    });
+  }
 }
 
 async function reconcileStateForRestart(workspaceRoot: string, config: FluxConfig, state: FluxRunState): Promise<FluxRunState> {
@@ -104,6 +138,7 @@ async function reconcileStateForRestart(workspaceRoot: string, config: FluxConfi
     });
     nextState.active[sessionType] = {
       sessionId: active.sessionId,
+      invocationId: active.invocationId,
       status: "idle",
       updatedAt: nowIso(),
     };
@@ -151,6 +186,7 @@ async function reconcileActiveSessionTruth(
         if (runningSession?.status === "running" && activeRuns.has(sessionType)) {
           nextState.active[sessionType] = {
             sessionId: runningSessionId,
+            invocationId: runningSession.activeInvocationId,
             status: "running",
             queueItemId: active.queueItemId,
             pid: process.pid,
@@ -179,14 +215,29 @@ async function reconcileActiveSessionTruth(
     }
     nextState.active[sessionType] = {
       sessionId: active.sessionId,
+      invocationId: active.invocationId,
       status: "idle",
       updatedAt: nowIso(),
     };
     changed = true;
   }
   if (!changed) return state;
-  nextState.updatedAt = nowIso();
-  await saveFluxState(workspaceRoot, config, nextState);
+  await appendProjectionEventsAndRebuild({
+    workspaceRoot,
+    config,
+    configPath: nextState.configPath,
+    events: (["solver", "modeler", "bootstrapper"] as const).map((sessionType) => ({
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "projection.slot_updated",
+      workspaceRoot,
+      sessionType,
+      sessionId: nextState.active[sessionType].sessionId,
+      invocationId: nextState.active[sessionType].invocationId,
+      summary: `reconciled ${sessionType} slot against session truth`,
+      payload: { active: nextState.active[sessionType] },
+    })),
+  });
   await appendFluxEvents(workspaceRoot, config, [{
     eventId: newId("evt"),
     ts: nowIso(),
@@ -317,10 +368,19 @@ function acquireWorkspaceLock(workspaceRoot: string, config: FluxConfig): FluxWo
 export async function requestFluxStop(workspaceRoot: string, config: FluxConfig): Promise<void> {
   const state = await loadFluxState(workspaceRoot, config);
   if (!state) throw new Error("no flux state found");
-  state.stopRequested = true;
-  state.status = "stopping";
-  state.updatedAt = nowIso();
-  await saveFluxState(workspaceRoot, config, state);
+  await appendProjectionEventsAndRebuild({
+    workspaceRoot,
+    config,
+    configPath: state.configPath,
+    events: [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "projection.run_stop_requested",
+      workspaceRoot,
+      summary: "stop requested via CLI",
+      payload: {},
+    }],
+  });
   await appendFluxEvents(workspaceRoot, config, [{
     eventId: newId("evt"),
     ts: nowIso(),
@@ -335,19 +395,45 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
   const workspaceLock = acquireWorkspaceLock(workspaceRoot, config);
   let state = await loadFluxState(workspaceRoot, config) ?? initialState(workspaceRoot, configPath);
   state = await reconcileStateForRestart(workspaceRoot, config, state);
-  state.pid = process.pid;
-  state.status = "running";
-  state.stopRequested = false;
-  state.updatedAt = nowIso();
-  await saveFluxState(workspaceRoot, config, state);
-  await appendFluxEvents(workspaceRoot, config, [{
-    eventId: newId("evt"),
-    ts: nowIso(),
-    kind: "orchestrator.started",
+  await appendProjectionEventsAndRebuild({
     workspaceRoot,
-    summary: "flux orchestrator started",
-    payload: { pid: process.pid },
-  }]);
+    config,
+    configPath,
+    events: [
+      {
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "projection.run_initialized",
+        workspaceRoot,
+        summary: "flux orchestrator started",
+        payload: {
+          configPath,
+          pid: process.pid,
+          startedAt: state.startedAt || nowIso(),
+        },
+      },
+      ...(Object.entries(state.active) as Array<["solver" | "modeler" | "bootstrapper", FluxRunState["active"]["solver"]]>).map(([sessionType, active]) => ({
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "projection.slot_updated",
+        workspaceRoot,
+        sessionType,
+        sessionId: active.sessionId,
+        invocationId: active.invocationId,
+        summary: `startup projection refreshed ${sessionType} slot`,
+        payload: { active },
+      })),
+      {
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "orchestrator.started",
+        workspaceRoot,
+        summary: "flux orchestrator started",
+        payload: { pid: process.pid },
+      },
+    ],
+  });
+  state = await loadFluxState(workspaceRoot, config) ?? initialState(workspaceRoot, configPath);
   appendFluxRuntimeLog(workspaceRoot, config, `orchestrator started pid=${process.pid}`);
   const startupFailure = await repeatedSolverFailureToEscalate(workspaceRoot, config);
   if (
@@ -362,17 +448,25 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
       summary: `halting after non-retryable solver failure: ${startupFailure.stopReason}`,
       payload: startupFailure,
     }]);
-    state.stopRequested = true;
-    state.status = "stopped";
-    state.updatedAt = nowIso();
-    await saveFluxState(workspaceRoot, config, state);
-    await appendFluxEvents(workspaceRoot, config, [{
-      eventId: newId("evt"),
-      ts: nowIso(),
-      kind: "orchestrator.stopped",
+    await appendProjectionEventsAndRebuild({
       workspaceRoot,
-      summary: `halted after non-retryable solver failure: ${startupFailure.stopReason}`,
-    }]);
+      config,
+      configPath,
+      events: [{
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "projection.run_stopped",
+        workspaceRoot,
+        summary: `halted after non-retryable solver failure: ${startupFailure.stopReason}`,
+        payload: {},
+      }, {
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "orchestrator.stopped",
+        workspaceRoot,
+        summary: `halted after non-retryable solver failure: ${startupFailure.stopReason}`,
+      }],
+    });
     appendFluxRuntimeLog(workspaceRoot, config, `halted after non-retryable solver failure: ${startupFailure.stopReason}`);
     return;
   }
@@ -384,17 +478,25 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
     if (stopping) return;
     stopping = true;
     const current = await loadFluxState(workspaceRoot, config) ?? state;
-    current.stopRequested = true;
-    current.status = "stopped";
-    current.updatedAt = nowIso();
-    await saveFluxState(workspaceRoot, config, current);
-    await appendFluxEvents(workspaceRoot, config, [{
-      eventId: newId("evt"),
-      ts: nowIso(),
-      kind: "orchestrator.stopped",
+    await appendProjectionEventsAndRebuild({
       workspaceRoot,
-      summary: reason,
-    }]);
+      config,
+      configPath: current.configPath,
+      events: [{
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "projection.run_stopped",
+        workspaceRoot,
+        summary: reason,
+        payload: {},
+      }, {
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "orchestrator.stopped",
+        workspaceRoot,
+        summary: reason,
+      }],
+    });
     appendFluxRuntimeLog(workspaceRoot, config, reason);
   };
 
@@ -417,6 +519,20 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
         if (runningSolverSessionId) {
           requestActiveSolverInterrupt(runningSolverSessionId);
         }
+        const runningModelerSessionId =
+          (state.active.modeler.status === "running" && state.active.modeler.sessionId)
+            ? state.active.modeler.sessionId
+            : await findRunningSessionId(workspaceRoot, config, "modeler");
+        if (runningModelerSessionId) {
+          requestActiveModelerInterrupt(runningModelerSessionId);
+        }
+        const runningBootstrapperSessionId =
+          (state.active.bootstrapper.status === "running" && state.active.bootstrapper.sessionId)
+            ? state.active.bootstrapper.sessionId
+            : await findRunningSessionId(workspaceRoot, config, "bootstrapper");
+        if (runningBootstrapperSessionId) {
+          requestActiveBootstrapperInterrupt(runningBootstrapperSessionId);
+        }
         break;
       }
       if (state.active.solver.status === "running") {
@@ -437,7 +553,6 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
                 summary: "replacement solver queued; interrupting current solver",
                 payload: {
                   queuedSolverCount: solverQueue.items.length,
-                  replacementGraceMs: config.orchestrator.solverPreemptGraceMs,
                   attemptId: state.active.solver.attemptId,
                   instanceId: state.active.solver.instanceId,
                   interruptPolicy,
@@ -527,9 +642,6 @@ export async function runFluxOrchestrator(workspaceRoot: string, configPath: str
           activeRuns.set("bootstrapper", runPromise);
         }
       }
-      const latestState = await loadFluxState(workspaceRoot, config) ?? state;
-      latestState.updatedAt = nowIso();
-      await saveFluxState(workspaceRoot, config, latestState);
     }
     await Promise.allSettled(activeRuns.values());
     await stop("stop requested");

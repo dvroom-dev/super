@@ -363,6 +363,252 @@ process.stdin.on("end", () => {
     delete process.env.MOCK_PROVIDER_DELAY_MS;
   });
 
+  test("resets the solver provider thread on level transition before the next turn", async () => {
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const observeScript = path.join(workspaceRoot, "scripts", "observe.js");
+    const observeCounterPath = path.join(workspaceRoot, "observe-count.txt");
+    await fs.writeFile(observeCounterPath, "0", "utf8");
+    await fs.writeFile(observeScript, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const counterPath = path.join(input.workspaceRoot, "observe-count.txt");
+  const count = Number(fs.readFileSync(counterPath, "utf8")) || 0;
+  const next = count + 1;
+  fs.writeFileSync(counterPath, String(next));
+  const level = next >= 2 ? 2 : 1;
+  process.stdout.write(JSON.stringify({
+    evidence: [{
+      summary: "step evidence",
+      action_count: next,
+      changed_pixels: next,
+      state: {
+        current_level: level,
+        levels_completed: level - 1,
+        state: "NOT_FINISHED",
+        current_attempt_steps: next,
+        total_steps: next
+      }
+    }]
+  }));
+});`, "utf8");
+    await fs.chmod(observeScript, 0o755);
+    process.env.MOCK_PROVIDER_DELAY_MS = "100";
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    const runPromise = runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: {
+        id: "q_level_transition_reset",
+        sessionType: "solver",
+        createdAt: new Date().toISOString(),
+        reason: "level_transition_reset",
+        payload: {},
+      },
+      state,
+    });
+    let sessionId = "";
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline) {
+      const latestState = await loadFluxState(workspaceRoot, config);
+      sessionId = latestState?.active.solver.sessionId ?? sessionId;
+      if (sessionId) {
+        const sessionPath = path.join(workspaceRoot, ".ai-flux", "sessions", "solver", sessionId, "session.json");
+        try {
+          const session = JSON.parse(await fs.readFile(sessionPath, "utf8"));
+          if (session.lastFrontierLevel === 2 && !session.providerThreadId) break;
+        } catch {}
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(sessionId).toMatch(/^solver_attempt_/);
+    const saved = JSON.parse(await fs.readFile(path.join(workspaceRoot, ".ai-flux", "sessions", "solver", sessionId, "session.json"), "utf8"));
+    expect(saved.lastFrontierLevel).toBeGreaterThanOrEqual(2);
+    expect(saved.pendingSolverTheoryLevel).toBe(1);
+    expect(saved.pendingSolverTheoryFrontierLevel).toBe(2);
+    expect(saved.providerThreadId).toBeUndefined();
+    const requirementPath = path.join(workspaceRoot, ".flux_solver_handoff_requirement.json");
+    const requirement = JSON.parse(await fs.readFile(requirementPath, "utf8"));
+    expect(requirement.required_theory_level).toBe(1);
+    expect(requirement.frontier_level).toBe(2);
+    expect(requirement.required_file).toBe("solver_handoff/untrusted_theories.md");
+    requestActiveSolverInterrupt(sessionId);
+    await runPromise;
+    delete process.env.MOCK_PROVIDER_DELAY_MS;
+  });
+
+  test("does not require a solver theory handoff just because seed preplay starts on a later level", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "seeded solver output";
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: {
+        id: "q_preplayed_no_handoff",
+        sessionType: "solver",
+        createdAt: new Date().toISOString(),
+        reason: "bootstrapper_finalized_seed",
+        payload: {
+          preplayedInstance: {
+            instance_id: "seed_rev_demo",
+            working_directory: workspaceRoot,
+            env: {},
+            metadata: { solver_dir: workspaceRoot, state_dir: workspaceRoot },
+          },
+          preplayedReplayResult: {
+            replay_ok: true,
+            evidence: [{
+              summary: "state=NOT_FINISHED level=2 completed=1 actions=17 last_action=ACTION1",
+              state: {
+                current_level: 2,
+                levels_completed: 1,
+                state: "NOT_FINISHED",
+                total_steps: 17,
+                current_attempt_steps: 1,
+                last_action_name: "ACTION1",
+              },
+            }],
+          },
+        },
+      },
+      state,
+    });
+    const solverSessionsDir = path.join(workspaceRoot, ".ai-flux", "sessions", "solver");
+    const [actualSessionName] = await fs.readdir(solverSessionsDir);
+    const promptsDir = path.join(solverSessionsDir, actualSessionName!, "prompts");
+    const promptFiles = (await fs.readdir(promptsDir)).sort();
+    const initialPrompt = JSON.parse(await fs.readFile(path.join(promptsDir, promptFiles[0]!), "utf8"));
+    expect(String(initialPrompt.promptText ?? "")).not.toContain("solver_handoff/untrusted_theories.md");
+  });
+
+  test("issues a corrective retry when the solver uses prohibited search", async () => {
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const observeScript = path.join(workspaceRoot, "scripts", "observe.js");
+    await fs.writeFile(observeScript, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  evidence: [{
+    summary: "step evidence",
+    action_count: 1,
+    changed_pixels: 1,
+    state: {
+      current_level: 1,
+      levels_completed: 0,
+      state: "NOT_FINISHED",
+      current_attempt_steps: 1,
+      total_steps: 1
+    }
+  }]
+})));`, "utf8");
+    await fs.chmod(observeScript, 0o755);
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+      {
+        type: "provider_item",
+        item: { provider: "mock", kind: "tool_call", type: "assistant.tool_use", summary: "tool_call Bash", includeInTranscript: true },
+        raw: {
+          message: {
+            content: [{
+              type: "tool_use",
+              name: "Bash",
+              input: { command: "python bfs_probe.py" },
+            }],
+          },
+        },
+      },
+    ]);
+    process.env.MOCK_PROVIDER_DELAY_MS = "100";
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    const runPromise = runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: {
+        id: "q_policy_violation",
+        sessionType: "solver",
+        createdAt: new Date().toISOString(),
+        reason: "policy_violation",
+        payload: {},
+      },
+      state,
+    });
+    let sessionId = "";
+    let sawCorrectivePrompt = false;
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline && !sawCorrectivePrompt) {
+      const latestState = await loadFluxState(workspaceRoot, config);
+      sessionId = latestState?.active.solver.sessionId ?? sessionId;
+      if (sessionId) {
+        const messagesPath = path.join(workspaceRoot, ".ai-flux", "sessions", "solver", sessionId, "messages.jsonl");
+        try {
+          const messagesText = await fs.readFile(messagesPath, "utf8");
+          sawCorrectivePrompt = messagesText.includes("Your last turn violated solver policy.");
+        } catch {}
+      }
+      if (!sawCorrectivePrompt) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    expect(sawCorrectivePrompt).toBe(true);
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(events.some((event) => event.kind === "solver.policy_violation")).toBe(true);
+    requestActiveSolverInterrupt(sessionId);
+    await runPromise;
+    delete process.env.MOCK_PROVIDER_DELAY_MS;
+    delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
+  });
+
   test("requeues solver when observed evidence comes only from seed replay", async () => {
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     const observeScript = path.join(workspaceRoot, "scripts", "observe.js");
@@ -517,10 +763,23 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
     const messagesPath = path.join(solverSessionsDir, actualSessionName!, "messages.jsonl");
     const messages = (await fs.readFile(messagesPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     const initialUserPrompt = messages.find((message) => message.kind === "user")?.text ?? "";
+    const promptsDir = path.join(solverSessionsDir, actualSessionName!, "prompts");
+    const promptFiles = (await fs.readdir(promptsDir)).sort();
+    const promptPayload = JSON.parse(await fs.readFile(path.join(promptsDir, promptFiles[0]!), "utf8"));
+    const capturedPromptText = String(promptPayload.promptText ?? "");
+    const invocationInput = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "invocations", "q_preplayed", "input.json"), "utf8"));
+    const invocationStatus = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "invocations", "q_preplayed", "status.json"), "utf8"));
+    const invocationResult = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "invocations", "q_preplayed", "result.json"), "utf8"));
     expect(initialUserPrompt).toContain("Seed preplay already ran on this instance.");
     expect(initialUserPrompt).toContain("Current live state after preplay: level 2");
     expect(initialUserPrompt).not.toContain("\"tool_results\"");
     expect(initialUserPrompt.length).toBeLessThan(12000);
+    expect(capturedPromptText).toContain("Replay the verified prefix, then solve from the frontier.");
+    expect(capturedPromptText).toContain("Synthetic transcript to inherit:");
+    expect(promptPayload.invocationId).toBe("q_preplayed");
+    expect(invocationInput.invocationId).toBe("q_preplayed");
+    expect(invocationStatus.status).toBe("completed");
+    expect(invocationResult.status).toBe("completed");
   });
 
   test("continuation prompt is frontier-aware", () => {
@@ -539,8 +798,29 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
     expect(prompt).toContain("You are already at frontier level 2.");
     expect(prompt).toContain("last action ACTION1");
     expect(prompt).not.toContain("You have not solved level 1 yet.");
-    expect(prompt).toContain("Treat compare and BFS output as diagnostic only.");
+    expect(prompt).toContain("write the solver handoff markdown for the previous solved level");
+    expect(prompt).toContain("run one bounded real action probe on the new level");
+    expect(prompt).toContain("Do not use BFS, DFS, exhaustive reachability, or brute-force search over action/state space.");
+    expect(prompt).toContain("Never unpack or subscript the return value of env.step(...)");
     expect(prompt).toContain("switch branch instead of repeating the same action again");
+  });
+
+  test("continuation prompt surfaces the required solver theory handoff when pending", () => {
+    const prompt = buildContinuationPrompt([{
+      summary: "state=NOT_FINISHED level=2 completed=1 actions=17 last_action=ACTION1",
+      state: {
+        current_level: 2,
+        levels_completed: 1,
+        state: "NOT_FINISHED",
+        total_steps: 17,
+        current_attempt_steps: 1,
+        last_action_name: "ACTION1",
+        available_actions: [1, 2, 3, 4],
+      },
+    }], { pendingTheoryLevel: 1, pendingTheoryFrontierLevel: 2 });
+    expect(prompt).toContain("solver_handoff/untrusted_theories.md");
+    expect(prompt).toContain("arc_repl may return `critical_instruction`");
+    expect(prompt).toContain("write the solver handoff markdown for the previous solved level");
   });
 
   test("continuation prompt adds a stronger no-progress nudge when requested", () => {

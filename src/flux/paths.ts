@@ -17,6 +17,14 @@ export function fluxEventsPath(workspaceRoot: string, config: FluxConfig): strin
   return path.join(fluxRoot(workspaceRoot, config), "events.jsonl");
 }
 
+export function fluxCanonicalEventsDir(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxRoot(workspaceRoot, config), "events");
+}
+
+export function fluxCanonicalEventsPath(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxCanonicalEventsDir(workspaceRoot, config), "events.ndjson");
+}
+
 export function fluxLogsDir(workspaceRoot: string, config: FluxConfig): string {
   return path.join(fluxRoot(workspaceRoot, config), "logs");
 }
@@ -45,12 +53,40 @@ export function fluxSessionsRoot(workspaceRoot: string, config: FluxConfig): str
   return path.join(fluxAiRoot(workspaceRoot, config), "sessions");
 }
 
+export function fluxInvocationsRoot(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxRoot(workspaceRoot, config), "invocations");
+}
+
+export function fluxInvocationDir(workspaceRoot: string, config: FluxConfig, invocationId: string): string {
+  return path.join(fluxInvocationsRoot(workspaceRoot, config), invocationId);
+}
+
+export function fluxInvocationInputPath(workspaceRoot: string, config: FluxConfig, invocationId: string): string {
+  return path.join(fluxInvocationDir(workspaceRoot, config, invocationId), "input.json");
+}
+
+export function fluxInvocationStatusPath(workspaceRoot: string, config: FluxConfig, invocationId: string): string {
+  return path.join(fluxInvocationDir(workspaceRoot, config, invocationId), "status.json");
+}
+
+export function fluxInvocationResultPath(workspaceRoot: string, config: FluxConfig, invocationId: string): string {
+  return path.join(fluxInvocationDir(workspaceRoot, config, invocationId), "result.json");
+}
+
 export function fluxModelRoot(workspaceRoot: string, config: FluxConfig): string {
   return path.join(fluxRoot(workspaceRoot, config), "model");
 }
 
 export function fluxModelRevisionsRoot(workspaceRoot: string, config: FluxConfig): string {
   return path.join(fluxModelRoot(workspaceRoot, config), "revisions");
+}
+
+export function fluxModelDraftsRoot(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxModelRoot(workspaceRoot, config), "drafts");
+}
+
+export function fluxModelDraftDir(workspaceRoot: string, config: FluxConfig, invocationId: string): string {
+  return path.join(fluxModelDraftsRoot(workspaceRoot, config), invocationId);
 }
 
 export function fluxModelRevisionDir(workspaceRoot: string, config: FluxConfig, revisionId: string): string {

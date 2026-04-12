@@ -7,7 +7,7 @@ import { loadFluxConfig } from "./config.js";
 import { readFluxEvents } from "./events.js";
 import { requestFluxStop, runFluxOrchestrator } from "./orchestrator.js";
 import { fluxRunLockPath } from "./paths.js";
-import { loadFluxQueue } from "./queue.js";
+import { enqueueFluxQueueItem, loadFluxQueue } from "./queue.js";
 import { loadFluxState } from "./state.js";
 
 async function readFluxEventsWithRetry(workspaceRoot: string, config: Awaited<ReturnType<typeof loadFluxConfig>>) {
@@ -520,5 +520,70 @@ describe("runFluxOrchestrator", () => {
     const solverQueue = await loadFluxQueue(workspaceRoot, config, "solver");
     expect(solverQueue.items).toHaveLength(0);
   });
+
+  test("request stop interrupts a running modeler and clears stale active state", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({
+      decision: "updated_model",
+      summary: "slow modeler turn",
+      message_for_bootstrapper: "",
+      artifacts_updated: ["model_lib.py"],
+      evidence_watermark: "wm_stop_modeler",
+    });
+    process.env.MOCK_PROVIDER_DELAY_MS = "5000";
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    await enqueueFluxQueueItem(workspaceRoot, config, "modeler", {
+      id: "q_stop_modeler",
+      sessionType: "modeler",
+      createdAt: new Date().toISOString(),
+      reason: "solver_new_evidence",
+      payload: {
+        evidenceWatermark: "wm_stop_modeler",
+        latestEvidence: {
+          summary: "current_level=1",
+          state: { current_level: 1, levels_completed: 0, state: "NOT_FINISHED" },
+        },
+      },
+    });
+
+    try {
+      const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
+      const deadline = Date.now() + 3000;
+      let modelerRunning = false;
+      while (Date.now() < deadline && !modelerRunning) {
+        const current = await loadFluxState(workspaceRoot, config);
+        modelerRunning = current?.active.modeler.status === "running";
+        if (!modelerRunning) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      }
+      expect(modelerRunning).toBe(true);
+
+      await requestFluxStop(workspaceRoot, config);
+      await runPromise;
+
+      const state = await loadFluxState(workspaceRoot, config);
+      expect(state?.status).toBe("stopped");
+      expect(state?.active.modeler.status).toBe("idle");
+
+      const sessionRaw = await fs.readFile(
+        path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "session.json"),
+        "utf8",
+      );
+      const session = JSON.parse(sessionRaw) as Record<string, unknown>;
+      expect(session.status).toBe("failed");
+      expect(typeof session.stopReason).toBe("string");
+
+      const invocationRaw = await fs.readFile(
+        path.join(workspaceRoot, "flux", "invocations", "q_stop_modeler", "result.json"),
+        "utf8",
+      );
+      const invocation = JSON.parse(invocationRaw) as Record<string, unknown>;
+      expect(invocation.status).toBe("failed");
+      expect(typeof invocation.summary).toBe("string");
+    } finally {
+      delete process.env.MOCK_PROVIDER_DELAY_MS;
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  }, 15000);
 
 });

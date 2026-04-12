@@ -22,10 +22,7 @@ function testConfig(workspaceRoot: string): FluxConfig {
     },
     orchestrator: {
       tickMs: 10,
-      solverPreemptGraceMs: 10,
       evidencePollMs: 10,
-      modelerIdleBackoffMs: 10,
-      bootstrapperIdleBackoffMs: 10,
     },
     problem: {
       provisionInstance: { command: ["echo", "{}"] },
@@ -40,7 +37,6 @@ function testConfig(workspaceRoot: string): FluxConfig {
       sessionScope: "per_attempt",
       resumePolicy: "never",
       cadenceMs: 10,
-      queueReplacementGraceMs: 10,
       tools: { builtin: ["shell"], custom: [] },
     },
     modeler: {

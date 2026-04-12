@@ -3,312 +3,71 @@ import path from "node:path";
 import { writeJsonAtomic } from "../lib/fs.js";
 import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
+import { markFluxInvocationStatus, persistFluxInvocationInput, saveFluxInvocationResult } from "./invocations.js";
+import { appendProjectionEventsAndRebuild } from "./projections.js";
 import { parseJsonObjectFromAssistantText, schemaForName } from "./json_session_format.js";
 import { runModelAcceptance } from "./model_acceptance.js";
-import { buildCoverageSummary, classifyModelImprovement, computeModelProgress, preferCoverageSummary, type ModelProgress } from "./model_coverage.js";
-import { loadModelCoverageSummary, modelRevisionWorkspaceSource, persistModelRevisionWorkspace, saveCurrentModelHead, saveModelCoverageSummary } from "./model_revision_store.js";
-import { enqueueFluxQueueItem } from "./queue.js";
+import { buildCoverageSummary, computeModelProgress, preferCoverageSummary } from "./model_coverage.js";
+import { modelRevisionWorkspaceSource, persistModelRevisionWorkspace, publishCurrentModelWorkspace, saveCurrentModelHead, saveModelCoverageSummary } from "./model_revision_store.js";
 import { loadFluxPromptTemplate } from "./prompt_templates.js";
 import { runFluxProblemCommand } from "./problem_shell.js";
 import { runFluxProviderTurn } from "./provider_session.js";
-import { loadSeedMeta, saveSeedMeta } from "./seed_meta.js";
+import { loadSeedMeta } from "./seed_meta.js";
 import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSessionRecord } from "./types.js";
 import { fluxModelRoot } from "./paths.js";
-import { mutateFluxState } from "./state.js";
+import {
+  buildModelerContinuePrompt,
+  buildSolverTheoryInterjection,
+  coverageSummaryFromSeedMeta,
+  consumeSupersedingModelerInput,
+  deriveAcceptanceTargetLevelFromState,
+  deriveContinuationAcceptanceTarget,
+  deriveInvocationAcceptanceTargetLevel,
+  fallbackModelOutput,
+  firstFailingReport,
+  hasConcreteAcceptanceMismatch,
+  hasModelerTheoryMarkdown,
+  inferAcceptanceInfrastructureFailure,
+  isBlockedModelOutput,
+  loadBestProgress,
+  loadCurrentModelCoverageSummary,
+  loadCurrentModelRevisionId,
+  modelSessionId,
+  modelerTheoryMarkdownRelativePath,
+  prepareModelDraftWorkspace,
+  publishBootstrapSignals,
+  publishProgressAdvance,
+} from "./modeler_runtime_helpers.js";
+
+type ActiveModelerControl = {
+  controller: AbortController;
+  interruptRequested: boolean;
+};
+
+const activeModelerControls = new Map<string, ActiveModelerControl>();
 
 function nowIso(): string {
   return new Date().toISOString();
 }
+export {
+  deriveAcceptanceTargetLevelFromState,
+  deriveContinuationAcceptanceTarget,
+} from "./modeler_runtime_helpers.js";
 
-function modelSessionId(): string {
-  return "modeler_run";
+export function requestActiveModelerInterrupt(sessionId: string): boolean {
+  const control = activeModelerControls.get(sessionId);
+  if (!control || control.interruptRequested) return false;
+  control.interruptRequested = true;
+  control.controller.abort();
+  return true;
 }
-
-function fallbackModelOutput(queuePayload: Record<string, unknown>, assistantText: string, interrupted: boolean): Record<string, unknown> {
-  return {
-    decision: "updated_model",
-    summary: interrupted ? "interrupted modeler turn; evaluate current workspace state" : "modeler output was not valid JSON; evaluate current workspace state",
-    message_for_bootstrapper: "",
-    artifacts_updated: [],
-    evidence_watermark: String(queuePayload.evidenceWatermark ?? ""),
-    raw_assistant_text: assistantText,
-  };
-}
-
-function isBlockedModelOutput(modelOutput: Record<string, unknown>): boolean {
-  return String(modelOutput.decision ?? "").trim().toLowerCase() === "blocked";
-}
-
-async function loadBestProgress(workspaceRoot: string, config: FluxConfig): Promise<ModelProgress | null> {
-  try {
-    const raw = await fs.readFile(path.join(fluxModelRoot(workspaceRoot, config), "current", "progress.json"), "utf8");
-    return JSON.parse(raw) as ModelProgress;
-  } catch {
-    return null;
-  }
-}
-
-async function saveBestProgress(workspaceRoot: string, config: FluxConfig, progress: ModelProgress): Promise<void> {
-  await writeJsonAtomic(path.join(fluxModelRoot(workspaceRoot, config), "current", "progress.json"), {
-    ...progress,
-    updatedAt: nowIso(),
-  });
-}
-
-async function loadCurrentModelRevisionId(workspaceRoot: string, config: FluxConfig): Promise<string | null> {
-  try {
-    const raw = await fs.readFile(path.join(fluxModelRoot(workspaceRoot, config), "current", "meta.json"), "utf8");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const revisionId = parsed.revisionId;
-    return typeof revisionId === "string" && revisionId.trim().length > 0 ? revisionId : null;
-  } catch {
-    return null;
-  }
-}
-
-async function loadCurrentModelCoverageSummary(
-  workspaceRoot: string,
-  config: FluxConfig,
-): Promise<ReturnType<typeof buildCoverageSummary> | null> {
-  try {
-    const raw = await fs.readFile(path.join(fluxModelRoot(workspaceRoot, config), "current", "meta.json"), "utf8");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const summary = parsed.summary;
-    if (!summary || typeof summary !== "object" || Array.isArray(summary)) {
-      return null;
-    }
-    const record = summary as Record<string, unknown>;
-    return Array.isArray(record.coveredSequenceIds) ? record as ReturnType<typeof buildCoverageSummary> : null;
-  } catch {
-    return null;
-  }
-}
-
-function comparePayloadRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-async function inferAcceptanceInfrastructureFailure(args: {
-  workspaceRoot: string;
-  config: FluxConfig;
-  acceptanceMessage: string;
-  comparePayload: Record<string, unknown>;
-  existing: Record<string, unknown> | null;
-}): Promise<Record<string, unknown> | null> {
-  if (args.existing) return args.existing;
-  const errorRecord = comparePayloadRecord(args.comparePayload.error);
-  const errorType = String(errorRecord.type ?? "").trim();
-  const errorMessage = String(errorRecord.message ?? args.acceptanceMessage ?? "").trim();
-  if (["missing_level_dir", "missing_sequences", "missing_sequence_dir"].includes(errorType)) {
-    return {
-      type: errorType,
-      message: errorMessage || "compare surface is missing required level artifacts",
-    };
-  }
-  const reports = Array.isArray(args.comparePayload.reports) ? args.comparePayload.reports : [];
-  const workspaceDir = modelRevisionWorkspaceSource(args.workspaceRoot, args.config);
-  for (const report of reports) {
-    if (!report || typeof report !== "object" || Array.isArray(report)) continue;
-    const record = report as Record<string, unknown>;
-    const sequenceId = String(record.sequence_id ?? "").trim();
-    const level = Number(record.level ?? args.comparePayload.level ?? 0) || 0;
-    if (!sequenceId || level <= 0) continue;
-    const sequencePath = path.join(workspaceDir, `level_${level}`, "sequences", `${sequenceId}.json`);
-    try {
-      await fs.access(sequencePath);
-    } catch {
-      return {
-        type: "missing_sequence_surface",
-        message: `compare referenced level_${level}/${sequenceId}, but ${sequencePath} is not present in the synced model workspace`,
-        level,
-        sequenceId,
-      };
-    }
-  }
-  return null;
-}
-
-function isProgressAdvance(previous: ModelProgress | null, next: ModelProgress): boolean {
-  const sequenceOrder = (sequenceId: string | null): number => {
-    const match = String(sequenceId ?? "").match(/seq_(\d+)/i);
-    return match ? Number(match[1]) || 0 : 0;
-  };
-  const hasOrderedAdvance = (baseline: ModelProgress | null, candidate: ModelProgress): boolean => {
-    if (candidate.contiguousMatchedSequences > (baseline?.contiguousMatchedSequences ?? 0)) {
-      return true;
-    }
-    const candidateSequenceOrder = sequenceOrder(candidate.firstFailingSequenceId);
-    const baselineSequenceOrder = sequenceOrder(baseline?.firstFailingSequenceId ?? null);
-    if (candidateSequenceOrder > Math.max(1, baselineSequenceOrder)) {
-      return true;
-    }
-    if ((candidate.firstFailingStep ?? 0) > 1) {
-      return true;
-    }
-    if (
-      baseline?.firstFailingSequenceId
-      && candidate.firstFailingSequenceId
-      && baseline.firstFailingSequenceId === candidate.firstFailingSequenceId
-      && baseline.firstFailingStep != null
-      && candidate.firstFailingStep != null
-      && candidate.firstFailingStep > baseline.firstFailingStep
-    ) {
-      return true;
-    }
-    return false;
-  };
-  if (!previous) {
-    return hasOrderedAdvance(null, next);
-  }
-  if (next.level !== previous.level) {
-    return next.level > previous.level && hasOrderedAdvance(previous, next);
-  }
-  return hasOrderedAdvance(previous, next);
-}
-
-function coverageSummaryFromSeedMeta(value: unknown): ReturnType<typeof buildCoverageSummary> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  if (!Array.isArray(record.coveredSequenceIds)) {
-    return null;
-  }
-  return record as ReturnType<typeof buildCoverageSummary>;
-}
-
-async function publishBootstrapSignals(args: {
-  workspaceRoot: string;
-  config: FluxConfig;
-  comparePayload: Record<string, unknown>;
-  currentProgress: ModelProgress;
-  previousProgress: ModelProgress | null;
-  modelOutput: Record<string, unknown>;
-  modelRevisionId?: string | null;
-  promptPayload: Record<string, unknown>;
-  sessionId: string;
-}): Promise<void> {
-  const modelRevisionId = typeof args.modelRevisionId === "string" && args.modelRevisionId ? args.modelRevisionId : null;
-  if (!modelRevisionId) return;
-  const currentSummary = buildCoverageSummary({ comparePayload: args.comparePayload, accepted: true });
-  const persistedSummary = await saveModelCoverageSummary({
-    workspaceRoot: args.workspaceRoot,
-    config: args.config,
-    revisionId: modelRevisionId,
-    summary: currentSummary,
-  });
-  const seedMeta = await loadSeedMeta(args.workspaceRoot, args.config);
-  const baselineRevisionId = seedMeta.lastQueuedBootstrapModelRevisionId ?? seedMeta.lastBootstrapperModelRevisionId ?? null;
-  const baselineSummary =
-    coverageSummaryFromSeedMeta(seedMeta.lastQueuedBootstrapCoverageSummary)
-    ?? coverageSummaryFromSeedMeta(seedMeta.lastBootstrapperCoverageSummary)
-    ?? (baselineRevisionId ? await loadModelCoverageSummary(args.workspaceRoot, args.config, baselineRevisionId) : null);
-  const improvementKind = classifyModelImprovement(baselineSummary, persistedSummary);
-  if (isProgressAdvance(args.previousProgress, args.currentProgress)) {
-    await saveBestProgress(args.workspaceRoot, args.config, args.currentProgress);
-    await appendFluxEvents(args.workspaceRoot, args.config, [{
-      eventId: newId("evt"),
-      ts: nowIso(),
-      kind: "modeler.progress_advanced",
-      workspaceRoot: args.workspaceRoot,
-      sessionType: "modeler",
-      sessionId: args.sessionId,
-      summary: `modeled contiguous sequence prefix through ${args.currentProgress.contiguousMatchedSequences}`,
-      payload: {
-        level: args.currentProgress.level,
-        contiguousMatchedSequences: args.currentProgress.contiguousMatchedSequences,
-        firstFailingSequenceId: args.currentProgress.firstFailingSequenceId,
-        firstFailingStep: args.currentProgress.firstFailingStep,
-        firstFailingReason: args.currentProgress.firstFailingReason,
-      },
-    }]);
-  }
-  if (improvementKind === "no_improvement") {
-    return;
-  }
-  await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
-    id: newId("q"),
-    sessionType: "bootstrapper",
-    createdAt: nowIso(),
-    reason: improvementKind === "frontier_advanced" ? "model_progress_advanced" : "model_accepted",
-    dedupeKey: `bootstrap:${modelRevisionId}`,
-    payload: {
-      baselineModelRevisionId: modelRevisionId,
-      improvementKind,
-      modelRevisionId,
-      messageForBootstrapper: String(args.modelOutput.message_for_bootstrapper ?? ""),
-      modelOutput: args.modelOutput,
-      sourceEvidence: args.promptPayload.latestEvidence ?? null,
-      sourceEvidenceWatermark: String(args.promptPayload.evidenceWatermark ?? args.modelOutput.evidence_watermark ?? ""),
-      modelProgress: args.currentProgress,
-      comparePayload: args.comparePayload,
-      coverageSummary: persistedSummary,
-    },
-  });
-  const nextSeedMeta = {
-    ...seedMeta,
-    lastQueuedBootstrapModelRevisionId: modelRevisionId,
-    lastQueuedBootstrapCoverageSummary: persistedSummary,
-  };
-  await saveSeedMeta(args.workspaceRoot, args.config, nextSeedMeta);
-}
-
-async function publishProgressAdvance(args: {
-  workspaceRoot: string;
-  config: FluxConfig;
-  currentProgress: ModelProgress;
-  previousProgress: ModelProgress | null;
-  comparePayload: Record<string, unknown>;
-  modelOutput: Record<string, unknown>;
-  promptPayload: Record<string, unknown>;
-  sessionId: string;
-  modelRevisionId?: string | null;
-}): Promise<void> {
-  if (!isProgressAdvance(args.previousProgress, args.currentProgress)) {
-    return;
-  }
-  await saveBestProgress(args.workspaceRoot, args.config, args.currentProgress);
-  const revisionId = args.modelRevisionId ?? newId("model_rev");
-  const revisionDir = path.join(fluxModelRoot(args.workspaceRoot, args.config), "revisions", revisionId);
-  const summary = buildCoverageSummary({ comparePayload: args.comparePayload, accepted: false });
-  await fs.mkdir(revisionDir, { recursive: true });
-  await writeJsonAtomic(path.join(revisionDir, "model_update.json"), args.modelOutput);
-  await persistModelRevisionWorkspace({
-    workspaceRoot: args.workspaceRoot,
-    config: args.config,
-    revisionId,
-    sourceWorkspaceDir: modelRevisionWorkspaceSource(args.workspaceRoot, args.config),
-  });
-  const persistedSummary = await saveModelCoverageSummary({
-    workspaceRoot: args.workspaceRoot,
-    config: args.config,
-    revisionId,
-    summary,
-  });
-  await appendFluxEvents(args.workspaceRoot, args.config, [{
-    eventId: newId("evt"),
-    ts: nowIso(),
-    kind: "modeler.progress_advanced",
-    workspaceRoot: args.workspaceRoot,
-    sessionType: "modeler",
-    sessionId: args.sessionId,
-    summary: `modeled contiguous sequence prefix through ${args.currentProgress.firstFailingSequenceId ? args.currentProgress.contiguousMatchedSequences : args.currentProgress.contiguousMatchedSequences}`,
-    payload: {
-      level: args.currentProgress.level,
-      contiguousMatchedSequences: args.currentProgress.contiguousMatchedSequences,
-      firstFailingSequenceId: args.currentProgress.firstFailingSequenceId,
-      firstFailingStep: args.currentProgress.firstFailingStep,
-      firstFailingReason: args.currentProgress.firstFailingReason,
-    },
-  }]);
-}
-
 async function persistAcceptedModel(
   workspaceRoot: string,
   config: FluxConfig,
   modelOutput: Record<string, unknown>,
   comparePayload: Record<string, unknown>,
+  sourceWorkspaceDir: string,
 ): Promise<string> {
   const revisionId = newId("model_rev");
   const currentDir = path.join(fluxModelRoot(workspaceRoot, config), "current");
@@ -321,7 +80,12 @@ async function persistAcceptedModel(
     workspaceRoot,
     config,
     revisionId,
-    sourceWorkspaceDir: modelRevisionWorkspaceSource(workspaceRoot, config),
+    sourceWorkspaceDir,
+  });
+  await publishCurrentModelWorkspace({
+    workspaceRoot,
+    config,
+    sourceWorkspaceDir,
   });
   const candidateSummary = buildCoverageSummary({ comparePayload, accepted: true });
   const currentSummary = await loadCurrentModelCoverageSummary(workspaceRoot, config);
@@ -354,6 +118,15 @@ export async function runModelerQueueItem(args: {
   state: FluxRunState;
 }): Promise<void> {
   const sessionId = modelSessionId();
+  const invocationId = args.queueItem.id;
+  await persistFluxInvocationInput(args.workspaceRoot, args.config, {
+    invocationId,
+    invocationType: "modeler_invocation",
+    sessionType: "modeler",
+    createdAt: args.queueItem.createdAt,
+    reason: args.queueItem.reason,
+    payload: { ...args.queueItem.payload },
+  });
   const existing = await loadFluxSession(args.workspaceRoot, args.config, "modeler", sessionId);
   const session: FluxSessionRecord = existing ?? {
     sessionId,
@@ -368,227 +141,533 @@ export async function runModelerQueueItem(args: {
   };
   session.status = "running";
   session.stopReason = undefined;
+  session.activeInvocationId = invocationId;
   session.updatedAt = nowIso();
   await saveFluxSession(args.workspaceRoot, args.config, session);
-  const latestState = await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
-    const next = current ?? args.state;
-    next.active.modeler = {
-      sessionId,
-      status: "running",
-      queueItemId: args.queueItem.id,
-      pid: process.pid,
-      updatedAt: nowIso(),
-    };
-    return next;
-  });
-  const promptPayload = args.queueItem.payload;
-
-  if (args.config.problem.syncModelWorkspace) {
-    await runFluxProblemCommand(args.config.problem.syncModelWorkspace, {
-      workspaceRoot: args.workspaceRoot,
-      queueItem: args.queueItem,
-      reason: args.queueItem.reason,
-      evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : undefined,
-      evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : undefined,
-    });
-  }
-
-  const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.modeler.promptFile);
-  const preflightModelOutput = {
-    decision: "checked_current_model",
-    summary: "preflight compare of current model against latest evidence",
-    message_for_bootstrapper: "",
-    artifacts_updated: [],
-    evidence_watermark: String(promptPayload.evidenceWatermark ?? ""),
-  };
-  const preflightAcceptance = await runModelAcceptance({
+  await markFluxInvocationStatus({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
-    modelOutput: preflightModelOutput,
-    modelRevisionId: await loadCurrentModelRevisionId(args.workspaceRoot, args.config),
-    evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : null,
-    evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : null,
-  });
-  const preflightComparePayload = preflightAcceptance.payload.compare_payload
-    && typeof preflightAcceptance.payload.compare_payload === "object"
-    && !Array.isArray(preflightAcceptance.payload.compare_payload)
-    ? preflightAcceptance.payload.compare_payload as Record<string, unknown>
-    : {};
-  const preflightInfrastructureFailure = await inferAcceptanceInfrastructureFailure({
-    workspaceRoot: args.workspaceRoot,
-    config: args.config,
-    acceptanceMessage: preflightAcceptance.message,
-    comparePayload: preflightComparePayload,
-    existing: preflightAcceptance.infrastructureFailure,
-  });
-  const previousProgress = await loadBestProgress(args.workspaceRoot, args.config);
-  const preflightProgress = computeModelProgress(preflightComparePayload);
-  if (preflightAcceptance.accepted) {
-    const currentRevisionId = await loadCurrentModelRevisionId(args.workspaceRoot, args.config)
-      ?? await persistAcceptedModel(args.workspaceRoot, args.config, preflightModelOutput, preflightComparePayload);
-    await publishBootstrapSignals({
-      workspaceRoot: args.workspaceRoot,
-      config: args.config,
-      comparePayload: preflightComparePayload,
-      currentProgress: preflightProgress,
-      previousProgress,
-      modelOutput: preflightModelOutput,
-      modelRevisionId: currentRevisionId,
-      promptPayload,
-      sessionId,
-    });
-    await appendFluxEvents(args.workspaceRoot, args.config, [{
-      eventId: newId("evt"),
-      ts: nowIso(),
-      kind: "modeler.acceptance_passed",
-      workspaceRoot: args.workspaceRoot,
-      sessionType: "modeler",
-      sessionId,
-      summary: "current model already matches latest evidence",
-      payload: { revisionId: currentRevisionId },
-    }]);
-    session.status = "idle";
-    session.stopReason = undefined;
-    session.updatedAt = nowIso();
-    await saveFluxSession(args.workspaceRoot, args.config, session);
-    await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
-      const next = current ?? latestState;
-      next.active.modeler = {
-        sessionId,
-        status: "idle",
-        updatedAt: nowIso(),
-      };
-      return next;
-    });
-    return;
-  }
-  if (preflightInfrastructureFailure) {
-    await appendFluxEvents(args.workspaceRoot, args.config, [{
-      eventId: newId("evt"),
-      ts: nowIso(),
-      kind: "modeler.acceptance_failed",
-      workspaceRoot: args.workspaceRoot,
-      sessionType: "modeler",
-      sessionId,
-      summary: preflightAcceptance.message || "model preflight compare failed",
-      payload: {
-        blocked: false,
-        infrastructureFailure: preflightInfrastructureFailure,
-      },
-    }]);
-    session.status = "idle";
-    session.stopReason = undefined;
-    session.updatedAt = nowIso();
-    await saveFluxSession(args.workspaceRoot, args.config, session);
-    await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
-      const next = current ?? latestState;
-      next.active.modeler = {
-        sessionId,
-        status: "idle",
-        updatedAt: nowIso(),
-      };
-      return next;
-    });
-    return;
-  }
-  const promptText = [
-    promptTemplate.trim(),
-    `Modeling trigger: ${args.queueItem.reason}`,
-    JSON.stringify(promptPayload, null, 2),
-  ].join("\n\n");
-  await appendFluxMessage(args.workspaceRoot, args.config, "modeler", sessionId, {
-    messageId: newId("msg"),
-    ts: nowIso(),
-    turnIndex: Date.now(),
-    kind: "user",
-    text: promptText,
-  });
-  const controller = args.config.modeler.turnTimeoutMs ? new AbortController() : null;
-  const timeout = controller ? setTimeout(() => controller.abort(), args.config.modeler.turnTimeoutMs) : null;
-  const turn = await runFluxProviderTurn({
-    workspaceRoot: args.workspaceRoot,
-    config: args.config,
-    session,
+    invocationId,
     sessionType: "modeler",
-    promptText,
-    reasoningEffort: args.config.modeler.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
-    outputSchema: args.config.modeler.turnTimeoutMs ? undefined : schemaForName(args.config.modeler.outputSchema),
-    workingDirectory: path.resolve(args.workspaceRoot, args.config.modeler.workingDirectory ?? "."),
-    signal: controller?.signal,
+    status: "running",
+    sessionId,
   });
-  if (timeout) clearTimeout(timeout);
-  await appendFluxMessage(args.workspaceRoot, args.config, "modeler", sessionId, {
-    messageId: newId("msg"),
-    ts: nowIso(),
-    turnIndex: Date.now(),
-    kind: "assistant",
-    text: turn.assistantText,
-    providerThreadId: turn.providerThreadId,
-  });
-  const parsedModelOutput = parseJsonObjectFromAssistantText(turn.assistantText || "");
-  const modelOutput = parsedModelOutput ?? fallbackModelOutput(promptPayload, turn.assistantText, turn.interrupted);
-  if (args.config.problem.syncModelWorkspace) {
-    await runFluxProblemCommand(args.config.problem.syncModelWorkspace, {
-      workspaceRoot: args.workspaceRoot,
-      queueItem: args.queueItem,
-      reason: "post_modeler_turn",
-      evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : undefined,
-      evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : undefined,
-    });
-  }
-  const acceptance = await runModelAcceptance({
+  await appendProjectionEventsAndRebuild({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
-    modelOutput,
-    evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : null,
-    evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : null,
-  });
-  const comparePayload = acceptance.payload.compare_payload && typeof acceptance.payload.compare_payload === "object" && !Array.isArray(acceptance.payload.compare_payload)
-    ? acceptance.payload.compare_payload as Record<string, unknown>
-    : {};
-  const inferredInfrastructureFailure = await inferAcceptanceInfrastructureFailure({
-    workspaceRoot: args.workspaceRoot,
-    config: args.config,
-    acceptanceMessage: acceptance.message,
-    comparePayload,
-    existing: acceptance.infrastructureFailure,
-  });
-  const currentProgress = computeModelProgress(comparePayload);
-  if (!acceptance.accepted) {
-    await publishProgressAdvance({
-      workspaceRoot: args.workspaceRoot,
-      config: args.config,
-      currentProgress,
-      previousProgress,
-      comparePayload,
-      modelOutput,
-      promptPayload,
-      sessionId,
-    });
-    const blocked = isBlockedModelOutput(modelOutput);
-    const infrastructureFailure = inferredInfrastructureFailure;
-    const modelSummary = String(modelOutput.summary ?? "").trim();
-    const acceptanceMessage = String(acceptance.message ?? "").trim();
-    const failureSummary = blocked
-      ? (acceptanceMessage || modelSummary || "model acceptance blocked")
-      : (acceptanceMessage ? `model update rejected: ${acceptanceMessage}` : "model update rejected by acceptance compare");
-    await appendFluxEvents(args.workspaceRoot, args.config, [{
+    configPath: args.state.configPath,
+    events: [{
       eventId: newId("evt"),
       ts: nowIso(),
-      kind: "modeler.acceptance_failed",
+      kind: "projection.slot_updated",
       workspaceRoot: args.workspaceRoot,
       sessionType: "modeler",
       sessionId,
-      summary: failureSummary,
+      invocationId,
+      summary: `active modeler invocation ${invocationId} started`,
       payload: {
-        blocked,
-        infrastructureFailure,
-        acceptanceMessage,
-        modelSummary,
+        active: {
+          sessionId,
+          invocationId,
+          status: "running",
+          queueItemId: args.queueItem.id,
+          pid: process.pid,
+          updatedAt: nowIso(),
+        },
       },
-    }]);
-  } else {
-    const revisionId = await persistAcceptedModel(args.workspaceRoot, args.config, modelOutput, comparePayload);
+    }],
+  });
+  const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.modeler.promptFile);
+  const continueTemplate = await loadFluxPromptTemplate(
+    args.workspaceRoot,
+    args.config.modeler.acceptance.continueMessageTemplateFile,
+  );
+  const modelDraftWorkspaceDir = await prepareModelDraftWorkspace({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    invocationId,
+  });
+  let promptPayload = args.queueItem.payload;
+  let continueTurns = 0;
+  let continueAcceptanceMessage: string | null = null;
+  let continueFailingReport: Record<string, unknown> | null = null;
+  const invocationAcceptanceMaxLevel = await deriveInvocationAcceptanceTargetLevel({
+    workspaceRoot: args.workspaceRoot,
+    config: args.config,
+    promptPayload: args.queueItem.payload,
+  });
+  let continueAcceptanceTarget: { maxLevel?: number | null; level?: number | null; sequenceId?: string | null } | null = null;
+
+  for (;;) {
+    const freshlySupersedingPayload = await consumeSupersedingModelerInput({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      activeInvocationId: invocationId,
+      sessionId,
+    });
+    if (freshlySupersedingPayload) {
+      promptPayload = freshlySupersedingPayload;
+    }
+    if (args.config.problem.syncModelWorkspace) {
+      await runFluxProblemCommand(args.config.problem.syncModelWorkspace, {
+        workspaceRoot: args.workspaceRoot,
+        queueItem: args.queueItem,
+        reason: continueTurns === 0 ? args.queueItem.reason : "modeler_continue",
+        evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : undefined,
+        evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : undefined,
+        targetWorkspaceDir: modelDraftWorkspaceDir,
+      });
+    }
+    const solverTheoryInterjection = await buildSolverTheoryInterjection({
+      workspaceDir: modelDraftWorkspaceDir,
+      lastInjectedLevel: session.lastInjectedSolverTheoryLevel,
+    });
+    if (solverTheoryInterjection) {
+      session.lastInjectedSolverTheoryLevel = solverTheoryInterjection.level;
+      session.updatedAt = nowIso();
+      await saveFluxSession(args.workspaceRoot, args.config, session);
+    }
+
+    const preflightModelOutput = {
+      decision: "checked_current_model",
+      summary: "preflight compare of current model against latest evidence",
+      message_for_bootstrapper: "",
+      artifacts_updated: [],
+      evidence_watermark: String(promptPayload.evidenceWatermark ?? ""),
+    };
+    const preflightAcceptance = await runModelAcceptance({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      modelOutput: preflightModelOutput,
+      modelRevisionId: await loadCurrentModelRevisionId(args.workspaceRoot, args.config),
+      evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : null,
+      evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : null,
+      targetWorkspaceDir: modelDraftWorkspaceDir,
+      acceptanceTarget: continueAcceptanceTarget ?? (
+        invocationAcceptanceMaxLevel
+          ? { maxLevel: invocationAcceptanceMaxLevel, level: invocationAcceptanceMaxLevel }
+          : null
+      ),
+    });
+    const preflightComparePayload = preflightAcceptance.payload.compare_payload
+      && typeof preflightAcceptance.payload.compare_payload === "object"
+      && !Array.isArray(preflightAcceptance.payload.compare_payload)
+      ? preflightAcceptance.payload.compare_payload as Record<string, unknown>
+      : {};
+    const preflightInfrastructureFailure = await inferAcceptanceInfrastructureFailure({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      acceptanceMessage: preflightAcceptance.message,
+      comparePayload: preflightComparePayload,
+      existing: preflightAcceptance.infrastructureFailure,
+      targetWorkspaceDir: modelDraftWorkspaceDir,
+    });
+    const previousProgress = await loadBestProgress(args.workspaceRoot, args.config);
+    const preflightProgress = computeModelProgress(preflightComparePayload);
+    if (preflightAcceptance.accepted) {
+      const currentRevisionId = await loadCurrentModelRevisionId(args.workspaceRoot, args.config)
+        ?? await persistAcceptedModel(args.workspaceRoot, args.config, preflightModelOutput, preflightComparePayload, modelDraftWorkspaceDir);
+      await publishBootstrapSignals({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        comparePayload: preflightComparePayload,
+        currentProgress: preflightProgress,
+        previousProgress,
+        modelOutput: preflightModelOutput,
+        modelRevisionId: currentRevisionId,
+        promptPayload,
+        sessionId,
+      });
+      await appendFluxEvents(args.workspaceRoot, args.config, [{
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "modeler.acceptance_passed",
+        workspaceRoot: args.workspaceRoot,
+        invocationId,
+        sessionType: "modeler",
+        sessionId,
+        summary: "current model already matches latest evidence",
+        payload: { revisionId: currentRevisionId },
+      }]);
+      session.status = "idle";
+      session.stopReason = undefined;
+      session.updatedAt = nowIso();
+      await saveFluxSession(args.workspaceRoot, args.config, session);
+      await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+        invocationId,
+        invocationType: "modeler_invocation",
+        sessionType: "modeler",
+        status: "completed",
+        recordedAt: nowIso(),
+        summary: "current model already matches latest evidence",
+        payload: {
+          sessionId,
+          accepted: true,
+          comparePayload: preflightComparePayload,
+          revisionId: currentRevisionId,
+        },
+      });
+      await markFluxInvocationStatus({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        invocationId,
+        sessionType: "modeler",
+        status: "completed",
+        sessionId,
+      });
+      await appendProjectionEventsAndRebuild({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        configPath: args.state.configPath,
+        events: [{
+          eventId: newId("evt"),
+          ts: nowIso(),
+          kind: "projection.slot_updated",
+          workspaceRoot: args.workspaceRoot,
+          sessionType: "modeler",
+          sessionId,
+          invocationId,
+          summary: `active modeler invocation ${invocationId} cleared`,
+          payload: { active: { sessionId, invocationId, status: "idle", updatedAt: nowIso() } },
+        }],
+      });
+      return;
+    }
+    if (preflightInfrastructureFailure) {
+      await appendFluxEvents(args.workspaceRoot, args.config, [{
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "modeler.acceptance_failed",
+        workspaceRoot: args.workspaceRoot,
+        invocationId,
+        sessionType: "modeler",
+        sessionId,
+        summary: preflightAcceptance.message || "model preflight compare failed",
+        payload: {
+          blocked: false,
+          infrastructureFailure: preflightInfrastructureFailure,
+        },
+      }]);
+      session.status = "idle";
+      session.stopReason = undefined;
+      session.updatedAt = nowIso();
+      await saveFluxSession(args.workspaceRoot, args.config, session);
+      await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+        invocationId,
+        invocationType: "modeler_invocation",
+        sessionType: "modeler",
+        status: "failed",
+        recordedAt: nowIso(),
+        summary: preflightAcceptance.message || "model preflight compare failed",
+        payload: {
+          sessionId,
+          infrastructureFailure: preflightInfrastructureFailure,
+          comparePayload: preflightComparePayload,
+        },
+      });
+      await markFluxInvocationStatus({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        invocationId,
+        sessionType: "modeler",
+        status: "failed",
+        sessionId,
+        error: preflightAcceptance.message || "model preflight compare failed",
+      });
+      await appendProjectionEventsAndRebuild({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        configPath: args.state.configPath,
+        events: [{
+          eventId: newId("evt"),
+          ts: nowIso(),
+          kind: "projection.slot_updated",
+          workspaceRoot: args.workspaceRoot,
+          sessionType: "modeler",
+          sessionId,
+          invocationId,
+          summary: `active modeler invocation ${invocationId} cleared`,
+          payload: { active: { sessionId, invocationId, status: "idle", updatedAt: nowIso() } },
+        }],
+      });
+      return;
+    }
+
+    let promptText: string;
+    if (continueTurns === 0) {
+      const parts = [
+        promptTemplate.trim(),
+        solverTheoryInterjection?.text ?? "",
+        `Modeling trigger: ${args.queueItem.reason}`,
+        JSON.stringify(promptPayload, null, 2),
+      ].filter(Boolean);
+      promptText = parts.join("\n\n");
+    } else {
+      promptText = buildModelerContinuePrompt({
+        template: continueTemplate,
+        acceptanceMessage: continueAcceptanceMessage || "model acceptance failed",
+        latestEvidenceWatermark: String(promptPayload.evidenceWatermark ?? ""),
+        maxLevel: invocationAcceptanceMaxLevel,
+        targetLevel: continueAcceptanceTarget?.level ?? null,
+        targetSequenceId: continueAcceptanceTarget?.sequenceId ?? null,
+        failingStep: Number(continueFailingReport?.divergence_step ?? 0) || null,
+        failingReason: typeof continueFailingReport?.divergence_reason === "string" ? String(continueFailingReport.divergence_reason) : null,
+        frameCountGame: Number(continueFailingReport?.frame_count_game ?? 0) || null,
+        frameCountModel: Number(continueFailingReport?.frame_count_model ?? 0) || null,
+      });
+      if (solverTheoryInterjection) {
+        promptText = [promptText, "", solverTheoryInterjection.text].join("\n");
+      }
+    }
+
+    await appendFluxMessage(args.workspaceRoot, args.config, "modeler", sessionId, {
+      messageId: newId("msg"),
+      ts: nowIso(),
+      turnIndex: Date.now(),
+      invocationId,
+      kind: "user",
+      text: promptText,
+    });
+    const controller = new AbortController();
+    activeModelerControls.set(sessionId, { controller, interruptRequested: false });
+    const timeout = args.config.modeler.turnTimeoutMs ? setTimeout(() => controller.abort(), args.config.modeler.turnTimeoutMs) : null;
+    let turn;
+    try {
+      turn = await runFluxProviderTurn({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        session,
+        sessionType: "modeler",
+        invocationId,
+        promptText,
+        reasoningEffort: args.config.modeler.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
+        outputSchema: args.config.modeler.turnTimeoutMs ? undefined : schemaForName(args.config.modeler.outputSchema),
+        workingDirectory: modelDraftWorkspaceDir,
+        signal: controller.signal,
+      });
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      activeModelerControls.delete(sessionId);
+    }
+    if (turn.interrupted) {
+      session.status = "idle";
+      session.stopReason = "interrupted";
+      session.updatedAt = nowIso();
+      await saveFluxSession(args.workspaceRoot, args.config, session);
+      await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+        invocationId,
+        invocationType: "modeler_invocation",
+        sessionType: "modeler",
+        status: "failed",
+        recordedAt: nowIso(),
+        summary: "modeler interrupted",
+        payload: { sessionId, interrupted: true },
+      });
+      await markFluxInvocationStatus({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        invocationId,
+        sessionType: "modeler",
+        status: "failed",
+        sessionId,
+        error: "modeler interrupted",
+      });
+      await appendProjectionEventsAndRebuild({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        configPath: args.state.configPath,
+        events: [{
+          eventId: newId("evt"),
+          ts: nowIso(),
+          kind: "projection.slot_updated",
+          workspaceRoot: args.workspaceRoot,
+          sessionType: "modeler",
+          sessionId,
+          invocationId,
+          summary: `active modeler invocation ${invocationId} cleared`,
+          payload: { active: { sessionId, invocationId, status: "idle", updatedAt: nowIso() } },
+        }],
+      });
+      return;
+    }
+    await appendFluxMessage(args.workspaceRoot, args.config, "modeler", sessionId, {
+      messageId: newId("msg"),
+      ts: nowIso(),
+      turnIndex: Date.now(),
+      invocationId,
+      kind: "assistant",
+      text: turn.assistantText,
+      providerThreadId: turn.providerThreadId,
+    });
+    const parsedModelOutput = parseJsonObjectFromAssistantText(turn.assistantText || "");
+    const modelOutput = parsedModelOutput ?? fallbackModelOutput(promptPayload, turn.assistantText, turn.interrupted);
+    if (args.config.problem.syncModelWorkspace) {
+      await runFluxProblemCommand(args.config.problem.syncModelWorkspace, {
+        workspaceRoot: args.workspaceRoot,
+        queueItem: args.queueItem,
+        reason: "post_modeler_turn",
+        evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : undefined,
+        evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : undefined,
+        targetWorkspaceDir: modelDraftWorkspaceDir,
+      });
+    }
+    const acceptance = await runModelAcceptance({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      modelOutput,
+      evidenceBundleId: typeof promptPayload.evidenceBundleId === "string" ? promptPayload.evidenceBundleId : null,
+      evidenceBundlePath: typeof promptPayload.evidenceBundlePath === "string" ? promptPayload.evidenceBundlePath : null,
+      targetWorkspaceDir: modelDraftWorkspaceDir,
+      acceptanceTarget: continueAcceptanceTarget ?? (
+        invocationAcceptanceMaxLevel
+          ? { maxLevel: invocationAcceptanceMaxLevel, level: invocationAcceptanceMaxLevel }
+          : null
+      ),
+    });
+    const comparePayload = acceptance.payload.compare_payload && typeof acceptance.payload.compare_payload === "object" && !Array.isArray(acceptance.payload.compare_payload)
+      ? acceptance.payload.compare_payload as Record<string, unknown>
+      : {};
+    const inferredInfrastructureFailure = await inferAcceptanceInfrastructureFailure({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      acceptanceMessage: acceptance.message,
+      comparePayload,
+      existing: acceptance.infrastructureFailure,
+      targetWorkspaceDir: modelDraftWorkspaceDir,
+    });
+    const currentProgress = computeModelProgress(comparePayload);
+    if (!acceptance.accepted) {
+      await publishProgressAdvance({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        currentProgress,
+        previousProgress,
+        comparePayload,
+        modelOutput,
+        promptPayload,
+        sessionId,
+        sourceWorkspaceDir: modelDraftWorkspaceDir,
+      });
+      const blocked = isBlockedModelOutput(modelOutput);
+      const infrastructureFailure = inferredInfrastructureFailure;
+      const modelSummary = String(modelOutput.summary ?? "").trim();
+      const acceptanceMessage = String(acceptance.message ?? "").trim();
+      const failureSummary = blocked
+        ? (acceptanceMessage || modelSummary || "model acceptance blocked")
+        : (acceptanceMessage ? `model update rejected: ${acceptanceMessage}` : "model update rejected by acceptance compare");
+      await appendFluxEvents(args.workspaceRoot, args.config, [{
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "modeler.acceptance_failed",
+        workspaceRoot: args.workspaceRoot,
+        invocationId,
+        sessionType: "modeler",
+        sessionId,
+        summary: failureSummary,
+        payload: {
+          blocked,
+          infrastructureFailure,
+          acceptanceMessage,
+          modelSummary,
+        },
+      }]);
+      const blockedWithoutConcreteRetry = blocked && !hasConcreteAcceptanceMismatch(comparePayload);
+      if (blockedWithoutConcreteRetry || infrastructureFailure) {
+        session.status = "idle";
+        session.stopReason = undefined;
+        session.updatedAt = nowIso();
+        await saveFluxSession(args.workspaceRoot, args.config, session);
+        await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+          invocationId,
+          invocationType: "modeler_invocation",
+          sessionType: "modeler",
+          status: "failed",
+          recordedAt: nowIso(),
+          summary: failureSummary,
+          payload: { sessionId, accepted: false, comparePayload, modelOutput },
+        });
+        await markFluxInvocationStatus({
+          workspaceRoot: args.workspaceRoot,
+          config: args.config,
+          invocationId,
+          sessionType: "modeler",
+          status: "failed",
+          sessionId,
+          error: failureSummary,
+        });
+        await appendProjectionEventsAndRebuild({
+          workspaceRoot: args.workspaceRoot,
+          config: args.config,
+          configPath: args.state.configPath,
+          events: [{
+            eventId: newId("evt"),
+            ts: nowIso(),
+            kind: "projection.slot_updated",
+            workspaceRoot: args.workspaceRoot,
+            sessionType: "modeler",
+            sessionId,
+            invocationId,
+            summary: `active modeler invocation ${invocationId} cleared`,
+            payload: { active: { sessionId, invocationId, status: "idle", updatedAt: nowIso() } },
+          }],
+        });
+        return;
+      }
+      continueTurns += 1;
+      const supersedingPayload = await consumeSupersedingModelerInput({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        activeInvocationId: invocationId,
+        sessionId,
+      });
+      if (supersedingPayload) {
+        promptPayload = supersedingPayload;
+      }
+      continueAcceptanceMessage = acceptanceMessage || failureSummary;
+      continueFailingReport = firstFailingReport(comparePayload);
+      continueAcceptanceTarget = deriveContinuationAcceptanceTarget({
+        invocationAcceptanceMaxLevel,
+        currentProgress,
+        priorTarget: continueAcceptanceTarget,
+      });
+      continue;
+    }
+
+    const currentCoverageSummary = await loadCurrentModelCoverageSummary(args.workspaceRoot, args.config);
+    const acceptedLevel = Number(comparePayload.level ?? 0) || 0;
+    const requiresFreshTheory = acceptedLevel > Math.max(0, Number(currentCoverageSummary?.level ?? 0) || 0);
+    const hasTheoryMarkdown = acceptedLevel > 0
+      ? await hasModelerTheoryMarkdown({ workspaceDir: modelDraftWorkspaceDir, level: acceptedLevel })
+      : true;
+    if (acceptedLevel > 0 && (requiresFreshTheory || !hasTheoryMarkdown) && !hasTheoryMarkdown) {
+      continueTurns += 1;
+      continueAcceptanceMessage = [
+        `Level ${acceptedLevel} compare now passes, but the required modeler handoff file is missing.`,
+        `Write ${modelerTheoryMarkdownRelativePath(acceptedLevel)} with the refined mechanics for level ${acceptedLevel}.`,
+        "Carry forward trusted rules, note remaining uncertainty explicitly, and then rerun acceptance without changing the accepted mechanics unless needed.",
+      ].join(" ");
+      continueFailingReport = null;
+      continueAcceptanceTarget = {
+        maxLevel: invocationAcceptanceMaxLevel,
+        level: acceptedLevel,
+      };
+      await appendFluxEvents(args.workspaceRoot, args.config, [{
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "modeler.handoff_missing",
+        workspaceRoot: args.workspaceRoot,
+        invocationId,
+        sessionType: "modeler",
+        sessionId,
+        summary: `missing ${modelerTheoryMarkdownRelativePath(acceptedLevel)} before accepted handoff`,
+        payload: {
+          level: acceptedLevel,
+          relativePath: modelerTheoryMarkdownRelativePath(acceptedLevel),
+        },
+      }]);
+      continue;
+    }
+    const revisionId = await persistAcceptedModel(args.workspaceRoot, args.config, modelOutput, comparePayload, modelDraftWorkspaceDir);
     await publishBootstrapSignals({
       workspaceRoot: args.workspaceRoot,
       config: args.config,
@@ -605,23 +684,55 @@ export async function runModelerQueueItem(args: {
       ts: nowIso(),
       kind: "modeler.acceptance_passed",
       workspaceRoot: args.workspaceRoot,
+      invocationId,
       sessionType: "modeler",
       sessionId,
       summary: `accepted model revision ${revisionId}`,
       payload: { revisionId },
     }]);
-  }
-  session.status = "idle";
-  session.stopReason = undefined;
-  session.updatedAt = nowIso();
-  await saveFluxSession(args.workspaceRoot, args.config, session);
-  await mutateFluxState(args.workspaceRoot, args.config, async (current) => {
-    const next = current ?? latestState;
-    next.active.modeler = {
+    session.status = "idle";
+    session.stopReason = undefined;
+    session.updatedAt = nowIso();
+    await saveFluxSession(args.workspaceRoot, args.config, session);
+    await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+      invocationId,
+      invocationType: "modeler_invocation",
+      sessionType: "modeler",
+      status: "completed",
+      recordedAt: nowIso(),
+      summary: "modeler acceptance passed",
+      payload: {
+        sessionId,
+        accepted: true,
+        comparePayload,
+        modelOutput,
+        revisionId,
+      },
+    });
+    await markFluxInvocationStatus({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      invocationId,
+      sessionType: "modeler",
+      status: "completed",
       sessionId,
-      status: "idle",
-      updatedAt: nowIso(),
-    };
-    return next;
-  });
+    });
+    await appendProjectionEventsAndRebuild({
+      workspaceRoot: args.workspaceRoot,
+      config: args.config,
+      configPath: args.state.configPath,
+      events: [{
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "projection.slot_updated",
+        workspaceRoot: args.workspaceRoot,
+        sessionType: "modeler",
+        sessionId,
+        invocationId,
+        summary: `active modeler invocation ${invocationId} cleared`,
+        payload: { active: { sessionId, invocationId, status: "idle", updatedAt: nowIso() } },
+      }],
+    });
+    return;
+  }
 }

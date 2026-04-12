@@ -6,9 +6,29 @@ import { preferCoverageSummary } from "./model_coverage.js";
 import type { FluxConfig, FluxModelCoverageSummary } from "./types.js";
 
 async function copyDirStable(source: string, destination: string): Promise<void> {
-  await fs.rm(destination, { recursive: true, force: true });
-  await fs.mkdir(path.dirname(destination), { recursive: true });
-  await fs.cp(source, destination, { recursive: true, force: true });
+  const parent = path.dirname(destination);
+  const leaf = path.basename(destination);
+  const temp = path.join(parent, `.${leaf}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const backup = path.join(parent, `.${leaf}.prev-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  await fs.mkdir(parent, { recursive: true });
+  await fs.rm(temp, { recursive: true, force: true });
+  await fs.rm(backup, { recursive: true, force: true });
+  try {
+    await fs.cp(source, temp, { recursive: true, force: true });
+    try {
+      await fs.rename(destination, backup);
+    } catch {}
+    await fs.rename(temp, destination);
+    await fs.rm(backup, { recursive: true, force: true });
+  } catch (error) {
+    await fs.rm(temp, { recursive: true, force: true });
+    try {
+      await fs.access(backup);
+      await fs.rm(destination, { recursive: true, force: true });
+      await fs.rename(backup, destination);
+    } catch {}
+    throw error;
+  }
 }
 
 export async function persistModelRevisionWorkspace(args: {
@@ -56,6 +76,16 @@ export async function saveCurrentModelHead(args: {
     updatedAt: new Date().toISOString(),
     summary: args.summary,
   });
+}
+
+export async function publishCurrentModelWorkspace(args: {
+  workspaceRoot: string;
+  config: FluxConfig;
+  sourceWorkspaceDir: string;
+}): Promise<string> {
+  const destination = modelRevisionWorkspaceSource(args.workspaceRoot, args.config);
+  await copyDirStable(args.sourceWorkspaceDir, destination);
+  return destination;
 }
 
 export async function loadModelCoverageSummary(

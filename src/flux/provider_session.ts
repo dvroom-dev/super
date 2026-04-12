@@ -11,6 +11,7 @@ export type FluxProviderTurnResult = {
   providerThreadId?: string;
   providerEvents: ProviderEvent[];
   interrupted: boolean;
+  policyViolation?: string;
 };
 
 const MAX_SESSION_TEXT_CHARS = 16_000;
@@ -25,6 +26,15 @@ function capSessionText(value: string): string {
 function isMissingRolloutPathFailure(error: unknown): boolean {
   const message = String((error as any)?.message ?? error ?? "");
   return /state db missing rollout path/i.test(message) || /missing rollout path for thread/i.test(message);
+}
+
+function isRetryableThreadBadRequest(args: {
+  error: unknown;
+  providerEvents: ProviderEvent[];
+}): boolean {
+  const errorMessage = String((args.error as any)?.message ?? args.error ?? "");
+  const texts = [errorMessage, ...args.providerEvents.map(extractProviderFailureText)].filter(Boolean).join("\n");
+  return /\bbad request\b/i.test(texts) || /"detail"\s*:\s*"Bad Request"/i.test(texts);
 }
 
 function extractProviderFailureText(event: ProviderEvent): string {
@@ -65,11 +75,56 @@ function isClaudeRateLimited(args: {
   return detail.trim();
 }
 
+function extractProviderToolCommand(event: ProviderEvent): string {
+  if (event.type !== "provider_item") return "";
+  const raw = event.raw;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "";
+  const message = (raw as Record<string, unknown>).message;
+  if (!message || typeof message !== "object" || Array.isArray(message)) return "";
+  const content = (message as Record<string, unknown>).content;
+  if (!Array.isArray(content)) return "";
+  for (const entry of content) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const toolUse = entry as Record<string, unknown>;
+    if (String(toolUse.type ?? "") !== "tool_use") continue;
+    if (String(toolUse.name ?? "") !== "Bash") continue;
+    const input = toolUse.input;
+    if (!input || typeof input !== "object" || Array.isArray(input)) continue;
+    const command = (input as Record<string, unknown>).command;
+    if (typeof command === "string" && command.trim()) return command;
+  }
+  return "";
+}
+
+function detectSolverPolicyViolation(providerEvents: ProviderEvent[]): string | undefined {
+  for (const event of providerEvents) {
+    const command = extractProviderToolCommand(event);
+    if (!command) continue;
+    if (/\b(?:bfs|dfs)(?:\b|[_-])/i.test(command)
+      || /\breachability\b/i.test(command)
+      || /\bbreadth[- ]first\b/i.test(command)
+      || /\bdepth[- ]first\b/i.test(command)
+      || /\bitertools\.product\b/i.test(command)
+      || /\bpermutations\s*\(/i.test(command)
+      || /\bproduct\s*\(/i.test(command) && /\bitertools\b/i.test(command)
+      || /\bdeque\s*\(/i.test(command)
+      || /\bfrom\s+collections\s+import\s+deque\b/i.test(command)) {
+      return `prohibited solver search in Bash command: ${command.slice(0, 200)}`;
+    }
+    if (/\bobs\s*,\s*reward\s*,\s*done\s*,\s*info\s*=\s*env\.step\s*\(/i.test(command)
+      || /\benv\.step\s*\([^)]*\)\s*\[/i.test(command)) {
+      return `invalid env.step usage in Bash command: ${command.slice(0, 200)}`;
+    }
+  }
+  return undefined;
+}
+
 export async function runFluxProviderTurn(args: {
   workspaceRoot: string;
   config: FluxConfig;
   session: FluxSessionRecord;
   sessionType: FluxSessionType;
+  invocationId?: string;
   promptText: string;
   promptImages?: string[];
   reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -86,6 +141,7 @@ export async function runFluxProviderTurn(args: {
   const turnIndex = Date.now();
   if (args.config.observability.capturePrompts) {
     await writeFluxPromptPayload(args.workspaceRoot, args.config, args.sessionType, args.session.sessionId, turnIndex, {
+      invocationId: args.invocationId ?? null,
       promptText: args.promptText,
       promptImages: args.promptImages ?? [],
       outputSchema: args.outputSchema ?? null,
@@ -102,6 +158,7 @@ export async function runFluxProviderTurn(args: {
   let assistantText = "";
   let providerThreadId = args.session.providerThreadId;
   let interrupted = false;
+  let policyViolation: string | undefined;
   const runOnce = async (threadId: string | undefined): Promise<void> => {
     const providerConfig: ProviderConfig = {
       provider: args.session.provider as any,
@@ -148,7 +205,16 @@ export async function runFluxProviderTurn(args: {
     const abortLike = err?.name === "AbortError" || /aborted by user/i.test(message) || /interrupt/i.test(message);
     if (abortLike) {
       interrupted = true;
-    } else if (args.session.providerThreadId && isMissingRolloutPathFailure(err)) {
+    } else if (
+      args.session.providerThreadId
+      && (
+        isMissingRolloutPathFailure(err)
+        || isRetryableThreadBadRequest({
+          error: err,
+          providerEvents,
+        })
+      )
+    ) {
       args.session.providerThreadId = undefined;
       args.session.updatedAt = new Date().toISOString();
       await saveFluxSession(args.workspaceRoot, args.config, args.session);
@@ -171,5 +237,8 @@ export async function runFluxProviderTurn(args: {
   args.session.updatedAt = new Date().toISOString();
   args.session.latestAssistantText = capSessionText(assistantText);
   await saveFluxSession(args.workspaceRoot, args.config, args.session);
-  return { assistantText, providerThreadId, providerEvents, interrupted };
+  if (args.sessionType === "solver") {
+    policyViolation = detectSolverPolicyViolation(providerEvents);
+  }
+  return { assistantText, providerThreadId, providerEvents, interrupted, policyViolation };
 }

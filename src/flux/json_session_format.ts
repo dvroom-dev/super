@@ -44,6 +44,13 @@ export function formatSeedBundleForPrompt(seedBundle: FluxSeedBundle): string {
     })
     .filter(Boolean);
   const lines = ["Best known seed context:"];
+  if (seedBundle.syntheticMessages.length > 0) {
+    lines.push("- Synthetic transcript to inherit:");
+    for (const message of seedBundle.syntheticMessages) {
+      const role = String(message.role ?? "assistant").toUpperCase();
+      lines.push(`  - ${role}: ${String(message.text ?? "").trim()}`);
+    }
+  }
   if (replayActions.length > 0) {
     lines.push(`- Replay actions: ${replayActions.join(" ")}`);
   }

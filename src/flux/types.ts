@@ -1,4 +1,6 @@
 export type FluxSessionType = "solver" | "modeler" | "bootstrapper";
+export type FluxInvocationType = "solver_invocation" | "modeler_invocation" | "bootstrapper_invocation";
+export type FluxInvocationStatus = "pending" | "running" | "completed" | "failed" | "superseded" | "canceled";
 
 export type FluxSessionScope = "per_attempt" | "run";
 export type FluxResumePolicy = "never" | "always";
@@ -24,10 +26,7 @@ export type FluxStorageConfig = {
 
 export type FluxOrchestratorConfig = {
   tickMs: number;
-  solverPreemptGraceMs: number;
   evidencePollMs: number;
-  modelerIdleBackoffMs: number;
-  bootstrapperIdleBackoffMs: number;
 };
 
 export type FluxProblemConfig = {
@@ -64,7 +63,6 @@ export type FluxWorkerConfig = {
 
 export type FluxSolverConfig = FluxWorkerConfig & {
   cadenceMs: number;
-  queueReplacementGraceMs: number;
   tools: FluxToolsConfig;
 };
 
@@ -163,6 +161,7 @@ export type FluxMessageRecord = {
   messageId: string;
   ts: string;
   turnIndex: number;
+  invocationId?: string;
   kind: "system" | "user" | "assistant" | "synthetic_assistant" | "tool_call" | "tool_result" | "status" | "control";
   text?: string;
   toolName?: string;
@@ -185,9 +184,15 @@ export type FluxSessionRecord = {
   providerThreadId?: string;
   resumePolicy: FluxResumePolicy;
   sessionScope: FluxSessionScope;
+  activeInvocationId?: string;
   activeAttemptId?: string;
   lastEventCursor?: string;
   lastEvidenceWatermark?: string;
+  lastFrontierLevel?: number;
+  pendingSolverTheoryLevel?: number;
+  pendingSolverTheoryFrontierLevel?: number;
+  pendingSolverTheoryRequestedAt?: string;
+  lastInjectedSolverTheoryLevel?: number;
   stopReason?: string;
   latestAssistantText?: string;
 };
@@ -227,6 +232,7 @@ export type FluxQueueSnapshot = {
 
 export type FluxActiveSessionState = {
   sessionId?: string;
+  invocationId?: string;
   status: "idle" | "running" | "stopping";
   queueItemId?: string;
   pid?: number;
@@ -252,9 +258,45 @@ export type FluxEvent = {
   ts: string;
   kind: string;
   workspaceRoot: string;
+  invocationId?: string;
   sessionType?: FluxSessionType;
   sessionId?: string;
   queueItemId?: string;
   summary?: string;
   payload?: Record<string, unknown>;
+};
+
+export type FluxInvocationInput = {
+  invocationId: string;
+  invocationType: FluxInvocationType;
+  sessionType: FluxSessionType;
+  createdAt: string;
+  reason: string;
+  payload: Record<string, unknown>;
+  causationId?: string;
+  supersedesInvocationId?: string;
+};
+
+export type FluxInvocationStatusRecord = {
+  invocationId: string;
+  invocationType: FluxInvocationType;
+  sessionType: FluxSessionType;
+  status: FluxInvocationStatus;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  sessionId?: string;
+  attemptId?: string;
+  error?: string;
+};
+
+export type FluxInvocationResult = {
+  invocationId: string;
+  invocationType: FluxInvocationType;
+  sessionType: FluxSessionType;
+  status: Extract<FluxInvocationStatus, "completed" | "failed" | "superseded" | "canceled">;
+  recordedAt: string;
+  summary: string;
+  payload: Record<string, unknown>;
 };

@@ -15,6 +15,8 @@ export async function runModelAcceptance(args: {
   modelRevisionId?: string | null;
   evidenceBundleId?: string | null;
   evidenceBundlePath?: string | null;
+  targetWorkspaceDir?: string | null;
+  acceptanceTarget?: { maxLevel?: number | null; level?: number | null; sequenceId?: string | null } | null;
 }): Promise<FluxModelAcceptanceResult> {
   const result = await runFluxProblemCommand(args.config.modeler.acceptance, {
     workspaceRoot: args.workspaceRoot,
@@ -22,6 +24,8 @@ export async function runModelAcceptance(args: {
     modelRevisionId: args.modelRevisionId ?? undefined,
     evidenceBundleId: args.evidenceBundleId ?? undefined,
     evidenceBundlePath: args.evidenceBundlePath ?? undefined,
+    targetWorkspaceDir: args.targetWorkspaceDir ?? undefined,
+    acceptanceTarget: args.acceptanceTarget ?? undefined,
   });
   return {
     accepted: Boolean(result.accepted),

@@ -84,20 +84,22 @@ retention:
 `, "utf8");
   });
 
-  test("keeps only the latest pending model/bootstrap command and preserves payloads", async () => {
+  test("keeps a single pending slot per worker and dedupes equivalent work by dedupe key", async () => {
     const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
     await enqueueFluxQueueItem(workspaceRoot, config, "solver", {
       id: "solver_1",
       sessionType: "solver",
       createdAt: new Date().toISOString(),
       reason: "first",
+      dedupeKey: "seed:a",
       payload: { seed: 1 },
     });
     await enqueueFluxQueueItem(workspaceRoot, config, "solver", {
       id: "solver_2",
       sessionType: "solver",
       createdAt: new Date().toISOString(),
-      reason: "second",
+      reason: "second-equivalent",
+      dedupeKey: "seed:a",
       payload: { seed: 2 },
     });
     await enqueueFluxQueueItem(workspaceRoot, config, "modeler", {
@@ -105,6 +107,7 @@ retention:
       sessionType: "modeler",
       createdAt: new Date().toISOString(),
       reason: "first",
+      dedupeKey: "evidence:a",
       payload: { evidence: 1 },
     });
     await enqueueFluxQueueItem(workspaceRoot, config, "modeler", {
@@ -112,6 +115,7 @@ retention:
       sessionType: "modeler",
       createdAt: new Date().toISOString(),
       reason: "second",
+      dedupeKey: "evidence:b",
       payload: { evidence: 2 },
     });
     await enqueueFluxQueueItem(workspaceRoot, config, "bootstrapper", {
@@ -132,8 +136,8 @@ retention:
     const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
     const bootstrapperQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
     expect(solverQueue.items).toHaveLength(1);
-    expect(solverQueue.items[0]?.id).toBe("solver_2");
-    expect(solverQueue.items[0]?.payload).toEqual({ seed: 2 });
+    expect(solverQueue.items[0]?.id).toBe("solver_1");
+    expect(solverQueue.items[0]?.payload).toEqual({ seed: 1 });
     expect(modelerQueue.items).toHaveLength(1);
     expect(modelerQueue.items[0]?.id).toBe("modeler_2");
     expect(modelerQueue.items[0]?.payload).toEqual({ evidence: 2 });

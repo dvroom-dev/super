@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { readJsonIfExists, writeJsonAtomic } from "../lib/fs.js";
 import type { FluxConfig, FluxRunState } from "./types.js";
-import { fluxAiRoot, fluxLogsDir, fluxRoot, fluxStatePath } from "./paths.js";
+import { fluxAiRoot, fluxCanonicalEventsDir, fluxInvocationsRoot, fluxLogsDir, fluxRoot, fluxStatePath } from "./paths.js";
 
 const stateWriteChains = new Map<string, Promise<void>>();
 
@@ -10,6 +10,8 @@ export async function ensureFluxDirs(workspaceRoot: string, config: FluxConfig):
   await fs.mkdir(fluxRoot(workspaceRoot, config), { recursive: true });
   await fs.mkdir(fluxAiRoot(workspaceRoot, config), { recursive: true });
   await fs.mkdir(path.join(fluxRoot(workspaceRoot, config), "queues"), { recursive: true });
+  await fs.mkdir(fluxCanonicalEventsDir(workspaceRoot, config), { recursive: true });
+  await fs.mkdir(fluxInvocationsRoot(workspaceRoot, config), { recursive: true });
   await fs.mkdir(fluxLogsDir(workspaceRoot, config), { recursive: true });
 }
 

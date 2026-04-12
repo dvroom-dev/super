@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FluxConfig, FluxEvent, FluxRunState } from "./types.js";
-import { fluxEventsPath, fluxFatalLogPath, fluxOrchestratorLogPath, fluxStatePath } from "./paths.js";
+import { fluxCanonicalEventsPath, fluxEventsPath, fluxFatalLogPath, fluxOrchestratorLogPath, fluxStatePath } from "./paths.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -27,6 +27,7 @@ export function recordFluxFatalProcessState(args: {
   detail: string;
 }): void {
   appendLine(fluxFatalLogPath(args.workspaceRoot, args.config), `[${nowIso()}] ${args.detail}`);
+  appendLine(fluxCanonicalEventsPath(args.workspaceRoot, args.config), JSON.stringify(args.event));
   appendLine(fluxEventsPath(args.workspaceRoot, args.config), JSON.stringify(args.event));
   try {
     const raw = fs.readFileSync(fluxStatePath(args.workspaceRoot, args.config), "utf8");

@@ -84,10 +84,7 @@ export async function loadFluxConfig(workspaceRoot: string, configPath: string):
     },
     orchestrator: {
       tickMs: asNumber(orchestrator.tick_ms, "orchestrator.tick_ms"),
-      solverPreemptGraceMs: asNumber(orchestrator.solver_preempt_grace_ms, "orchestrator.solver_preempt_grace_ms"),
       evidencePollMs: asNumber(orchestrator.evidence_poll_ms, "orchestrator.evidence_poll_ms"),
-      modelerIdleBackoffMs: asNumber(orchestrator.modeler_idle_backoff_ms, "orchestrator.modeler_idle_backoff_ms"),
-      bootstrapperIdleBackoffMs: asNumber(orchestrator.bootstrapper_idle_backoff_ms, "orchestrator.bootstrapper_idle_backoff_ms"),
     },
     problem: {
       provisionInstance: asCommandSpec(problem.provision_instance, "problem.provision_instance"),
@@ -112,7 +109,6 @@ export async function loadFluxConfig(workspaceRoot: string, configPath: string):
       reasoningEffort: solver.reasoning_effort == null ? undefined : asString(solver.reasoning_effort, "solver.reasoning_effort") as any,
       turnTimeoutMs: solver.turn_timeout_ms == null ? undefined : asNumber(solver.turn_timeout_ms, "solver.turn_timeout_ms"),
       cadenceMs: asNumber(solver.cadence_ms, "solver.cadence_ms"),
-      queueReplacementGraceMs: asNumber(solver.queue_replacement_grace_ms, "solver.queue_replacement_grace_ms"),
       tools: {
         builtin: asOptionalStringArray(asRecord(solver.tools, "solver.tools").builtin, "solver.tools.builtin"),
         custom: [],
