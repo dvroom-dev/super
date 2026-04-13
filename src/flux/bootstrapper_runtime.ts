@@ -659,6 +659,7 @@ export async function runBootstrapperQueueItem(args: {
       seedHash,
       seedRevisionId,
       modelRevisionId: promptPayload.baselineModelRevisionId,
+      expectedFrontierLevel,
     });
     seedMeta = await recordModelRehearsal(args.workspaceRoot, args.config, seedMeta, seedHash, rehearsalResult, expectedFrontierLevel);
     const rehearsalSatisfiedFrontier = rehearsalReachedFrontier(rehearsalResult, expectedFrontierLevel);
