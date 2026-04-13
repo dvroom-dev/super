@@ -13,6 +13,7 @@ describe("flux provider session", () => {
     delete process.env.MOCK_PROVIDER_FORCE;
     delete process.env.MOCK_PROVIDER_STREAMED_ERROR_IF_THREAD_ID_SET;
     delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    delete process.env.MOCK_PROVIDER_STREAMED_TEXT_SEQUENCE;
     delete process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON;
     delete process.env.MOCK_PROVIDER_RUNONCE_ERROR;
     delete process.env.MOCK_PROVIDER_STREAMED_TERMINAL_ERROR;
@@ -180,6 +181,62 @@ retention:
     } finally {
       delete process.env.MOCK_PROVIDER_STREAMED_ERROR_IF_THREAD_ID_SET;
       delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  });
+
+  test("retries on Claude provider compaction continuation summaries and clears the stale thread", async () => {
+    process.env.MOCK_PROVIDER_FORCE = "1";
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({ ok: true, retried: true });
+    process.env.MOCK_PROVIDER_PROVIDER_EVENTS_JSON = JSON.stringify([
+      {
+        type: "provider_item",
+        item: { provider: "claude", kind: "other", type: "user", summary: "claude user", includeInTranscript: false },
+        raw: {
+          type: "user",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.",
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const session: FluxSessionRecord = {
+        sessionId: "solver_attempt_test",
+        sessionType: "solver",
+        status: "running",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        provider: "claude",
+        model: "claude-opus-4-6",
+        resumePolicy: "never",
+        sessionScope: "per_attempt",
+        providerThreadId: "stale_thread_id",
+      };
+      await saveFluxSession(workspaceRoot, config, session);
+
+      const result = await runFluxProviderTurn({
+        workspaceRoot,
+        config,
+        session,
+        sessionType: "solver",
+        promptText: "solve",
+        workingDirectory: workspaceRoot,
+      });
+
+      expect(result.assistantText).toContain("\"retried\":true");
+      expect(result.providerThreadId).toMatch(/^mock_thread_/);
+      expect(result.providerThreadId).not.toBe("stale_thread_id");
+      const saved = await loadFluxSession(workspaceRoot, config, "solver", "solver_attempt_test");
+      expect(saved?.providerThreadId).toBe(result.providerThreadId);
+    } finally {
+      clearMockProviderEnv();
     }
   });
 

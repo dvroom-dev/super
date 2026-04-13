@@ -51,6 +51,44 @@ function extractProviderFailureText(event: ProviderEvent): string {
   return "";
 }
 
+function extractProviderUserText(raw: Record<string, unknown>): string {
+  const message = raw.message;
+  if (!message || typeof message !== "object" || Array.isArray(message)) return "";
+  const content = (message as Record<string, unknown>).content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => {
+    if (typeof part === "string") return part;
+    if (!part || typeof part !== "object" || Array.isArray(part)) return "";
+    const record = part as Record<string, unknown>;
+    return String(record.text ?? record.content ?? "");
+  }).join("\n");
+}
+
+function detectProviderCompaction(events: ProviderEvent[]): string | undefined {
+  for (const event of events) {
+    if (event.type !== "provider_item") continue;
+    const raw = event.raw;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const record = raw as Record<string, unknown>;
+    const type = String(record.type ?? "").trim().toLowerCase();
+    const subtype = String(record.subtype ?? "").trim().toLowerCase();
+    if (type === "system" && subtype === "compact_boundary") {
+      return "provider compact boundary detected";
+    }
+    if (type === "system" && subtype === "status" && String(record.status ?? "").trim().toLowerCase() === "compacting") {
+      return "provider started compacting";
+    }
+    if (type === "user") {
+      const text = extractProviderUserText(record);
+      if (/this session is being continued from a previous conversation that ran out of context/i.test(text)) {
+        return "provider continued after context compaction";
+      }
+    }
+  }
+  return undefined;
+}
+
 function isClaudeRateLimited(args: {
   error: unknown;
   provider: string;
@@ -159,6 +197,7 @@ export async function runFluxProviderTurn(args: {
   let providerThreadId = args.session.providerThreadId;
   let interrupted = false;
   let policyViolation: string | undefined;
+  let compactionRetryUsed = false;
   const runOnce = async (threadId: string | undefined): Promise<void> => {
     const providerConfig: ProviderConfig = {
       provider: args.session.provider as any,
@@ -232,6 +271,22 @@ export async function runFluxProviderTurn(args: {
       }
       throw err;
     }
+  }
+  const compactionDetail = detectProviderCompaction(providerEvents);
+  if (
+    !interrupted
+    && !compactionRetryUsed
+    && args.session.provider === "claude"
+    && args.session.providerThreadId
+    && compactionDetail
+  ) {
+    compactionRetryUsed = true;
+    args.session.providerThreadId = undefined;
+    args.session.updatedAt = new Date().toISOString();
+    await saveFluxSession(args.workspaceRoot, args.config, args.session);
+    assistantText = "";
+    providerThreadId = undefined;
+    await runOnce(undefined);
   }
   args.session.providerThreadId = providerThreadId;
   args.session.updatedAt = new Date().toISOString();
