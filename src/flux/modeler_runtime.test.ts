@@ -22,6 +22,7 @@ describe("modeler runtime", () => {
     await fs.mkdir(path.join(workspaceRoot, "prompts"), { recursive: true });
     await fs.writeFile(path.join(workspaceRoot, "prompts", "solver.md"), "Solve.", "utf8");
     await fs.writeFile(path.join(workspaceRoot, "prompts", "modeler.md"), "Model.", "utf8");
+    await fs.writeFile(path.join(workspaceRoot, "prompts", "modeler_boxes.md"), "Label boxes.", "utf8");
     await fs.writeFile(path.join(workspaceRoot, "prompts", "bootstrapper.md"), "Bootstrap.", "utf8");
     await fs.writeFile(path.join(workspaceRoot, "prompts", "modeler_continue.md"), "Continue model: {{acceptance_message}}", "utf8");
     await fs.writeFile(path.join(workspaceRoot, "prompts", "bootstrapper_continue.md"), "Continue bootstrap: {{replay_results}}", "utf8");
@@ -416,6 +417,147 @@ process.stdin.on("end", () => {
     expect(promptText).toContain("New solver handoff theory is available.");
     expect(promptText).toContain("untrusted_theories_level_1.json");
     expect(promptText).toContain("solver_handoff/untrusted_theories.md");
+  });
+
+  test("runs the feature-box labeling phase before mechanic patching for a newly reached level", async () => {
+    const syncPath = path.join(workspaceRoot, "scripts", "sync_with_feature_boxes.js");
+    await fs.writeFile(syncPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const target = String(input.targetWorkspaceDir || "");
+  fs.mkdirSync(path.join(target, "level_2", "sequences"), { recursive: true });
+  fs.writeFileSync(path.join(target, "level_2", "sequences", "seq_0001.json"), JSON.stringify({ level: 2, sequence_id: "seq_0001" }, null, 2), "utf8");
+  fs.writeFileSync(path.join(target, "feature_boxes_level_2.json"), JSON.stringify({
+    schema_version: "flux.feature_boxes.v1",
+    level: 2,
+    box_spec_hash: "box_hash_2",
+    boxes: [
+      { box_id: "box_01", bbox: [10, 10, 14, 14] },
+      { box_id: "box_02", bbox: [61, 13, 62, 42] }
+    ]
+  }, null, 2), "utf8");
+  process.stdout.write(JSON.stringify({ synced: true }));
+});`, "utf8");
+    await fs.chmod(syncPath, 0o755);
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_after_boxes.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const modelOutput = input.modelOutput || {};
+  if (String(modelOutput.decision || "") === "checked_current_model") {
+    process.stdout.write(JSON.stringify({
+      accepted: false,
+      message: "compare mismatch at level 2 sequence seq_0001 step 1: intermediate_frame_mismatch",
+      model_output: modelOutput,
+      compare_payload: {
+        level: 2,
+        all_match: false,
+        reports: [{ level: 2, sequence_id: "seq_0001", matched: false, divergence_step: 1, divergence_reason: "intermediate_frame_mismatch" }]
+      }
+    }));
+    return;
+  }
+  process.stdout.write(JSON.stringify({
+    accepted: true,
+    message: "accepted after labeling",
+    model_output: modelOutput,
+    compare_payload: {
+      level: 2,
+      frontier_level: 2,
+      all_match: true,
+      compared_sequences: 1,
+      eligible_sequences: 1,
+      diverged_sequences: 0,
+      reports: [{ level: 2, sequence_id: "seq_0001", matched: true, frontier_level_after_sequence: 2, sequence_completed_level: false }]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
+      {
+        contains: "Label boxes.",
+        text: JSON.stringify({
+          level: 2,
+          summary: "labeled the moving stack and the bottom bar",
+          boxes: [
+            { box_id: "box_01", features: ["five_by_five_stack"], tags: ["movable"] },
+            { box_id: "box_02", features: ["bottom_pair_bar"], tags: ["ui_like", "stable"] }
+          ]
+        }),
+      },
+      {
+        contains: "Model.",
+        bashCommands: [
+          "mkdir -p modeler_handoff",
+          "printf '%s\\n' '# Level 2 theory' 'Box labels confirm the moving stack and bottom bar.' > modeler_handoff/untrusted_theories_level_2.md"
+        ],
+        text: JSON.stringify({
+          decision: "updated_model",
+          summary: "now ready to patch mechanics",
+          message_for_bootstrapper: "",
+          artifacts_updated: ["model_lib.py", "modeler_handoff/untrusted_theories_level_2.md"],
+          evidence_watermark: "wm_boxes",
+        }),
+      },
+    ]);
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    config.problem.syncModelWorkspace = { command: [syncPath] };
+    config.modeler.acceptance.command = [acceptancePath];
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_boxes",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "solver_new_evidence",
+        payload: {
+          evidenceWatermark: "wm_boxes",
+          evidenceBundleId: "bundle_boxes",
+          evidenceBundlePath: "/tmp/bundle_boxes",
+          latestEvidence: {
+            state: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED" },
+          },
+        },
+      },
+    });
+    const labelsPath = path.join(workspaceRoot, "flux", "model", "feature_labels", "feature_labels_level_2.json");
+    const labels = JSON.parse(await fs.readFile(labelsPath, "utf8"));
+    expect(labels.feature_boxes_hash).toBe("box_hash_2");
+    expect(labels.boxes).toHaveLength(2);
+    const promptDir = path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "prompts");
+    const promptFiles = (await fs.readdir(promptDir)).sort();
+    expect(promptFiles.length).toBeGreaterThanOrEqual(2);
+    const firstPrompt = JSON.parse(await fs.readFile(path.join(promptDir, promptFiles[0]!), "utf8"));
+    const secondPrompt = JSON.parse(await fs.readFile(path.join(promptDir, promptFiles[1]!), "utf8"));
+    expect(String(firstPrompt.promptText ?? "")).toContain("Current box-label phase target: level 2.");
+    expect(String(firstPrompt.promptText ?? "")).toContain("Read feature_boxes_level_<n>.json");
+    expect(String(secondPrompt.promptText ?? "")).toContain("Model.");
   });
 
   test("requires a modeler handoff markdown before publishing a newly accepted level", async () => {

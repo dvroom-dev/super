@@ -89,6 +89,10 @@ export function fluxModelDraftDir(workspaceRoot: string, config: FluxConfig, inv
   return path.join(fluxModelDraftsRoot(workspaceRoot, config), invocationId);
 }
 
+export function fluxModelLabelsRoot(workspaceRoot: string, config: FluxConfig): string {
+  return path.join(fluxModelRoot(workspaceRoot, config), "feature_labels");
+}
+
 export function fluxModelRevisionDir(workspaceRoot: string, config: FluxConfig, revisionId: string): string {
   return path.join(fluxModelRevisionsRoot(workspaceRoot, config), revisionId);
 }

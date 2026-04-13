@@ -11,11 +11,13 @@ import { renderTemplate } from "./prompt_templates.js";
 import { loadSeedMeta, saveSeedMeta } from "./seed_meta.js";
 import { saveFluxSession } from "./session_store.js";
 import type { FluxConfig, FluxSessionRecord } from "./types.js";
-import { fluxModelDraftDir, fluxModelRoot } from "./paths.js";
+import { fluxModelDraftDir, fluxModelLabelsRoot, fluxModelRoot } from "./paths.js";
 
 const SOLVER_THEORY_JSON_PREFIX = "untrusted_theories_level_";
 const SOLVER_THEORY_JSON_SUFFIX = ".json";
 const MODELER_HANDOFF_DIR = "modeler_handoff";
+const FEATURE_LABELS_PREFIX = "feature_labels_level_";
+const FEATURE_BOXES_PREFIX = "feature_boxes_level_";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -39,6 +41,14 @@ export function modelerTheoryMarkdownRelativePath(level: number): string {
 
 function modelerTheoryMarkdownPath(workspaceDir: string, level: number): string {
   return path.join(workspaceDir, modelerTheoryMarkdownRelativePath(level));
+}
+
+function featureBoxesPath(workspaceDir: string, level: number): string {
+  return path.join(workspaceDir, `${FEATURE_BOXES_PREFIX}${level}.json`);
+}
+
+function featureLabelsPath(workspaceDir: string, level: number): string {
+  return path.join(workspaceDir, `${FEATURE_LABELS_PREFIX}${level}.json`);
 }
 
 async function latestSolverTheoryLevel(workspaceDir: string): Promise<number | null> {
@@ -93,6 +103,140 @@ export async function hasModelerTheoryMarkdown(args: {
   } catch {
     return false;
   }
+}
+
+export async function loadFeatureBoxes(args: {
+  workspaceDir: string;
+  level: number;
+}): Promise<Record<string, unknown> | null> {
+  try {
+    const raw = await fs.readFile(featureBoxesPath(args.workspaceDir, args.level), "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+type FeatureLabelsValidation =
+  | { ok: true; payload: Record<string, unknown> }
+  | { ok: false; reason: string };
+
+export async function validateFeatureLabels(args: {
+  workspaceDir: string;
+  level: number;
+}): Promise<FeatureLabelsValidation> {
+  const boxesPayload = await loadFeatureBoxes({ workspaceDir: args.workspaceDir, level: args.level });
+  if (!boxesPayload) {
+    return { ok: false, reason: `missing feature boxes for level ${args.level}` };
+  }
+  const expectedHash = String(boxesPayload.box_spec_hash ?? "").trim();
+  const expectedBoxes = Array.isArray(boxesPayload.boxes) ? boxesPayload.boxes : [];
+  const expectedIds = expectedBoxes
+    .filter((box): box is Record<string, unknown> => Boolean(box) && typeof box === "object" && !Array.isArray(box))
+    .map((box) => String(box.box_id ?? "").trim())
+    .filter(Boolean)
+    .sort();
+  try {
+    const raw = await fs.readFile(featureLabelsPath(args.workspaceDir, args.level), "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, reason: "feature labels file is not a JSON object" };
+    }
+    const payload = parsed as Record<string, unknown>;
+    if ((Number(payload.level ?? 0) || 0) !== args.level) {
+      return { ok: false, reason: `feature labels level mismatch for level ${args.level}` };
+    }
+    if (expectedHash && String(payload.feature_boxes_hash ?? "").trim() !== expectedHash) {
+      return { ok: false, reason: `feature labels hash mismatch for level ${args.level}` };
+    }
+    const boxes = Array.isArray(payload.boxes) ? payload.boxes : [];
+    const actualIds = boxes
+      .filter((box): box is Record<string, unknown> => Boolean(box) && typeof box === "object" && !Array.isArray(box))
+      .map((box) => String(box.box_id ?? "").trim())
+      .filter(Boolean)
+      .sort();
+    if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) {
+      return { ok: false, reason: `feature labels coverage mismatch for level ${args.level}` };
+    }
+    for (const box of boxes) {
+      if (!box || typeof box !== "object" || Array.isArray(box)) {
+        return { ok: false, reason: `feature labels contain an invalid box entry for level ${args.level}` };
+      }
+      const record = box as Record<string, unknown>;
+      const features = Array.isArray(record.features) ? record.features.filter((value) => typeof value === "string" && value.trim()) : [];
+      const tags = Array.isArray(record.tags) ? record.tags.filter((value) => typeof value === "string" && value.trim()) : [];
+      if (features.length === 0 || tags.length === 0) {
+        return { ok: false, reason: `feature labels contain an empty features/tags entry for level ${args.level}` };
+      }
+    }
+    return { ok: true, payload };
+  } catch {
+    return { ok: false, reason: `missing feature labels for level ${args.level}` };
+  }
+}
+
+export async function persistFeatureLabels(args: {
+  workspaceRoot: string;
+  config: FluxConfig;
+  workspaceDir: string;
+  level: number;
+  labels: Record<string, unknown>;
+}): Promise<void> {
+  const boxesPayload = await loadFeatureBoxes({ workspaceDir: args.workspaceDir, level: args.level });
+  if (!boxesPayload) {
+    throw new Error(`missing feature boxes for level ${args.level}`);
+  }
+  const payload = {
+    schema_version: "flux.modeler_feature_labels.v1",
+    level: args.level,
+    feature_boxes_hash: String(boxesPayload.box_spec_hash ?? ""),
+    summary: String(args.labels.summary ?? ""),
+    boxes: Array.isArray(args.labels.boxes) ? args.labels.boxes : [],
+  };
+  await writeJsonAtomic(featureLabelsPath(args.workspaceDir, args.level), payload);
+  const labelsRoot = fluxModelLabelsRoot(args.workspaceRoot, args.config);
+  await fs.mkdir(labelsRoot, { recursive: true });
+  await writeJsonAtomic(path.join(labelsRoot, `${FEATURE_LABELS_PREFIX}${args.level}.json`), payload);
+}
+
+export function deriveFeatureLabelTargetLevel(args: {
+  acceptanceTarget: { maxLevel?: number | null; level?: number | null; sequenceId?: string | null } | null;
+  invocationAcceptanceMaxLevel: number | null;
+  comparePayload: Record<string, unknown>;
+}): number | null {
+  const firstReport = firstFailingReport(args.comparePayload);
+  const reportLevel = Number(firstReport?.level ?? 0) || 0;
+  if (reportLevel > 0) return reportLevel;
+  const compareLevel = Number(args.comparePayload.level ?? 0) || 0;
+  if (compareLevel > 0) return compareLevel;
+  const targetLevel = Number(args.acceptanceTarget?.level ?? 0) || 0;
+  if (targetLevel > 0) return targetLevel;
+  const maxLevel = Number(args.invocationAcceptanceMaxLevel ?? 0) || 0;
+  return maxLevel > 0 ? maxLevel : null;
+}
+
+export function buildFeatureLabelPrompt(args: {
+  template: string;
+  level: number;
+  featureBoxes: Record<string, unknown>;
+  validationError?: string | null;
+}): string {
+  const lines = [
+    args.template.trim(),
+    "",
+    `Current box-label phase target: level ${args.level}.`,
+    "Read feature_boxes_level_<n>.json and use inspect_box_sequence.py to inspect any box through time before naming it.",
+    "Name visual features, not hidden mechanics. Good names are descriptive and local.",
+    "Required tags per box: stable, movable, transient, ui_like, or unknown.",
+    "Cover every box exactly once in your JSON response.",
+  ];
+  if (args.validationError) {
+    lines.push("", `Previous label set was invalid: ${args.validationError}`);
+    lines.push("Return a corrected full box coverage response.");
+  }
+  lines.push("", JSON.stringify(args.featureBoxes, null, 2));
+  return lines.join("\n");
 }
 
 export function fallbackModelOutput(queuePayload: Record<string, unknown>, assistantText: string, interrupted: boolean): Record<string, unknown> {
@@ -605,5 +749,15 @@ export async function prepareModelDraftWorkspace(args: {
   await fs.rm(draftRoot, { recursive: true, force: true });
   await fs.mkdir(path.dirname(destination), { recursive: true });
   await fs.cp(sourceWorkspaceDir, destination, { recursive: true, force: true });
+  const labelsRoot = fluxModelLabelsRoot(args.workspaceRoot, args.config);
+  try {
+    const entries = await fs.readdir(labelsRoot);
+    for (const entry of entries) {
+      if (!entry.startsWith(FEATURE_LABELS_PREFIX) || !entry.endsWith(".json")) continue;
+      await fs.copyFile(path.join(labelsRoot, entry), path.join(destination, entry));
+    }
+  } catch {
+    // no durable labels yet
+  }
   return destination;
 }

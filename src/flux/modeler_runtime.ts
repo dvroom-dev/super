@@ -17,10 +17,12 @@ import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_s
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSessionRecord } from "./types.js";
 import { fluxModelRoot } from "./paths.js";
 import {
+  buildFeatureLabelPrompt,
   buildModelerContinuePrompt,
   buildSolverTheoryInterjection,
   coverageSummaryFromSeedMeta,
   consumeSupersedingModelerInput,
+  deriveFeatureLabelTargetLevel,
   deriveAcceptanceTargetLevelFromState,
   deriveContinuationAcceptanceTarget,
   deriveInvocationAcceptanceTargetLevel,
@@ -30,14 +32,17 @@ import {
   hasModelerTheoryMarkdown,
   inferAcceptanceInfrastructureFailure,
   isBlockedModelOutput,
+  loadFeatureBoxes,
   loadBestProgress,
   loadCurrentModelCoverageSummary,
   loadCurrentModelRevisionId,
   modelSessionId,
   modelerTheoryMarkdownRelativePath,
+  persistFeatureLabels,
   prepareModelDraftWorkspace,
   publishBootstrapSignals,
   publishProgressAdvance,
+  validateFeatureLabels,
 } from "./modeler_runtime_helpers.js";
 
 type ActiveModelerControl = {
@@ -49,6 +54,10 @@ const activeModelerControls = new Map<string, ActiveModelerControl>();
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function siblingPromptFile(promptFile: string, replacement: string): string {
+  return path.join(path.dirname(promptFile), replacement).replace(/\\/g, "/");
 }
 export {
   deriveAcceptanceTargetLevelFromState,
@@ -178,6 +187,10 @@ export async function runModelerQueueItem(args: {
     }],
   });
   const promptTemplate = await loadFluxPromptTemplate(args.workspaceRoot, args.config.modeler.promptFile);
+  const boxLabelPromptTemplate = await loadFluxPromptTemplate(
+    args.workspaceRoot,
+    siblingPromptFile(args.config.modeler.promptFile, "modeler_boxes.md"),
+  );
   const continueTemplate = await loadFluxPromptTemplate(
     args.workspaceRoot,
     args.config.modeler.acceptance.continueMessageTemplateFile,
@@ -191,6 +204,7 @@ export async function runModelerQueueItem(args: {
   let continueTurns = 0;
   let continueAcceptanceMessage: string | null = null;
   let continueFailingReport: Record<string, unknown> | null = null;
+  let boxLabelValidationError: string | null = null;
   const invocationAcceptanceMaxLevel = await deriveInvocationAcceptanceTargetLevel({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
@@ -393,8 +407,36 @@ export async function runModelerQueueItem(args: {
       return;
     }
 
+    const featureLabelLevel = deriveFeatureLabelTargetLevel({
+      acceptanceTarget: continueAcceptanceTarget ?? (
+        invocationAcceptanceMaxLevel
+          ? { maxLevel: invocationAcceptanceMaxLevel, level: invocationAcceptanceMaxLevel }
+          : null
+      ),
+      invocationAcceptanceMaxLevel,
+      comparePayload: preflightComparePayload,
+    });
+    const featureBoxes = featureLabelLevel
+      ? await loadFeatureBoxes({ workspaceDir: modelDraftWorkspaceDir, level: featureLabelLevel })
+      : null;
+    const featureLabelsValidation = featureLabelLevel
+      ? await validateFeatureLabels({ workspaceDir: modelDraftWorkspaceDir, level: featureLabelLevel })
+      : { ok: true as const, payload: {} as Record<string, unknown> };
+    const boxLabelPhaseActive = Boolean(featureLabelLevel && featureBoxes && !featureLabelsValidation.ok);
+    const featureLabelValidationReason = featureLabelsValidation.ok ? null : featureLabelsValidation.reason;
+
     let promptText: string;
-    if (continueTurns === 0) {
+    if (boxLabelPhaseActive) {
+      promptText = buildFeatureLabelPrompt({
+        template: boxLabelPromptTemplate,
+        level: featureLabelLevel!,
+        featureBoxes: featureBoxes!,
+        validationError: boxLabelValidationError ?? featureLabelValidationReason,
+      });
+      if (solverTheoryInterjection) {
+        promptText = [promptText, "", solverTheoryInterjection.text].join("\n");
+      }
+    } else if (continueTurns === 0) {
       const parts = [
         promptTemplate.trim(),
         solverTheoryInterjection?.text ?? "",
@@ -441,7 +483,9 @@ export async function runModelerQueueItem(args: {
         invocationId,
         promptText,
         reasoningEffort: args.config.modeler.reasoningEffort ?? args.config.runtimeDefaults.reasoningEffort,
-        outputSchema: args.config.modeler.turnTimeoutMs ? undefined : schemaForName(args.config.modeler.outputSchema),
+        outputSchema: args.config.modeler.turnTimeoutMs
+          ? undefined
+          : schemaForName(boxLabelPhaseActive ? "model_box_labels_v1" : args.config.modeler.outputSchema),
         workingDirectory: modelDraftWorkspaceDir,
         signal: controller.signal,
       });
@@ -499,6 +543,49 @@ export async function runModelerQueueItem(args: {
       text: turn.assistantText,
       providerThreadId: turn.providerThreadId,
     });
+    if (boxLabelPhaseActive) {
+      const parsedLabels = parseJsonObjectFromAssistantText(turn.assistantText || "") ?? {};
+      const reportedLevel = Number(parsedLabels.level ?? 0) || 0;
+      if (reportedLevel !== featureLabelLevel) {
+        boxLabelValidationError = `label response level mismatch: expected ${featureLabelLevel}, got ${reportedLevel || "(missing)"}`;
+        continueTurns += 1;
+        continue;
+      }
+      await persistFeatureLabels({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        workspaceDir: modelDraftWorkspaceDir,
+        level: featureLabelLevel!,
+        labels: parsedLabels,
+      });
+      const refreshedValidation = await validateFeatureLabels({
+        workspaceDir: modelDraftWorkspaceDir,
+        level: featureLabelLevel!,
+      });
+      if (!refreshedValidation.ok) {
+        boxLabelValidationError = refreshedValidation.reason;
+        continueTurns += 1;
+        continue;
+      }
+      boxLabelValidationError = null;
+      await appendFluxEvents(args.workspaceRoot, args.config, [{
+        eventId: newId("evt"),
+        ts: nowIso(),
+        kind: "modeler.progress_advanced",
+        workspaceRoot: args.workspaceRoot,
+        sessionType: "modeler",
+        sessionId,
+        summary: `validated feature box labels for level ${featureLabelLevel}`,
+        payload: {
+          level: featureLabelLevel,
+          phase: "feature_boxes",
+        },
+      }]);
+      continueTurns = 0;
+      continueAcceptanceMessage = null;
+      continueFailingReport = null;
+      continue;
+    }
     const parsedModelOutput = parseJsonObjectFromAssistantText(turn.assistantText || "");
     const modelOutput = parsedModelOutput ?? fallbackModelOutput(promptPayload, turn.assistantText, turn.interrupted);
     if (args.config.problem.syncModelWorkspace) {

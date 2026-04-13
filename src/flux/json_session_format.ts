@@ -30,6 +30,41 @@ export function schemaForName(name: string): Record<string, unknown> | undefined
       },
     };
   }
+  if (name === "model_box_labels_v1") {
+    return {
+      type: "object",
+      additionalProperties: false,
+      required: ["level", "summary", "boxes"],
+      properties: {
+        level: { type: "integer", minimum: 1 },
+        summary: { type: "string" },
+        boxes: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["box_id", "features", "tags"],
+            properties: {
+              box_id: { type: "string" },
+              features: {
+                type: "array",
+                minItems: 1,
+                items: { type: "string" },
+              },
+              tags: {
+                type: "array",
+                minItems: 1,
+                items: {
+                  enum: ["stable", "movable", "transient", "ui_like", "unknown"],
+                },
+              },
+              notes: { type: "string" },
+            },
+          },
+        },
+      },
+    };
+  }
   return undefined;
 }
 

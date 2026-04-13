@@ -28,6 +28,7 @@ async function writeConfig(workspaceRoot: string) {
   await fs.mkdir(path.join(workspaceRoot, "prompts"), { recursive: true });
   await fs.writeFile(path.join(workspaceRoot, "prompts", "solver.md"), "Solve.", "utf8");
   await fs.writeFile(path.join(workspaceRoot, "prompts", "modeler.md"), "Model.", "utf8");
+  await fs.writeFile(path.join(workspaceRoot, "prompts", "modeler_boxes.md"), "Label boxes.", "utf8");
   await fs.writeFile(path.join(workspaceRoot, "prompts", "bootstrapper.md"), "Bootstrap.", "utf8");
   await fs.writeFile(path.join(workspaceRoot, "prompts", "modeler_continue.md"), "Continue model.", "utf8");
   await fs.writeFile(path.join(workspaceRoot, "prompts", "bootstrapper_continue.md"), "Continue bootstrap.", "utf8");

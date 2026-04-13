@@ -22,6 +22,7 @@ describe("flux mocked flow", () => {
     await fs.mkdir(path.join(workspaceRoot, "prompts"), { recursive: true });
     await fs.writeFile(path.join(workspaceRoot, "prompts", "solver.md"), "SOLVER_PROMPT", "utf8");
     await fs.writeFile(path.join(workspaceRoot, "prompts", "modeler.md"), "MODELER_PROMPT", "utf8");
+    await fs.writeFile(path.join(workspaceRoot, "prompts", "modeler_boxes.md"), "MODELER_BOXES_PROMPT", "utf8");
     await fs.writeFile(path.join(workspaceRoot, "prompts", "bootstrapper.md"), "BOOTSTRAP_PROMPT", "utf8");
     await fs.writeFile(path.join(workspaceRoot, "prompts", "modeler_continue.md"), "Continue model.", "utf8");
     await fs.writeFile(path.join(workspaceRoot, "prompts", "bootstrapper_continue.md"), "Continue bootstrap.", "utf8");
