@@ -164,7 +164,10 @@ export async function validateFeatureLabels(args: {
         return { ok: false, reason: `feature labels contain an invalid box entry for level ${args.level}` };
       }
       const record = box as Record<string, unknown>;
-      const features = Array.isArray(record.features) ? record.features.filter((value) => typeof value === "string" && value.trim()) : [];
+      const featuresSource = Array.isArray(record.features)
+        ? record.features
+        : (Array.isArray(record.feature_names) ? record.feature_names : []);
+      const features = featuresSource.filter((value) => typeof value === "string" && value.trim());
       const tags = Array.isArray(record.tags) ? record.tags.filter((value) => typeof value === "string" && value.trim()) : [];
       if (features.length === 0 || tags.length === 0) {
         return { ok: false, reason: `feature labels contain an empty features/tags entry for level ${args.level}` };
@@ -192,7 +195,21 @@ export async function persistFeatureLabels(args: {
     level: args.level,
     feature_boxes_hash: String(boxesPayload.box_spec_hash ?? ""),
     summary: String(args.labels.summary ?? ""),
-    boxes: Array.isArray(args.labels.boxes) ? args.labels.boxes : [],
+    boxes: (
+      Array.isArray(args.labels.boxes)
+        ? args.labels.boxes.map((box) => {
+            if (!box || typeof box !== "object" || Array.isArray(box)) return box;
+            const record = box as Record<string, unknown>;
+            const features = Array.isArray(record.features)
+              ? record.features
+              : (Array.isArray(record.feature_names) ? record.feature_names : []);
+            return {
+              ...record,
+              features,
+            };
+          })
+        : []
+    ),
   };
   await writeJsonAtomic(featureLabelsPath(args.workspaceDir, args.level), payload);
   const labelsRoot = fluxModelLabelsRoot(args.workspaceRoot, args.config);

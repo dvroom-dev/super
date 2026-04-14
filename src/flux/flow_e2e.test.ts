@@ -2309,4 +2309,545 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
       delete process.env.MOCK_PROVIDER_DELAY_MS;
     }
   }, 20000);
+
+  test("two-phase modeler happy path accepts natural feature_names labeling and reaches bootstrap finalize", async () => {
+    const observePath = path.join(workspaceRoot, "scripts", "observe_feature_box_flow.js");
+    await fs.writeFile(observePath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const root = input.workspaceRoot || process.cwd();
+  const counterPath = path.join(root, "observe-feature-count.txt");
+  let count = 0;
+  try { count = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch {}
+  count += 1;
+  fs.writeFileSync(counterPath, String(count), "utf8");
+  const bundleRoot = path.join(root, "flux", "evidence_bundles", "bundle_feature_flow");
+  const bundleWorkspace = path.join(bundleRoot, "workspace", "model_workspace");
+  fs.rmSync(bundleRoot, { recursive: true, force: true });
+  fs.mkdirSync(bundleWorkspace, { recursive: true });
+  fs.mkdirSync(path.join(bundleWorkspace, "level_1", "sequences"), { recursive: true });
+  fs.mkdirSync(path.join(bundleWorkspace, "level_current"), { recursive: true });
+  fs.writeFileSync(path.join(bundleWorkspace, "level_current", "meta.json"), JSON.stringify({ level: 1 }, null, 2));
+  fs.writeFileSync(path.join(bundleWorkspace, "level_1", "sequences", "seq_0001.json"), JSON.stringify({ level: 1, sequence_id: "seq_0001" }, null, 2));
+  fs.writeFileSync(path.join(bundleWorkspace, "feature_boxes_level_1.json"), JSON.stringify({
+    schema_version: "flux.feature_boxes.v1",
+    level: 1,
+    box_spec_hash: "feature_flow_hash",
+    boxes: [
+      { box_id: "box_01", bbox: [10, 10, 14, 14] },
+      { box_id: "box_02", bbox: [61, 13, 62, 18] }
+    ]
+  }, null, 2));
+  fs.mkdirSync(path.join(bundleRoot, "arc_state"), { recursive: true });
+  fs.writeFileSync(path.join(bundleRoot, "manifest.json"), JSON.stringify({
+    bundle_id: "bundle_feature_flow",
+    attempt_id: "attempt_feature_flow",
+    instance_id: "instance_feature_flow",
+    workspace_dir: bundleWorkspace,
+    arc_state_dir: path.join(bundleRoot, "arc_state"),
+    bundle_completeness: {
+      frontier_level: 1,
+      has_level_sequences: true,
+      has_frontier_initial_state: true,
+      has_frontier_sequences: true,
+      has_compare_surface: true,
+      status: "ready_for_compare"
+    }
+  }, null, 2));
+  process.stdout.write(JSON.stringify({
+    evidence: [{
+      summary: "level 1 evidence ready for boxing",
+      action_count: count,
+      changed_pixels: 1,
+      state: {
+        current_level: 1,
+        levels_completed: 0,
+        win_levels: 7,
+        state: "NOT_FINISHED",
+        total_steps: count,
+        current_attempt_steps: count,
+        last_action_name: "ACTION1"
+      }
+    }],
+    evidence_bundle_id: "bundle_feature_flow",
+    evidence_bundle_path: bundleRoot
+  }));
+});`, "utf8");
+    await fs.chmod(observePath, 0o755);
+
+    const syncPath = path.join(workspaceRoot, "scripts", "sync_feature_box_flow.js");
+    await fs.writeFile(syncPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const bundlePath = String(input.evidenceBundlePath || "");
+  const target = String(input.targetWorkspaceDir || "");
+  const bundleWorkspace = path.join(bundlePath, "workspace", "model_workspace");
+  fs.mkdirSync(target, { recursive: true });
+  for (const name of ["feature_boxes_level_1.json"]) {
+    fs.copyFileSync(path.join(bundleWorkspace, name), path.join(target, name));
+  }
+  fs.mkdirSync(path.join(target, "level_1", "sequences"), { recursive: true });
+  fs.copyFileSync(path.join(bundleWorkspace, "level_1", "sequences", "seq_0001.json"), path.join(target, "level_1", "sequences", "seq_0001.json"));
+  process.stdout.write(JSON.stringify({ synced: true }));
+});`, "utf8");
+    await fs.chmod(syncPath, 0o755);
+
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_feature_box_flow.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const modelOutput = input.modelOutput || {};
+  if (String(modelOutput.decision || "") === "checked_current_model") {
+    process.stdout.write(JSON.stringify({
+      accepted: false,
+      message: "current model needs a level 1 mechanic patch",
+      model_output: modelOutput,
+      compare_payload: {
+        level: 1,
+        all_match: false,
+        reports: [{ level: 1, sequence_id: "seq_0001", matched: false, divergence_step: 1, divergence_reason: "intermediate_frame_mismatch" }]
+      }
+    }));
+    return;
+  }
+  process.stdout.write(JSON.stringify({
+    accepted: true,
+    message: "accepted level 1 after feature labeling",
+    model_output: modelOutput,
+    compare_payload: {
+      level: 1,
+      frontier_level: 2,
+      all_match: true,
+      compared_sequences: 1,
+      eligible_sequences: 1,
+      diverged_sequences: 0,
+      reports: [{ level: 1, sequence_id: "seq_0001", matched: true, frontier_level_after_sequence: 2, sequence_completed_level: true }]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+
+    const rehearsePath = path.join(workspaceRoot, "scripts", "rehearse_feature_box_flow.js");
+    await fs.writeFile(rehearsePath, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  rehearsal_ok: true,
+  status_before: { current_level: 1, levels_completed: 0, state: "NOT_FINISHED", win_levels: 7 },
+  status_after: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED", win_levels: 7 },
+  compare_payload: {
+    ok: true,
+    level: 2,
+    frontier_level: 2,
+    all_match: true,
+    compared_sequences: 1,
+    eligible_sequences: 1,
+    diverged_sequences: 0,
+    reports: [{ level: 2, sequence_id: "seq_0001", matched: true }]
+  },
+  tool_results: []
+})));`, "utf8");
+    await fs.chmod(rehearsePath, 0o755);
+
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText
+      .replace(/observe_evidence:\n    command: \["[^"]*"\]/, `observe_evidence:\n    command: ["${observePath}"]`)
+      .replace(/rehearse_seed_on_model:\n    command: \["[^"]*"\]/, `sync_model_workspace:\n    command: ["${syncPath}"]\n  rehearse_seed_on_model:\n    command: ["${rehearsePath}"]`)
+      .replace(/acceptance:\n    command: \["[^"]*"\]/, `acceptance:\n    command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+
+    process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
+      { contains: "SOLVER_PROMPT", text: "solver frontier reached" },
+      {
+        contains: "MODELER_BOXES_PROMPT",
+        text: JSON.stringify({
+          level: 1,
+          summary: "natural label response",
+          boxes: [
+            { box_id: "box_01", feature_names: ["five_by_five_stack"], tags: ["movable"] },
+            { box_id: "box_02", feature_names: ["bottom_pair_bar"], tags: ["ui_like", "stable"] }
+          ]
+        })
+      },
+      {
+        contains: "MODELER_PROMPT",
+        bashCommands: [
+          "mkdir -p modeler_handoff",
+          "printf '%s\\n' '# Level 1 modeler theory' 'The stack moves and the bottom pair bar changes.' > modeler_handoff/untrusted_theories_level_1.md"
+        ],
+        text: JSON.stringify({
+          decision: "updated_model",
+          summary: "accepted level 1 after box phase",
+          message_for_bootstrapper: "validated level 1 mechanics from feature boxes",
+          artifacts_updated: ["model_lib.py", "modeler_handoff/untrusted_theories_level_1.md"],
+          evidence_watermark: "wm_feature_flow"
+        })
+      },
+      {
+        contains: "Modeler handoff files to read before finalizing mechanics:",
+        text: JSON.stringify({
+          decision: "finalize_seed",
+          summary: "seed finalized after feature-box happy path",
+          seed_bundle_updated: false,
+          notes: "validated mechanics from the modeler handoff after natural feature_names labeling",
+          solver_action: "queue_and_interrupt",
+          seed_delta_kind: "mechanic_explanation_improved"
+        })
+      }
+    ]);
+    process.env.MOCK_PROVIDER_DELAY_MS = "40";
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const state: FluxRunState = {
+        version: 1,
+        workspaceRoot,
+        configPath: path.join(workspaceRoot, "flux.yaml"),
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: "running",
+        stopRequested: false,
+        active: {
+          solver: { status: "idle", updatedAt: new Date().toISOString() },
+          modeler: { status: "idle", updatedAt: new Date().toISOString() },
+          bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+        },
+      };
+      await saveFluxState(workspaceRoot, config, state);
+      const solverPromise = runSolverQueueItem({
+        workspaceRoot,
+        config,
+        state,
+        queueItem: {
+          id: "q_solver_feature_flow",
+          sessionType: "solver",
+          createdAt: new Date().toISOString(),
+          reason: "feature_box_flow",
+          payload: {},
+        },
+      });
+      let solverSessionId = "";
+      let modelerQueueItem = null;
+      const deadline = Date.now() + 4000;
+      while (Date.now() < deadline) {
+        const latestState = await loadFluxState(workspaceRoot, config);
+        solverSessionId = latestState?.active.solver.sessionId ?? solverSessionId;
+        const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+        modelerQueueItem = modelerQueue.items[0] ?? null;
+        if (modelerQueueItem) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(modelerQueueItem).toBeTruthy();
+      requestActiveSolverInterrupt(solverSessionId);
+      await solverPromise;
+
+      await runModelerQueueItem({
+        workspaceRoot,
+        config,
+        state,
+        queueItem: modelerQueueItem!,
+      });
+      const labelsPath = path.join(workspaceRoot, "flux", "model", "feature_labels", "feature_labels_level_1.json");
+      const labels = JSON.parse(await fs.readFile(labelsPath, "utf8"));
+      expect(labels.boxes[0].features).toEqual(["five_by_five_stack"]);
+      expect(labels.boxes[1].features).toEqual(["bottom_pair_bar"]);
+
+      const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+      expect(bootstrapQueue.items.length).toBeGreaterThan(0);
+
+      await runBootstrapperQueueItem({
+        workspaceRoot,
+        config,
+        state,
+        queueItem: bootstrapQueue.items[bootstrapQueue.items.length - 1]!,
+      });
+
+      const replacementQueue = await loadFluxQueue(workspaceRoot, config, "solver");
+      const modelerPromptsDir = path.join(workspaceRoot, ".ai-flux", "sessions", "modeler", "modeler_run", "prompts");
+      const modelerPromptFiles = (await fs.readdir(modelerPromptsDir)).sort();
+      expect(modelerPromptFiles.length).toBeGreaterThanOrEqual(2);
+      const firstPromptText = String(JSON.parse(await fs.readFile(path.join(modelerPromptsDir, modelerPromptFiles[0]!), "utf8")).promptText ?? "");
+      const secondPromptText = String(JSON.parse(await fs.readFile(path.join(modelerPromptsDir, modelerPromptFiles[1]!), "utf8")).promptText ?? "");
+      expect(firstPromptText).toContain("Current box-label phase target: level 1.");
+      expect(secondPromptText).toContain("MODELER_PROMPT");
+      const bootstrapPromptsDir = path.join(workspaceRoot, ".ai-flux", "sessions", "bootstrapper", "bootstrapper_run", "prompts");
+      const bootstrapPromptFiles = (await fs.readdir(bootstrapPromptsDir)).sort();
+      const bootstrapPromptText = String(JSON.parse(await fs.readFile(path.join(bootstrapPromptsDir, bootstrapPromptFiles[0]!), "utf8")).promptText ?? "");
+      expect(bootstrapPromptText).toContain("Modeler handoff files to read before finalizing mechanics:");
+      expect(replacementQueue.items.length).toBeGreaterThan(0);
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON;
+      delete process.env.MOCK_PROVIDER_DELAY_MS;
+    }
+  }, 20000);
+
+  test("orchestrator does not self-loop bootstrapper when an unchanged seed still fails rehearsal", async () => {
+    const observePath = path.join(workspaceRoot, "scripts", "observe_bootstrap_wait_flow.js");
+    await fs.writeFile(observePath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const root = input.workspaceRoot || process.cwd();
+  const counterPath = path.join(root, "observe-bootstrap-wait-count.txt");
+  let count = 0;
+  try { count = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch {}
+  count += 1;
+  fs.writeFileSync(counterPath, String(count), "utf8");
+  const bundleRoot = path.join(root, "flux", "evidence_bundles", "bundle_bootstrap_wait");
+  const bundleWorkspace = path.join(bundleRoot, "workspace", "model_workspace");
+  fs.rmSync(bundleRoot, { recursive: true, force: true });
+  fs.mkdirSync(bundleWorkspace, { recursive: true });
+  fs.mkdirSync(path.join(bundleWorkspace, "level_1", "sequences"), { recursive: true });
+  fs.mkdirSync(path.join(bundleWorkspace, "level_current"), { recursive: true });
+  fs.writeFileSync(path.join(bundleWorkspace, "level_current", "meta.json"), JSON.stringify({ level: 1 }, null, 2));
+  fs.writeFileSync(path.join(bundleWorkspace, "level_1", "sequences", "seq_0001.json"), JSON.stringify({ level: 1, sequence_id: "seq_0001" }, null, 2));
+  fs.writeFileSync(path.join(bundleWorkspace, "feature_boxes_level_1.json"), JSON.stringify({
+    schema_version: "flux.feature_boxes.v1",
+    level: 1,
+    box_spec_hash: "bootstrap_wait_hash",
+    boxes: [
+      { box_id: "box_01", bbox: [10, 10, 14, 14] },
+      { box_id: "box_02", bbox: [61, 13, 62, 18] }
+    ]
+  }, null, 2));
+  fs.mkdirSync(path.join(bundleRoot, "arc_state"), { recursive: true });
+  fs.writeFileSync(path.join(bundleRoot, "manifest.json"), JSON.stringify({
+    bundle_id: "bundle_bootstrap_wait",
+    attempt_id: "attempt_bootstrap_wait",
+    instance_id: "instance_bootstrap_wait",
+    workspace_dir: bundleWorkspace,
+    arc_state_dir: path.join(bundleRoot, "arc_state"),
+    bundle_completeness: {
+      frontier_level: 1,
+      has_level_sequences: true,
+      has_frontier_initial_state: true,
+      has_frontier_sequences: true,
+      has_compare_surface: true,
+      status: "ready_for_compare"
+    }
+  }, null, 2));
+  process.stdout.write(JSON.stringify({
+    evidence: [{
+      summary: "level 1 evidence ready for bootstrap wait flow",
+      action_count: count,
+      changed_pixels: 1,
+      state: {
+        current_level: 1,
+        levels_completed: 0,
+        win_levels: 7,
+        state: "NOT_FINISHED",
+        total_steps: count,
+        current_attempt_steps: count,
+        last_action_name: "ACTION1"
+      }
+    }],
+    evidence_bundle_id: "bundle_bootstrap_wait",
+    evidence_bundle_path: bundleRoot
+  }));
+});`, "utf8");
+    await fs.chmod(observePath, 0o755);
+
+    const syncPath = path.join(workspaceRoot, "scripts", "sync_bootstrap_wait_flow.js");
+    await fs.writeFile(syncPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const bundlePath = String(input.evidenceBundlePath || "");
+  const target = String(input.targetWorkspaceDir || "");
+  const bundleWorkspace = path.join(bundlePath, "workspace", "model_workspace");
+  fs.mkdirSync(target, { recursive: true });
+  for (const name of ["feature_boxes_level_1.json"]) {
+    fs.copyFileSync(path.join(bundleWorkspace, name), path.join(target, name));
+  }
+  fs.mkdirSync(path.join(target, "level_1", "sequences"), { recursive: true });
+  fs.copyFileSync(path.join(bundleWorkspace, "level_1", "sequences", "seq_0001.json"), path.join(target, "level_1", "sequences", "seq_0001.json"));
+  process.stdout.write(JSON.stringify({ synced: true }));
+});`, "utf8");
+    await fs.chmod(syncPath, 0o755);
+
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_bootstrap_wait_flow.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const modelOutput = input.modelOutput || {};
+  if (String(modelOutput.decision || "") === "checked_current_model") {
+    process.stdout.write(JSON.stringify({
+      accepted: false,
+      message: "current model needs a level 1 mechanic patch",
+      model_output: modelOutput,
+      compare_payload: {
+        level: 1,
+        all_match: false,
+        reports: [{ level: 1, sequence_id: "seq_0001", matched: false, divergence_step: 1, divergence_reason: "intermediate_frame_mismatch" }]
+      }
+    }));
+    return;
+  }
+  process.stdout.write(JSON.stringify({
+    accepted: true,
+    message: "accepted level 1 before bootstrap wait",
+    model_output: modelOutput,
+    compare_payload: {
+      level: 1,
+      frontier_level: 2,
+      all_match: true,
+      compared_sequences: 1,
+      eligible_sequences: 1,
+      diverged_sequences: 0,
+      reports: [{ level: 1, sequence_id: "seq_0001", matched: true, frontier_level_after_sequence: 2, sequence_completed_level: true }]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+
+    const rehearsePath = path.join(workspaceRoot, "scripts", "rehearse_bootstrap_wait_flow.js");
+    await fs.writeFile(rehearsePath, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  rehearsal_ok: true,
+  status_before: { current_level: 1, levels_completed: 0, state: "NOT_FINISHED", win_levels: 7 },
+  status_after: { current_level: 2, levels_completed: 1, state: "NOT_FINISHED", win_levels: 7 },
+  compare_payload: {
+    ok: true,
+    level: 2,
+    frontier_level: 2,
+    all_match: false,
+    compared_sequences: 1,
+    eligible_sequences: 1,
+    diverged_sequences: 1,
+    reports: [{ level: 2, sequence_id: "seq_0001", matched: false, divergence_step: 1, divergence_reason: "intermediate_frame_mismatch" }]
+  },
+  tool_results: []
+})));`, "utf8");
+    await fs.chmod(rehearsePath, 0o755);
+
+    const fluxPath = path.join(workspaceRoot, "flux.yaml");
+    let fluxText = await fs.readFile(fluxPath, "utf8");
+    fluxText = fluxText
+      .replace(/observe_evidence:\n    command: \["[^"]*"\]/, `observe_evidence:\n    command: ["${observePath}"]`)
+      .replace(/rehearse_seed_on_model:\n    command: \["[^"]*"\]/, `sync_model_workspace:\n    command: ["${syncPath}"]\n  rehearse_seed_on_model:\n    command: ["${rehearsePath}"]`)
+      .replace(/acceptance:\n    command: \["[^"]*"\]/, `acceptance:\n    command: ["${acceptancePath}"]`);
+    await fs.writeFile(fluxPath, fluxText, "utf8");
+
+    process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
+      { contains: "SOLVER_PROMPT", text: "solver frontier reached" },
+      {
+        contains: "MODELER_BOXES_PROMPT",
+        text: JSON.stringify({
+          level: 1,
+          summary: "natural label response",
+          boxes: [
+            { box_id: "box_01", feature_names: ["five_by_five_stack"], tags: ["movable"] },
+            { box_id: "box_02", feature_names: ["bottom_pair_bar"], tags: ["ui_like", "stable"] }
+          ]
+        })
+      },
+      {
+        contains: "MODELER_PROMPT",
+        bashCommands: [
+          "mkdir -p modeler_handoff",
+          "printf '%s\\n' '# Level 1 modeler theory' 'Mechanics refined but level 2 still needs model work.' > modeler_handoff/untrusted_theories_level_1.md"
+        ],
+        text: JSON.stringify({
+          decision: "updated_model",
+          summary: "accepted level 1 before bootstrap wait",
+          message_for_bootstrapper: "BOOTSTRAP_WAIT",
+          artifacts_updated: ["model_lib.py", "modeler_handoff/untrusted_theories_level_1.md"],
+          evidence_watermark: "wm_bootstrap_wait"
+        })
+      },
+      {
+        contains: "BOOTSTRAP_WAIT",
+        text: JSON.stringify({
+          decision: "finalize_seed",
+          summary: "no useful new seed change",
+          seed_bundle_updated: false,
+          notes: "seed already captures the best known route; wait for a stronger model",
+          solver_action: "no_action",
+          seed_delta_kind: "no_useful_change"
+        })
+      }
+    ]);
+    process.env.MOCK_PROVIDER_DELAY_MS = "25";
+
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const state: FluxRunState = {
+        version: 1,
+        workspaceRoot,
+        configPath: path.join(workspaceRoot, "flux.yaml"),
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: "running",
+        stopRequested: false,
+        active: {
+          solver: { status: "idle", updatedAt: new Date().toISOString() },
+          modeler: { status: "idle", updatedAt: new Date().toISOString() },
+          bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+        },
+      };
+      await saveFluxState(workspaceRoot, config, state);
+
+      const runPromise = runFluxOrchestrator(workspaceRoot, path.join(workspaceRoot, "flux.yaml"), config);
+      const deadline = Date.now() + 12000;
+      let events = await readFluxEvents(workspaceRoot, config);
+      while (
+        Date.now() < deadline
+        && !events.some((event) => event.kind === "bootstrapper.waiting_for_new_inputs")
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        events = await readFluxEvents(workspaceRoot, config);
+      }
+
+      const rehearsalStartedCount = events.filter((event) => event.kind === "bootstrapper.model_rehearsal_started").length;
+      const rehearsalFailedCount = events.filter((event) => event.kind === "bootstrapper.model_rehearsal_failed").length;
+      const waitingCount = events.filter((event) => event.kind === "bootstrapper.waiting_for_new_inputs").length;
+      expect(events.some((event) => event.kind === "modeler.acceptance_passed")).toBe(true);
+      expect(rehearsalStartedCount).toBe(1);
+      expect(rehearsalFailedCount).toBe(1);
+      expect(waitingCount).toBe(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const laterEvents = await readFluxEvents(workspaceRoot, config);
+      expect(laterEvents.filter((event) => event.kind === "bootstrapper.model_rehearsal_started")).toHaveLength(1);
+      expect(laterEvents.filter((event) => event.kind === "bootstrapper.waiting_for_new_inputs")).toHaveLength(1);
+      const bootstrapQueue = await loadFluxQueue(workspaceRoot, config, "bootstrapper");
+      expect(bootstrapQueue.items).toHaveLength(0);
+      const latestState = await loadFluxState(workspaceRoot, config);
+      expect(latestState?.active.bootstrapper.status).toBe("idle");
+
+      await requestFluxStop(workspaceRoot, config);
+      await runPromise;
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON;
+      delete process.env.MOCK_PROVIDER_DELAY_MS;
+    }
+  }, 20000);
 });

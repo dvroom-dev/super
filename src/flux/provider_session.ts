@@ -34,7 +34,9 @@ function isRetryableThreadBadRequest(args: {
 }): boolean {
   const errorMessage = String((args.error as any)?.message ?? args.error ?? "");
   const texts = [errorMessage, ...args.providerEvents.map(extractProviderFailureText)].filter(Boolean).join("\n");
-  return /\bbad request\b/i.test(texts) || /"detail"\s*:\s*"Bad Request"/i.test(texts);
+  return /\bbad request\b/i.test(texts)
+    || /"detail"\s*:\s*"Bad Request"/i.test(texts)
+    || (/remote compact task/i.test(texts) && /unknown parameter:\s*'prompt_cache_retention'/i.test(texts));
 }
 
 function extractProviderFailureText(event: ProviderEvent): string {

@@ -12,6 +12,7 @@ import { appendProjectionEventsAndRebuild } from "./projections.js";
 import { runFluxProblemCommand } from "./problem_shell.js";
 import { enqueueFluxQueueItem } from "./queue.js";
 import { loadFluxPromptTemplate, renderTemplate } from "./prompt_templates.js";
+import { listModelerTheoryFiles, normalizeInterruptPolicy, shouldWaitForNewInputsAfterFailedRehearsal } from "./bootstrapper_runtime_helpers.js";
 import { runFluxProviderTurn } from "./provider_session.js";
 import { loadSeedMeta, saveSeedMeta, type FluxSeedMeta } from "./seed_meta.js";
 import { validateFluxSeedBundle } from "./seed_bundle.js";
@@ -39,20 +40,6 @@ function nowIso(): string {
 
 function bootstrapperSessionId(): string {
   return "bootstrapper_run";
-}
-
-async function listModelerTheoryFiles(workspaceRoot: string, config: FluxConfig): Promise<string[]> {
-  const modelWorkspace = modelRevisionWorkspaceSource(workspaceRoot, config);
-  const theoryDir = path.join(modelWorkspace, "modeler_handoff");
-  try {
-    const entries = await fs.readdir(theoryDir);
-    return entries
-      .filter((entry) => /^untrusted_theories_level_\d+\.md$/i.test(entry))
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-      .map((entry) => path.relative(workspaceRoot, path.join(theoryDir, entry)));
-  } catch {
-    return [];
-  }
 }
 
 function seedBundleCurrentPath(workspaceRoot: string, config: FluxConfig): string {
@@ -227,14 +214,6 @@ async function recordSeedReuse(args: {
     },
   }]);
   return nextMeta;
-}
-
-function normalizeInterruptPolicy(value: unknown): FluxSolverInterruptPolicy {
-  const normalized = String(value ?? "").trim();
-  if (normalized === "queue_and_interrupt" || normalized === "queue_without_interrupt" || normalized === "no_action") {
-    return normalized;
-  }
-  return "queue_without_interrupt";
 }
 
 function coverageSummaryFromPromptPayload(value: unknown): FluxSeedMeta["lastBootstrapperCoverageSummary"] | undefined {
@@ -488,6 +467,7 @@ export async function runBootstrapperQueueItem(args: {
   const decision = String(decisionPayload.decision ?? "");
   const interruptPolicy = normalizeInterruptPolicy(decisionPayload.solver_action);
   const seedDeltaKind = String(decisionPayload.seed_delta_kind ?? "");
+  const seedBundleUpdated = Boolean(decisionPayload.seed_bundle_updated);
   let seedBundle: FluxSeedBundle | null = null;
   const candidatePath = seedBundleCandidatePath(args.workspaceRoot, args.config);
   try {
@@ -691,20 +671,48 @@ export async function runBootstrapperQueueItem(args: {
           payload: { seedHash, seedRevisionId, expectedFrontierLevel, rehearsalResult },
         }]);
       }
-      await enqueueBootstrapperContinuation({
-        workspaceRoot: args.workspaceRoot,
-        config: args.config,
-        sessionId,
-        reason: "bootstrapper_retry_after_model_rehearsal",
-        payload: {
-          ...promptPayload,
-          rehearsalResult,
-          seedRevisionId,
-          seedHash,
-          expectedFrontierLevel,
-        },
-        modelRehearsalResult: rehearsalResult,
-      });
+      if (shouldWaitForNewInputsAfterFailedRehearsal({
+        decision,
+        interruptPolicy,
+        seedDeltaKind,
+        seedChanged: persistedSeed.changed,
+        seedBundleUpdated,
+      })) {
+        await appendFluxEvents(args.workspaceRoot, args.config, [{
+          eventId: newId("evt"),
+          ts: nowIso(),
+          kind: "bootstrapper.waiting_for_new_inputs",
+          workspaceRoot: args.workspaceRoot,
+          invocationId,
+          sessionType: "bootstrapper",
+          sessionId,
+          summary: `bootstrapper made no seed changes for ${seedRevisionId}; waiting for new model/evidence inputs`,
+          payload: {
+            seedHash,
+            seedRevisionId,
+            expectedFrontierLevel,
+            rehearsalResult,
+            decision,
+            interruptPolicy,
+            seedDeltaKind,
+          },
+        }]);
+      } else {
+        await enqueueBootstrapperContinuation({
+          workspaceRoot: args.workspaceRoot,
+          config: args.config,
+          sessionId,
+          reason: "bootstrapper_retry_after_model_rehearsal",
+          payload: {
+            ...promptPayload,
+            rehearsalResult,
+            seedRevisionId,
+            seedHash,
+            expectedFrontierLevel,
+          },
+          modelRehearsalResult: rehearsalResult,
+        });
+      }
       await saveFluxInvocationResult(args.workspaceRoot, args.config, {
         invocationId,
         invocationType: "bootstrapper_invocation",

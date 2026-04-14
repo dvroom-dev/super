@@ -560,6 +560,235 @@ process.stdin.on("end", () => {
     expect(String(secondPrompt.promptText ?? "")).toContain("Model.");
   });
 
+  test("accepts feature_names as a recovery alias in box-label responses and normalizes them", async () => {
+    const syncPath = path.join(workspaceRoot, "scripts", "sync_with_feature_boxes_alias.js");
+    await fs.writeFile(syncPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const target = String(input.targetWorkspaceDir || "");
+  fs.mkdirSync(path.join(target, "level_1", "sequences"), { recursive: true });
+  fs.writeFileSync(path.join(target, "level_1", "sequences", "seq_0001.json"), JSON.stringify({ level: 1, sequence_id: "seq_0001" }, null, 2), "utf8");
+  fs.writeFileSync(path.join(target, "feature_boxes_level_1.json"), JSON.stringify({
+    schema_version: "flux.feature_boxes.v1",
+    level: 1,
+    box_spec_hash: "box_hash_alias",
+    boxes: [
+      { box_id: "box_01", bbox: [10, 10, 14, 14] }
+    ]
+  }, null, 2), "utf8");
+  process.stdout.write(JSON.stringify({ synced: true }));
+});`, "utf8");
+    await fs.chmod(syncPath, 0o755);
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_alias_boxes.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const modelOutput = input.modelOutput || {};
+  if (String(modelOutput.decision || "") === "checked_current_model") {
+    process.stdout.write(JSON.stringify({
+      accepted: false,
+      message: "compare mismatch at level 1 sequence seq_0001 step 1: intermediate_frame_mismatch",
+      model_output: modelOutput,
+      compare_payload: {
+        level: 1,
+        all_match: false,
+        reports: [{ level: 1, sequence_id: "seq_0001", matched: false, divergence_step: 1, divergence_reason: "intermediate_frame_mismatch" }]
+      }
+    }));
+    return;
+  }
+  process.stdout.write(JSON.stringify({
+    accepted: true,
+    message: "accepted after box labels",
+    model_output: modelOutput,
+    compare_payload: {
+      level: 1,
+      frontier_level: 1,
+      all_match: true,
+      compared_sequences: 1,
+      eligible_sequences: 1,
+      diverged_sequences: 0,
+      reports: [{ level: 1, sequence_id: "seq_0001", matched: true, frontier_level_after_sequence: 1, sequence_completed_level: false }]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
+      {
+        contains: "Label boxes.",
+        text: JSON.stringify({
+          level: 1,
+          summary: "labeled with alias key",
+          boxes: [
+            { box_id: "box_01", feature_names: ["five_by_five_stack"], tags: ["movable"] }
+          ]
+        }),
+      },
+      {
+        contains: "Model.",
+        bashCommands: [
+          "mkdir -p modeler_handoff",
+          "printf '%s\\n' '# Level 1 theory' 'Alias normalized.' > modeler_handoff/untrusted_theories_level_1.md"
+        ],
+        text: JSON.stringify({
+          decision: "updated_model",
+          summary: "mechanics phase after alias normalization",
+          message_for_bootstrapper: "",
+          artifacts_updated: ["model_lib.py", "modeler_handoff/untrusted_theories_level_1.md"],
+          evidence_watermark: "wm_alias",
+        }),
+      },
+    ]);
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    config.problem.syncModelWorkspace = { command: [syncPath] };
+    config.modeler.acceptance.command = [acceptancePath];
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_alias_boxes",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "solver_new_evidence",
+        payload: {
+          evidenceWatermark: "wm_alias",
+          evidenceBundleId: "bundle_alias",
+          evidenceBundlePath: "/tmp/bundle_alias",
+          latestEvidence: {
+            state: { current_level: 1, levels_completed: 0, state: "NOT_FINISHED" },
+          },
+        },
+      },
+    });
+    const labelsPath = path.join(workspaceRoot, "flux", "model", "feature_labels", "feature_labels_level_1.json");
+    const labels = JSON.parse(await fs.readFile(labelsPath, "utf8"));
+    expect(labels.boxes[0].features).toEqual(["five_by_five_stack"]);
+  });
+
+  test("fails loudly after repeated invalid feature-box label responses", async () => {
+    const syncPath = path.join(workspaceRoot, "scripts", "sync_with_feature_boxes_fail.js");
+    await fs.writeFile(syncPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const target = String(input.targetWorkspaceDir || "");
+  fs.mkdirSync(path.join(target, "level_1", "sequences"), { recursive: true });
+  fs.writeFileSync(path.join(target, "level_1", "sequences", "seq_0001.json"), JSON.stringify({ level: 1, sequence_id: "seq_0001" }, null, 2), "utf8");
+  fs.writeFileSync(path.join(target, "feature_boxes_level_1.json"), JSON.stringify({
+    schema_version: "flux.feature_boxes.v1",
+    level: 1,
+    box_spec_hash: "box_hash_fail",
+    boxes: [
+      { box_id: "box_01", bbox: [10, 10, 14, 14] }
+    ]
+  }, null, 2), "utf8");
+  process.stdout.write(JSON.stringify({ synced: true }));
+});`, "utf8");
+    await fs.chmod(syncPath, 0o755);
+    const acceptancePath = path.join(workspaceRoot, "scripts", "accept_fail_boxes.js");
+    await fs.writeFile(acceptancePath, `#!/usr/bin/env node
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const modelOutput = input.modelOutput || {};
+  process.stdout.write(JSON.stringify({
+    accepted: false,
+    message: "compare mismatch at level 1 sequence seq_0001 step 1: intermediate_frame_mismatch",
+    model_output: modelOutput,
+    compare_payload: {
+      level: 1,
+      all_match: false,
+      reports: [{ level: 1, sequence_id: "seq_0001", matched: false, divergence_step: 1, divergence_reason: "intermediate_frame_mismatch" }]
+    }
+  }));
+});`, "utf8");
+    await fs.chmod(acceptancePath, 0o755);
+    process.env.MOCK_PROVIDER_STREAMED_MATCHERS_JSON = JSON.stringify([
+      {
+        contains: "Label boxes.",
+        text: JSON.stringify({
+          level: 1,
+          summary: "still wrong",
+          boxes: [
+            { box_id: "box_01", wrong_key: ["nope"], tags: ["movable"] }
+          ]
+        }),
+      },
+    ]);
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    config.problem.syncModelWorkspace = { command: [syncPath] };
+    config.modeler.acceptance.command = [acceptancePath];
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runModelerQueueItem({
+      workspaceRoot,
+      config,
+      state,
+      queueItem: {
+        id: "q_fail_boxes",
+        sessionType: "modeler",
+        createdAt: new Date().toISOString(),
+        reason: "solver_new_evidence",
+        payload: {
+          evidenceWatermark: "wm_fail_boxes",
+          evidenceBundleId: "bundle_fail_boxes",
+          evidenceBundlePath: "/tmp/bundle_fail_boxes",
+          latestEvidence: {
+            state: { current_level: 1, levels_completed: 0, state: "NOT_FINISHED" },
+          },
+        },
+      },
+    });
+    const invocation = JSON.parse(await fs.readFile(path.join(workspaceRoot, "flux", "invocations", "q_fail_boxes", "result.json"), "utf8"));
+    expect(invocation.status).toBe("failed");
+    expect(String(invocation.summary)).toContain("feature box labeling failed repeatedly");
+  });
+
   test("requires a modeler handoff markdown before publishing a newly accepted level", async () => {
     const acceptancePath = path.join(workspaceRoot, "scripts", "accept_requires_handoff.js");
     await fs.writeFile(acceptancePath, `#!/usr/bin/env node

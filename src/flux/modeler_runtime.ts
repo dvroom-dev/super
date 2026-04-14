@@ -205,6 +205,7 @@ export async function runModelerQueueItem(args: {
   let continueAcceptanceMessage: string | null = null;
   let continueFailingReport: Record<string, unknown> | null = null;
   let boxLabelValidationError: string | null = null;
+  let boxLabelValidationFailures = 0;
   const invocationAcceptanceMaxLevel = await deriveInvocationAcceptanceTargetLevel({
     workspaceRoot: args.workspaceRoot,
     config: args.config,
@@ -548,6 +549,49 @@ export async function runModelerQueueItem(args: {
       const reportedLevel = Number(parsedLabels.level ?? 0) || 0;
       if (reportedLevel !== featureLabelLevel) {
         boxLabelValidationError = `label response level mismatch: expected ${featureLabelLevel}, got ${reportedLevel || "(missing)"}`;
+        boxLabelValidationFailures += 1;
+        if (boxLabelValidationFailures >= 3) {
+          const failureSummary = `feature box labeling failed repeatedly for level ${featureLabelLevel}: ${boxLabelValidationError}`;
+          session.status = "idle";
+          session.stopReason = undefined;
+          session.updatedAt = nowIso();
+          await saveFluxSession(args.workspaceRoot, args.config, session);
+          await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+            invocationId,
+            invocationType: "modeler_invocation",
+            sessionType: "modeler",
+            status: "failed",
+            recordedAt: nowIso(),
+            summary: failureSummary,
+            payload: { sessionId, phase: "feature_boxes", reason: boxLabelValidationError },
+          });
+          await markFluxInvocationStatus({
+            workspaceRoot: args.workspaceRoot,
+            config: args.config,
+            invocationId,
+            sessionType: "modeler",
+            status: "failed",
+            sessionId,
+            error: failureSummary,
+          });
+          await appendProjectionEventsAndRebuild({
+            workspaceRoot: args.workspaceRoot,
+            config: args.config,
+            configPath: args.state.configPath,
+            events: [{
+              eventId: newId("evt"),
+              ts: nowIso(),
+              kind: "projection.slot_updated",
+              workspaceRoot: args.workspaceRoot,
+              sessionType: "modeler",
+              sessionId,
+              invocationId,
+              summary: `active modeler invocation ${invocationId} cleared`,
+              payload: { active: { sessionId, invocationId, status: "idle", updatedAt: nowIso() } },
+            }],
+          });
+          return;
+        }
         continueTurns += 1;
         continue;
       }
@@ -564,10 +608,54 @@ export async function runModelerQueueItem(args: {
       });
       if (!refreshedValidation.ok) {
         boxLabelValidationError = refreshedValidation.reason;
+        boxLabelValidationFailures += 1;
+        if (boxLabelValidationFailures >= 3) {
+          const failureSummary = `feature box labeling failed repeatedly for level ${featureLabelLevel}: ${boxLabelValidationError}`;
+          session.status = "idle";
+          session.stopReason = undefined;
+          session.updatedAt = nowIso();
+          await saveFluxSession(args.workspaceRoot, args.config, session);
+          await saveFluxInvocationResult(args.workspaceRoot, args.config, {
+            invocationId,
+            invocationType: "modeler_invocation",
+            sessionType: "modeler",
+            status: "failed",
+            recordedAt: nowIso(),
+            summary: failureSummary,
+            payload: { sessionId, phase: "feature_boxes", reason: boxLabelValidationError },
+          });
+          await markFluxInvocationStatus({
+            workspaceRoot: args.workspaceRoot,
+            config: args.config,
+            invocationId,
+            sessionType: "modeler",
+            status: "failed",
+            sessionId,
+            error: failureSummary,
+          });
+          await appendProjectionEventsAndRebuild({
+            workspaceRoot: args.workspaceRoot,
+            config: args.config,
+            configPath: args.state.configPath,
+            events: [{
+              eventId: newId("evt"),
+              ts: nowIso(),
+              kind: "projection.slot_updated",
+              workspaceRoot: args.workspaceRoot,
+              sessionType: "modeler",
+              sessionId,
+              invocationId,
+              summary: `active modeler invocation ${invocationId} cleared`,
+              payload: { active: { sessionId, invocationId, status: "idle", updatedAt: nowIso() } },
+            }],
+          });
+          return;
+        }
         continueTurns += 1;
         continue;
       }
       boxLabelValidationError = null;
+      boxLabelValidationFailures = 0;
       await appendFluxEvents(args.workspaceRoot, args.config, [{
         eventId: newId("evt"),
         ts: nowIso(),

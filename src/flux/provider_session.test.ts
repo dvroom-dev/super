@@ -184,6 +184,52 @@ retention:
     }
   });
 
+  test("retries once on stale codex compact-task unknown-parameter failures", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_ERROR_IF_THREAD_ID_SET = `Error running remote compact task: {
+  "error": {
+    "message": "Unknown parameter: 'prompt_cache_retention'.",
+    "type": "invalid_request_error",
+    "param": "prompt_cache_retention",
+    "code": "unknown_parameter"
+  }
+}`;
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({ ok: true, retried: true });
+    try {
+      const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+      const session: FluxSessionRecord = {
+        sessionId: "bootstrapper_run",
+        sessionType: "bootstrapper",
+        status: "running",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        provider: "mock",
+        model: "mock-model",
+        resumePolicy: "always",
+        sessionScope: "run",
+        providerThreadId: "stale_thread_id",
+      };
+      await saveFluxSession(workspaceRoot, config, session);
+
+      const result = await runFluxProviderTurn({
+        workspaceRoot,
+        config,
+        session,
+        sessionType: "bootstrapper",
+        promptText: "bootstrap",
+        workingDirectory: workspaceRoot,
+      });
+
+      expect(result.assistantText).toContain("\"retried\":true");
+      expect(result.providerThreadId).toMatch(/^mock_thread_/);
+      expect(result.providerThreadId).not.toBe("stale_thread_id");
+      const saved = await loadFluxSession(workspaceRoot, config, "bootstrapper", "bootstrapper_run");
+      expect(saved?.providerThreadId).toBe(result.providerThreadId);
+    } finally {
+      delete process.env.MOCK_PROVIDER_STREAMED_ERROR_IF_THREAD_ID_SET;
+      delete process.env.MOCK_PROVIDER_STREAMED_TEXT;
+    }
+  });
+
   test("retries on Claude provider compaction continuation summaries and clears the stale thread", async () => {
     process.env.MOCK_PROVIDER_FORCE = "1";
     process.env.MOCK_PROVIDER_STREAMED_TEXT = JSON.stringify({ ok: true, retried: true });
