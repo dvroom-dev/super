@@ -485,14 +485,14 @@ process.stdin.on("data", () => {});
 process.stdin.on("end", () => process.stdout.write(JSON.stringify({
   rehearsal_ok: true,
   tool_results: [{ tool: "model", ok: true }],
-  status_after: { current_level: 2 },
+  status_after: { current_level: 1, levels_completed: 0 },
   compare_payload: {
-    level: 2,
-    frontier_level: 2,
+    level: 1,
+    frontier_level: 1,
     all_match: false,
     compared_sequences: 1,
     eligible_sequences: 1,
-    reports: [{ level: 2, sequence_id: "seq_0001", matched: false, divergence_step: 1, divergence_reason: "intermediate_frame_mismatch" }]
+    reports: [{ level: 1, sequence_id: "seq_0001", matched: false, divergence_step: 1, divergence_reason: "intermediate_frame_mismatch" }]
   }
 })));`, "utf8");
     await fs.chmod(rehearsePath, 0o755);
@@ -851,7 +851,7 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
     expect(currentSeed.replayPlan[0]?.args?.cmd).toEqual(["arc_action", "ACTION1"]);
   });
 
-  test("does not treat a stored rehearsal with compare failures as satisfactory", async () => {
+  test("treats a stored rehearsal as satisfactory when replay completed the accepted solved level despite deeper compare mismatches", async () => {
     const currentSeed = {
       version: 1,
       generatedAt: new Date().toISOString(),
@@ -865,16 +865,16 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
       lastModelRehearsalSucceeded: true,
       lastModelRehearsalResult: {
         rehearsal_ok: true,
-        status_after: { current_level: 2 },
+        status_after: { current_level: 3, levels_completed: 2 },
         compare_payload: {
-          level: 2,
-          frontier_level: 2,
+          level: 3,
+          frontier_level: 3,
           all_match: false,
           compared_sequences: 6,
           eligible_sequences: 6,
         },
       },
-    }, seedHash, 2)).toBe(false);
+    }, seedHash, 2)).toBe(true);
   });
 
   test("does not treat a stored rehearsal with compare errors as satisfactory", async () => {
@@ -904,13 +904,13 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
     }, seedHash, 2)).toBe(false);
   });
 
-  test("caps expected frontier to one level beyond accepted coverage", async () => {
+  test("targets bootstrap rehearsal to the accepted solved level, not the visible frontier", async () => {
     const expected = expectedFrontierLevelFromPromptPayload({
       coverageSummary: {
-        level: 1,
+        level: 2,
         frontierLevel: 3,
         allMatch: true,
-        coveredSequenceIds: ["level_1:seq_0001"],
+        coveredSequenceIds: ["level_1:seq_0001", "level_2:seq_0001"],
         contiguousMatchedSequences: 1,
         firstFailingSequenceId: null,
         firstFailingStep: null,

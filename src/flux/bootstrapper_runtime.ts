@@ -227,21 +227,12 @@ function coverageSummaryFromPromptPayload(value: unknown): FluxSeedMeta["lastBoo
 export function expectedFrontierLevelFromPromptPayload(payload: Record<string, unknown>): number | null {
   const coverageSummary = coverageSummaryFromPromptPayload(payload.coverageSummary);
   const coverageLevel = Number(coverageSummary?.level ?? 0) || 0;
-  const coverageFrontier = Number(coverageSummary?.frontierLevel ?? 0) || 0;
-  const coverageCompareKind = String(coverageSummary?.compareKind ?? "");
-  const explicitFromCoverage = coverageFrontier > 0
-    ? (
-        coverageCompareKind === "accepted"
-          ? Math.min(coverageFrontier, (coverageLevel || 1) + 1)
-          : coverageFrontier
-      )
-    : 0;
-  const explicit = Number(explicitFromCoverage || payload.frontierLevel || payload.modelFrontierLevel || 0) || 0;
+  const explicit = Number(coverageLevel || payload.level || 0) || 0;
   if (explicit > 0) return explicit;
   const progress = payload.modelProgress && typeof payload.modelProgress === "object" && !Array.isArray(payload.modelProgress)
     ? payload.modelProgress as Record<string, unknown>
     : {};
-  const fallback = Number(progress.level ?? coverageSummary?.level ?? 0) || 0;
+  const fallback = Number(coverageSummary?.level ?? progress.level ?? 0) || 0;
   return fallback > 0 ? fallback : null;
 }
 
@@ -259,18 +250,10 @@ function rehearsalReachedFrontier(rehearsalResult: Record<string, unknown>, expe
   if (!compareOk || compareHasError) {
     return false;
   }
-  const compareAllMatch = Boolean(comparePayload.all_match);
-  const comparedSequences = Number(comparePayload.compared_sequences ?? 0) || 0;
-  const eligibleSequences = Number(comparePayload.eligible_sequences ?? 0) || 0;
-  if ((comparedSequences > 0 || eligibleSequences > 0) && !compareAllMatch) {
-    return false;
-  }
   if (!expectedFrontierLevel || expectedFrontierLevel <= 0) return true;
-  const reachedLevel = Math.max(
-    Number(statusAfter.current_level ?? 0) || 0,
-    Number(comparePayload.frontier_level ?? comparePayload.level ?? 0) || 0,
-  );
-  return reachedLevel >= expectedFrontierLevel;
+  const levelsCompleted = Number(statusAfter.levels_completed ?? 0) || 0;
+  const currentLevel = Number(statusAfter.current_level ?? 0) || 0;
+  return levelsCompleted >= expectedFrontierLevel || currentLevel > expectedFrontierLevel;
 }
 
 export function currentSeedHasModelRehearsal(meta: FluxSeedMeta, seedHash: string, expectedFrontierLevel: number | null): boolean {
