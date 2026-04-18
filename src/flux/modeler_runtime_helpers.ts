@@ -445,6 +445,7 @@ export async function publishBootstrapSignals(args: {
   modelRevisionId?: string | null;
   promptPayload: Record<string, unknown>;
   sessionId: string;
+  requeueModelerBeforeLevel1?: boolean;
 }): Promise<void> {
   const modelRevisionId = typeof args.modelRevisionId === "string" && args.modelRevisionId ? args.modelRevisionId : null;
   if (!modelRevisionId) return;
@@ -501,16 +502,18 @@ export async function publishBootstrapSignals(args: {
         coveredSequenceIds: persistedSummary.coveredSequenceIds,
       },
     }]);
-    const existingQueue = await loadFluxQueue(args.workspaceRoot, args.config, "modeler");
-    if (existingQueue.items.length === 0) {
-      await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
-        id: newId("q"),
-        sessionType: "modeler",
-        createdAt: nowIso(),
-        reason: "modeler_continue_until_level1_solved",
-        dedupeKey: `evidence:${String(args.promptPayload.evidenceWatermark ?? "")}`,
-        payload: { ...args.promptPayload },
-      });
+    if (args.requeueModelerBeforeLevel1 !== false) {
+      const existingQueue = await loadFluxQueue(args.workspaceRoot, args.config, "modeler");
+      if (existingQueue.items.length === 0) {
+        await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
+          id: newId("q"),
+          sessionType: "modeler",
+          createdAt: nowIso(),
+          reason: "modeler_continue_until_level1_solved",
+          dedupeKey: `evidence:${String(args.promptPayload.evidenceWatermark ?? "")}`,
+          payload: { ...args.promptPayload },
+        });
+      }
     }
     return;
   }

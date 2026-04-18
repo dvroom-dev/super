@@ -194,6 +194,221 @@ retention:
     expect(modelerQueue.items).toHaveLength(1);
   });
 
+  test("skips modeler enqueue when current accepted model already matches solver evidence", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    const observeScript = path.join(workspaceRoot, "scripts", "observe_with_bundle.js");
+    await writeJsonScript(observeScript, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const root = input.workspaceRoot || process.cwd();
+  const counterPath = path.join(root, ".observe-bundle-counter");
+  let count = 0;
+  try { count = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch {}
+  count += 1;
+  fs.writeFileSync(counterPath, String(count), "utf8");
+  const bundleId = "bundle_match_" + count;
+  const bundleRoot = path.join(root, "flux", "evidence_bundles", bundleId);
+  const bundleWorkspace = path.join(bundleRoot, "workspace", "game_ls20");
+  fs.mkdirSync(bundleWorkspace, { recursive: true });
+  fs.mkdirSync(path.join(bundleRoot, "arc_state"), { recursive: true });
+  fs.writeFileSync(path.join(bundleRoot, "manifest.json"), JSON.stringify({
+    bundle_id: bundleId,
+    workspace_dir: bundleWorkspace,
+    arc_state_dir: path.join(bundleRoot, "arc_state"),
+    bundle_completeness: { frontier_level: 1, has_compare_surface: true }
+  }, null, 2));
+  process.stdout.write(JSON.stringify({
+    evidence: [{
+      summary: "matched evidence " + count,
+      action_count: count,
+      changed_pixels: 1,
+      state: {
+        current_level: count >= 2 ? 8 : 1,
+        levels_completed: count >= 2 ? 7 : 0,
+        win_levels: 7,
+        state: count >= 2 ? "WIN" : "NOT_FINISHED",
+        total_steps: count,
+        current_attempt_steps: count
+      }
+    }],
+    evidence_bundle_id: bundleId,
+    evidence_bundle_path: bundleRoot
+  }));
+});`);
+    const acceptScript = path.join(workspaceRoot, "scripts", "accept_match.js");
+    await writeJsonScript(acceptScript, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  accepted: true,
+  message: "current model matches",
+  compare_payload: {
+    ok: true,
+    level: 1,
+    frontier_level: 2,
+    all_match: true,
+    compared_sequences: 1,
+    eligible_sequences: 1,
+    diverged_sequences: 0,
+    covered_sequence_ids: ["level_1:seq_0001"],
+    reports: [{ level: 1, sequence_id: "seq_0001", matched: true, sequence_completed_level: true, frontier_level_after_sequence: 2 }]
+  }
+})));`);
+    let fluxText = await fs.readFile(path.join(workspaceRoot, "flux.yaml"), "utf8");
+    fluxText = fluxText
+      .replace(/observe_evidence:\n    command: \["[^"]*"\]/, `observe_evidence:\n    command: ["${observeScript}"]`)
+      .replace(/acceptance:\n    command: \[[^\n]+\]/, `acceptance:\n    command: ["${acceptScript}"]`);
+    await fs.writeFile(path.join(workspaceRoot, "flux.yaml"), fluxText, "utf8");
+    await fs.mkdir(path.join(workspaceRoot, "flux", "model", "current"), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, "flux", "model", "current", "meta.json"), JSON.stringify({
+      revisionId: "model_rev_current",
+      summary: {
+        level: 1,
+        solvedLevel: 1,
+        allMatch: true,
+        coveredSequenceIds: ["level_1:seq_0001"],
+        contiguousMatchedSequences: 1,
+        firstFailingSequenceId: null,
+        firstFailingStep: null,
+        firstFailingReason: null,
+        frontierDiscovered: false,
+        compareKind: "accepted",
+      },
+    }, null, 2), "utf8");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: { id: "q_skip_modeler", sessionType: "solver", createdAt: new Date().toISOString(), reason: "test", payload: {} },
+      state,
+    });
+    const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(modelerQueue.items).toHaveLength(0);
+    expect(events.some((event) => event.kind === "solver.modeler_enqueue_skipped")).toBe(true);
+  });
+
+  test("queues modeler when current accepted model preflight does not match solver evidence", async () => {
+    process.env.MOCK_PROVIDER_STREAMED_TEXT = "solver output";
+    const observeScript = path.join(workspaceRoot, "scripts", "observe_with_mismatch_bundle.js");
+    await writeJsonScript(observeScript, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+let data = "";
+process.stdin.on("data", (chunk) => data += chunk.toString());
+process.stdin.on("end", () => {
+  const input = JSON.parse(data || "{}");
+  const root = input.workspaceRoot || process.cwd();
+  const bundleRoot = path.join(root, "flux", "evidence_bundles", "bundle_mismatch");
+  const bundleWorkspace = path.join(bundleRoot, "workspace", "game_ls20");
+  fs.mkdirSync(bundleWorkspace, { recursive: true });
+  fs.mkdirSync(path.join(bundleRoot, "arc_state"), { recursive: true });
+  fs.writeFileSync(path.join(bundleRoot, "manifest.json"), JSON.stringify({
+    bundle_id: "bundle_mismatch",
+    workspace_dir: bundleWorkspace,
+    arc_state_dir: path.join(bundleRoot, "arc_state"),
+    bundle_completeness: { frontier_level: 1, has_compare_surface: true }
+  }, null, 2));
+  process.stdout.write(JSON.stringify({
+    evidence: [{
+      summary: "mismatch evidence",
+      action_count: 1,
+      changed_pixels: 1,
+      state: { current_level: 8, levels_completed: 7, win_levels: 7, state: "WIN", total_steps: 1, current_attempt_steps: 1 }
+    }],
+    evidence_bundle_id: "bundle_mismatch",
+    evidence_bundle_path: bundleRoot
+  }));
+});`);
+    const acceptScript = path.join(workspaceRoot, "scripts", "accept_mismatch.js");
+    await writeJsonScript(acceptScript, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+  accepted: false,
+  message: "compare mismatch",
+  compare_payload: {
+    ok: true,
+    level: 1,
+    all_match: false,
+    compared_sequences: 1,
+    eligible_sequences: 1,
+    diverged_sequences: 1,
+    reports: [{ level: 1, sequence_id: "seq_0001", matched: false, divergence_step: 1, divergence_reason: "frame_mismatch" }]
+  }
+})));`);
+    let fluxText = await fs.readFile(path.join(workspaceRoot, "flux.yaml"), "utf8");
+    fluxText = fluxText
+      .replace(/observe_evidence:\n    command: \["[^"]*"\]/, `observe_evidence:\n    command: ["${observeScript}"]`)
+      .replace(/acceptance:\n    command: \[[^\n]+\]/, `acceptance:\n    command: ["${acceptScript}"]`);
+    await fs.writeFile(path.join(workspaceRoot, "flux.yaml"), fluxText, "utf8");
+    await fs.mkdir(path.join(workspaceRoot, "flux", "model", "current"), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, "flux", "model", "current", "meta.json"), JSON.stringify({
+      revisionId: "model_rev_current",
+      summary: {
+        level: 1,
+        solvedLevel: 0,
+        allMatch: true,
+        coveredSequenceIds: [],
+        contiguousMatchedSequences: 0,
+        firstFailingSequenceId: null,
+        firstFailingStep: null,
+        firstFailingReason: null,
+        frontierDiscovered: false,
+        compareKind: "accepted",
+      },
+    }, null, 2), "utf8");
+    const config = await loadFluxConfig(workspaceRoot, "flux.yaml");
+    const state: FluxRunState = {
+      version: 1,
+      workspaceRoot,
+      configPath: path.join(workspaceRoot, "flux.yaml"),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: "running",
+      stopRequested: false,
+      active: {
+        solver: { status: "idle", updatedAt: new Date().toISOString() },
+        modeler: { status: "idle", updatedAt: new Date().toISOString() },
+        bootstrapper: { status: "idle", updatedAt: new Date().toISOString() },
+      },
+    };
+    await saveFluxState(workspaceRoot, config, state);
+    await runSolverQueueItem({
+      workspaceRoot,
+      config,
+      queueItem: { id: "q_queue_modeler", sessionType: "solver", createdAt: new Date().toISOString(), reason: "test", payload: {} },
+      state,
+    });
+    const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
+    const events = await readFluxEvents(workspaceRoot, config);
+    expect(modelerQueue.items.length).toBeGreaterThan(0);
+    expect(events.some((event) => event.kind === "solver.modeler_enqueue_skipped")).toBe(false);
+  });
+
   test("does not hard-stop solver turns just because cadence elapses", async () => {
     process.env.MOCK_PROVIDER_STREAMED_TEXT = "";
     process.env.MOCK_PROVIDER_DELAY_MS = "200";

@@ -2043,7 +2043,8 @@ process.stdin.on("end", () => {
   try { count = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch {}
   count += 1;
   fs.writeFileSync(counterPath, String(count), "utf8");
-  const bundleName = fs.existsSync(solverTheoryPath) ? "bundle_with_theory" : "bundle_without_theory";
+  const bundleBaseName = fs.existsSync(solverTheoryPath) ? "bundle_with_theory" : "bundle_without_theory";
+  const bundleName = bundleBaseName + "_" + count;
   const bundleRoot = path.join(root, "flux", "evidence_bundles", bundleName);
   const bundleWorkspace = path.join(bundleRoot, "workspace", "model_workspace");
   fs.rmSync(bundleRoot, { recursive: true, force: true });
@@ -2268,7 +2269,7 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
         const latestState = await loadFluxState(workspaceRoot, config);
         solverSessionId = latestState?.active.solver.sessionId ?? solverSessionId;
         const modelerQueue = await loadFluxQueue(workspaceRoot, config, "modeler");
-        theoryQueueItem = modelerQueue.items.find((item) => item.payload?.evidenceBundleId === "bundle_with_theory") ?? null;
+        theoryQueueItem = modelerQueue.items.find((item) => String(item.payload?.evidenceBundleId ?? "").startsWith("bundle_with_theory_")) ?? null;
         if (theoryQueueItem) break;
         await new Promise((resolve) => setTimeout(resolve, 25));
       }

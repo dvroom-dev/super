@@ -12,6 +12,7 @@ import { loadFluxPromptTemplate } from "./prompt_templates.js";
 import { runFluxProviderTurn } from "./provider_session.js";
 import { validateFluxSeedBundle } from "./seed_bundle.js";
 import { appendFluxMessage, loadFluxSession, saveFluxSession } from "./session_store.js";
+import { preflightCurrentModelMatchesEvidence } from "./solver_modeler_preflight.js";
 import type { FluxConfig, FluxQueueItem, FluxRunState, FluxSeedBundle, FluxSessionRecord } from "./types.js";
 import { loadFluxState } from "./state.js";
 import {
@@ -181,22 +182,37 @@ async function observeAndPublishSolverEvidence(args: {
       payload: { attemptId: args.attemptId, instanceId: args.instanceId, watermark, count: evidenceList.length, reason: args.reason },
     }]);
     if (hasRealActionEvidence) {
-      await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
-        id: newId("q"),
-        sessionType: "modeler",
-        createdAt: nowIso(),
-        reason: args.reason === "solver_running" ? "solver_new_evidence" : "solver_stopped",
-        dedupeKey: `evidence:${watermark}`,
-        payload: {
-          attemptId: args.attemptId,
-          instanceId: args.instanceId,
-          evidenceWatermark: watermark,
-          evidenceCount: evidenceList.length,
-          latestEvidence: evidenceRecords[evidenceRecords.length - 1] ?? null,
-          evidenceBundleId: evidenceBundleId || undefined,
-          evidenceBundlePath: evidenceBundlePath || undefined,
-        },
+      const latestEvidence = evidenceRecords[evidenceRecords.length - 1] ?? null;
+      const alreadyMatched = await preflightCurrentModelMatchesEvidence({
+        workspaceRoot: args.workspaceRoot,
+        config: args.config,
+        sessionId: args.sessionId,
+        attemptId: args.attemptId,
+        instanceId: args.instanceId,
+        watermark,
+        evidenceCount: evidenceList.length,
+        latestEvidence,
+        evidenceBundleId,
+        evidenceBundlePath,
       });
+      if (!alreadyMatched) {
+        await enqueueFluxQueueItem(args.workspaceRoot, args.config, "modeler", {
+          id: newId("q"),
+          sessionType: "modeler",
+          createdAt: nowIso(),
+          reason: args.reason === "solver_running" ? "solver_new_evidence" : "solver_stopped",
+          dedupeKey: `evidence:${watermark}`,
+          payload: {
+            attemptId: args.attemptId,
+            instanceId: args.instanceId,
+            evidenceWatermark: watermark,
+            evidenceCount: evidenceList.length,
+            latestEvidence,
+            evidenceBundleId: evidenceBundleId || undefined,
+            evidenceBundlePath: evidenceBundlePath || undefined,
+          },
+        });
+      }
     }
   }
   return { watermark, hasRealActionEvidence, evidenceCount: evidenceList.length, evidenceRecords, incompleteSurface: null };
