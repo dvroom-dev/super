@@ -129,6 +129,7 @@ export type FluxQueueItem = {
 
 export type FluxModelCoverageSummary = {
   level: number;
+  solvedLevel?: number;
   frontierLevel?: number;
   allMatch: boolean;
   coveredSequenceIds: string[];

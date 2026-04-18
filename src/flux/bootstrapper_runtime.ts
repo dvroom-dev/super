@@ -6,7 +6,7 @@ import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
 import { markFluxInvocationStatus, persistFluxInvocationInput, saveFluxInvocationResult } from "./invocations.js";
 import { parseJsonObjectFromAssistantText, schemaForName } from "./json_session_format.js";
-import { classifyModelImprovement } from "./model_coverage.js";
+import { classifyModelImprovement, solvedLevelFromComparePayload } from "./model_coverage.js";
 import { modelRevisionWorkspaceSource } from "./model_revision_store.js";
 import { appendProjectionEventsAndRebuild } from "./projections.js";
 import { runFluxProblemCommand } from "./problem_shell.js";
@@ -226,13 +226,16 @@ function coverageSummaryFromPromptPayload(value: unknown): FluxSeedMeta["lastBoo
 
 export function expectedFrontierLevelFromPromptPayload(payload: Record<string, unknown>): number | null {
   const coverageSummary = coverageSummaryFromPromptPayload(payload.coverageSummary);
-  const coverageLevel = Number(coverageSummary?.level ?? 0) || 0;
-  const explicit = Number(coverageLevel || payload.level || 0) || 0;
+  const comparePayload = payload.comparePayload && typeof payload.comparePayload === "object" && !Array.isArray(payload.comparePayload)
+    ? payload.comparePayload as Record<string, unknown>
+    : {};
+  const solvedFromCompare = solvedLevelFromComparePayload(comparePayload);
+  const explicit = Number(solvedFromCompare || coverageSummary?.solvedLevel || payload.solvedLevel || 0) || 0;
   if (explicit > 0) return explicit;
   const progress = payload.modelProgress && typeof payload.modelProgress === "object" && !Array.isArray(payload.modelProgress)
     ? payload.modelProgress as Record<string, unknown>
     : {};
-  const fallback = Number(coverageSummary?.level ?? progress.level ?? 0) || 0;
+  const fallback = Number(coverageSummary?.solvedLevel ?? progress.solvedLevel ?? 0) || 0;
   return fallback > 0 ? fallback : null;
 }
 

@@ -2326,7 +2326,8 @@ process.stdin.on("end", () => {
   try { count = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch {}
   count += 1;
   fs.writeFileSync(counterPath, String(count), "utf8");
-  const bundleRoot = path.join(root, "flux", "evidence_bundles", "bundle_feature_flow");
+  const bundleId = "bundle_feature_flow_" + count;
+  const bundleRoot = path.join(root, "flux", "evidence_bundles", bundleId);
   const bundleWorkspace = path.join(bundleRoot, "workspace", "model_workspace");
   fs.rmSync(bundleRoot, { recursive: true, force: true });
   fs.mkdirSync(bundleWorkspace, { recursive: true });
@@ -2345,7 +2346,7 @@ process.stdin.on("end", () => {
   }, null, 2));
   fs.mkdirSync(path.join(bundleRoot, "arc_state"), { recursive: true });
   fs.writeFileSync(path.join(bundleRoot, "manifest.json"), JSON.stringify({
-    bundle_id: "bundle_feature_flow",
+    bundle_id: bundleId,
     attempt_id: "attempt_feature_flow",
     instance_id: "instance_feature_flow",
     workspace_dir: bundleWorkspace,
@@ -2374,7 +2375,7 @@ process.stdin.on("end", () => {
         last_action_name: "ACTION1"
       }
     }],
-    evidence_bundle_id: "bundle_feature_flow",
+    evidence_bundle_id: bundleId,
     evidence_bundle_path: bundleRoot
   }));
 });`, "utf8");

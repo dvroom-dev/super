@@ -82,6 +82,22 @@ export function computeModelProgress(comparePayload: Record<string, unknown>): M
   };
 }
 
+export function solvedLevelFromComparePayload(comparePayload: Record<string, unknown>): number {
+  const reports = Array.isArray(comparePayload.reports) ? comparePayload.reports : [];
+  let solvedLevel = Number(comparePayload.levels_completed ?? 0) || 0;
+  for (const report of reports) {
+    if (!report || typeof report !== "object" || Array.isArray(report)) continue;
+    const record = report as Record<string, unknown>;
+    if (!Boolean(record.matched)) continue;
+    if (!Boolean(record.sequence_completed_level) && !(Number(record.frontier_level_after_sequence ?? 0) > Number(record.level ?? 0))) {
+      continue;
+    }
+    const level = Number(record.level ?? 0) || 0;
+    if (level > solvedLevel) solvedLevel = level;
+  }
+  return solvedLevel;
+}
+
 export function buildCoverageSummary(args: {
   comparePayload: Record<string, unknown>;
   accepted: boolean;
@@ -113,6 +129,7 @@ export function buildCoverageSummary(args: {
       : errorType ? "incomplete_artifacts" : "rejected";
   return {
     level: Number(args.comparePayload.level ?? progress.level ?? 1) || 1,
+    solvedLevel: solvedLevelFromComparePayload(args.comparePayload),
     frontierLevel: Number(args.comparePayload.frontier_level ?? args.comparePayload.level ?? progress.level ?? 1) || 1,
     allMatch: Boolean(args.comparePayload.all_match),
     coveredSequenceIds,

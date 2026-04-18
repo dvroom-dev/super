@@ -457,6 +457,9 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
         payload: {
           messageForBootstrapper: "use model",
           coverageSummary: { level: 1, frontierLevel: 1, coveredSequenceIds: ["level_1:seq_0001"] },
+          comparePayload: {
+            reports: [{ level: 1, sequence_id: "seq_0001", matched: true, sequence_completed_level: true }],
+          },
         },
       },
     });
@@ -534,6 +537,9 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
             frontierLevel: 2,
             coveredSequenceIds: ["level_1:seq_0001"],
             compareKind: "accepted",
+          },
+          comparePayload: {
+            reports: [{ level: 1, sequence_id: "seq_0001", matched: true, sequence_completed_level: true }],
           },
         },
       },
@@ -918,7 +924,13 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify({
         frontierDiscovered: false,
         compareKind: "accepted",
       },
+      comparePayload: {
+        reports: [
+          { level: 1, sequence_id: "seq_0001", matched: true, sequence_completed_level: true },
+          { level: 2, sequence_id: "seq_0001", matched: true, sequence_completed_level: false },
+        ],
+      },
     });
-    expect(expected).toBe(2);
+    expect(expected).toBe(1);
   });
 });

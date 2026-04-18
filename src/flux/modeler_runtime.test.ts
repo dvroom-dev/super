@@ -1624,7 +1624,7 @@ process.stdin.on("end", () => {
       diverged_sequences: 0,
       covered_sequence_ids: ["level_1:seq_0001", "level_2:seq_0001"],
       reports: [
-        { level: 1, sequence_id: "seq_0001", matched: true },
+        { level: 1, sequence_id: "seq_0001", matched: true, sequence_completed_level: true, frontier_level_after_sequence: 2 },
         { level: 2, sequence_id: "seq_0001", matched: true }
       ]
     }

@@ -4,7 +4,7 @@ import { writeJsonAtomic } from "../lib/fs.js";
 import { newId } from "../utils/ids.js";
 import { appendFluxEvents } from "./events.js";
 import { markFluxInvocationStatus, saveFluxInvocationResult } from "./invocations.js";
-import { buildCoverageSummary, classifyModelImprovement, type ModelProgress } from "./model_coverage.js";
+import { buildCoverageSummary, classifyModelImprovement, solvedLevelFromComparePayload, type ModelProgress } from "./model_coverage.js";
 import { loadModelCoverageSummary, modelRevisionWorkspaceSource, saveModelCoverageSummary } from "./model_revision_store.js";
 import { loadFluxQueue, saveFluxQueue, enqueueFluxQueueItem } from "./queue.js";
 import { renderTemplate } from "./prompt_templates.js";
@@ -432,16 +432,7 @@ export function coverageSummaryFromSeedMeta(value: unknown): ReturnType<typeof b
 }
 
 function hasSolvedLevelOne(comparePayload: Record<string, unknown>): boolean {
-  const acceptedLevel = Number(comparePayload.level ?? 0) || 0;
-  if (acceptedLevel >= 2) return true;
-  const reports = Array.isArray(comparePayload.reports) ? comparePayload.reports : [];
-  return reports.some((report) => {
-    if (!report || typeof report !== "object" || Array.isArray(report)) return false;
-    const record = report as Record<string, unknown>;
-    const level = Number(record.level ?? 0) || 0;
-    if (level !== 1 || !Boolean(record.matched)) return false;
-    return Boolean(record.sequence_completed_level) || (Number(record.frontier_level_after_sequence ?? 0) || 0) >= 2;
-  });
+  return solvedLevelFromComparePayload(comparePayload) >= 1;
 }
 
 export async function publishBootstrapSignals(args: {
@@ -493,7 +484,9 @@ export async function publishBootstrapSignals(args: {
   if (improvementKind === "no_improvement") {
     return;
   }
-  if (!hasSolvedLevelOne(args.comparePayload)) {
+  const solvedLevel = solvedLevelFromComparePayload(args.comparePayload);
+  const baselineSolvedLevel = Number(baselineSummary?.solvedLevel ?? 0) || 0;
+  if (solvedLevel < 1) {
     await appendFluxEvents(args.workspaceRoot, args.config, [{
       eventId: newId("evt"),
       ts: nowIso(),
@@ -519,6 +512,25 @@ export async function publishBootstrapSignals(args: {
         payload: { ...args.promptPayload },
       });
     }
+    return;
+  }
+  if (solvedLevel <= baselineSolvedLevel) {
+    await appendFluxEvents(args.workspaceRoot, args.config, [{
+      eventId: newId("evt"),
+      ts: nowIso(),
+      kind: "modeler.bootstrap_deferred",
+      workspaceRoot: args.workspaceRoot,
+      sessionType: "modeler",
+      sessionId: args.sessionId,
+      summary: "deferred bootstrap until a new level is solved and accepted",
+      payload: {
+        solvedLevel,
+        baselineSolvedLevel,
+        level: persistedSummary.level,
+        frontierLevel: persistedSummary.frontierLevel,
+        coveredSequenceIds: persistedSummary.coveredSequenceIds,
+      },
+    }]);
     return;
   }
   await enqueueFluxQueueItem(args.workspaceRoot, args.config, "bootstrapper", {
