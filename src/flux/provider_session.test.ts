@@ -260,7 +260,7 @@ retention:
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         provider: "claude",
-        model: "claude-opus-4-6",
+        model: "claude-opus-4-7",
         resumePolicy: "never",
         sessionScope: "per_attempt",
         providerThreadId: "stale_thread_id",
@@ -309,7 +309,7 @@ retention:
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         provider: "claude",
-        model: "claude-opus-4-6",
+        model: "claude-opus-4-7",
         resumePolicy: "never",
         sessionScope: "per_attempt",
       };

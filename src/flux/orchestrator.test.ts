@@ -475,7 +475,7 @@ describe("runFluxOrchestrator", () => {
         createdAt: ts,
         updatedAt: ts,
         provider: "claude",
-        model: "claude-opus-4-6",
+        model: "claude-opus-4-7",
         resumePolicy: "never",
         sessionScope: "per_attempt",
         activeAttemptId: "attempt_failed",

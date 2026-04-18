@@ -17,12 +17,12 @@ describe("supervisor_actions", () => {
           agent_violation_checks: [],
         },
         reasoning: "explain",
-        agent_model: "claude-opus-4-6",
+        agent_model: "claude-opus-4-7",
       },
       stopReasons: ["agent_stop"],
       stopDetails: ["Agent stopped"],
       budget: { adjustedTokensUsed: 10, multiplier: 1 },
-      agentModel: "claude-opus-4-6",
+      agentModel: "claude-opus-4-7",
       supervisorModel: "gpt-5.3-codex",
     });
     expect(action.action).toBe("continue");
@@ -48,7 +48,7 @@ describe("supervisor_actions", () => {
             agent_violation_checks: [],
           },
           reasoning: "",
-          agent_model: "claude-opus-4-6",
+          agent_model: "claude-opus-4-7",
         },
       }),
     ).toBe("Rule fix: rule one");

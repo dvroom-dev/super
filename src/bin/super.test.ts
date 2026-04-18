@@ -14,7 +14,7 @@ describe("resolveRuntimeProvidersAndModels", () => {
     const renderedConfig = {
       runtimeDefaults: {
         agentProvider: "claude",
-        agentModel: "claude-opus-4-6",
+        agentModel: "claude-opus-4-7",
         supervisorProvider: "codex",
         supervisorModel: "gpt-5.3-codex",
       },
@@ -22,7 +22,7 @@ describe("resolveRuntimeProvidersAndModels", () => {
 
     expect(resolveRuntimeProvidersAndModels(options, renderedConfig)).toEqual({
       agentProvider: "claude",
-      agentModel: "claude-opus-4-6",
+      agentModel: "claude-opus-4-7",
       supervisorProvider: "codex",
       supervisorModel: "gpt-5.3-codex",
     });
@@ -43,14 +43,14 @@ describe("resolveActiveWorkerRuntime", () => {
       schemaVersion: 2,
       runtimeDefaults: {
         agentProvider: "claude",
-        agentModel: "claude-opus-4-6",
+        agentModel: "claude-opus-4-7",
         supervisorProvider: "codex",
         supervisorModel: "gpt-5.4",
       },
       models: {
         code_repair: {
           provider: "claude",
-          model: "claude-opus-4-6",
+          model: "claude-opus-4-7",
         },
       },
       taskProfiles: {
@@ -85,7 +85,7 @@ describe("resolveActiveWorkerRuntime", () => {
       activeTransitionPayload: {},
     })).toEqual({
       agentProvider: "claude",
-      agentModel: "claude-opus-4-6",
+      agentModel: "claude-opus-4-7",
       supervisorProvider: "codex",
       supervisorModel: "gpt-5.4",
     });

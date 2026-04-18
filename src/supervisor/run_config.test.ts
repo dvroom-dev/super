@@ -131,7 +131,7 @@ describe("run_config", () => {
           "  disable_synthetic_check_supervisor_on_rule_failure: false",
           "runtime_defaults:",
           "  provider: claude",
-          "  model: claude-opus-4-6",
+          "  model: claude-opus-4-7",
           "  model_reasoning_effort: high",
           "context_management_strategy: focused",
           "tool_output:",
@@ -169,7 +169,7 @@ describe("run_config", () => {
     expect(rendered?.supervisorInstructions).toEqual(["nested-supervisor-note"]);
     expect(rendered?.runtimeDefaults).toEqual({
       provider: "claude",
-      model: "claude-opus-4-6",
+      model: "claude-opus-4-7",
       modelReasoningEffort: "high",
     });
     expect(rendered?.contextManagementStrategy).toBe("focused");

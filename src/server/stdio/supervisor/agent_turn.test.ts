@@ -423,7 +423,7 @@ describe("runAgentTurn", () => {
       prompt: promptContentFromText("blocked"),
       supervisor: {},
       budget: makeBudget(),
-      currentModel: "claude-opus-4-6",
+      currentModel: "claude-opus-4-7",
       controller: new AbortController(),
       sendBudgetUpdate: () => {},
       workspaceRoot: "/tmp/work",

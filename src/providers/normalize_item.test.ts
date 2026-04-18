@@ -41,7 +41,7 @@ describe("normalize provider items", () => {
   it("normalizes claude assistant tool_use metadata into tool_call items", () => {
     const normalized = normalizeClaudeAssistantMessage({
       id: "msg_1",
-      model: "claude-opus-4-6",
+      model: "claude-opus-4-7",
       content: [
         {
           type: "tool_use",

@@ -16,7 +16,7 @@ describe("loadFluxConfig", () => {
 schema_version: 1
 runtime_defaults:
   provider: claude
-  model: claude-opus-4-6
+  model: claude-opus-4-7
   reasoning_effort: medium
   sandbox_mode: workspace-write
   approval_policy: never

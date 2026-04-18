@@ -128,7 +128,7 @@ describe("run_config validation", () => {
         extra: [
           "runtime_defaults:",
           "  agent_provider: claude",
-          "  agent_model: claude-opus-4-6",
+          "  agent_model: claude-opus-4-7",
           "  agent_model_reasoning_effort: low",
           "  supervisor_provider: codex",
           "  supervisor_model: gpt-5.3-codex",
@@ -142,7 +142,7 @@ describe("run_config validation", () => {
     const rendered = await renderRunConfig(loaded);
     expect(rendered?.runtimeDefaults).toEqual({
       agentProvider: "claude",
-      agentModel: "claude-opus-4-6",
+      agentModel: "claude-opus-4-7",
       agentModelReasoningEffort: "low",
       supervisorProvider: "codex",
       supervisorModel: "gpt-5.3-codex",
